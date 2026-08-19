@@ -3,10 +3,10 @@
   "floor_height": 15,
   "aisles_per_floor": 4,
   "junctions_per_aisle": 8,
-  "junction_spacing": 5,
-  "aisle_spacing": 24,
-  "slot_offset": 9,
-  "road_width": 9,
+  "junction_spacing": 2.6,
+  "aisle_spacing": 17,
+  "slot_offset": 6,
+  "road_width": 7,
   "slot_depth": 5,
   "nodes": {
     "E0": {
@@ -18,666 +18,666 @@
     "J0_0_1": {
       "type": "junction",
       "floor": 0,
-      "x": 5,
+      "x": 2.6,
       "y": 0
     },
     "J0_0_2": {
       "type": "junction",
       "floor": 0,
-      "x": 10,
+      "x": 5.2,
       "y": 0
     },
     "J0_0_3": {
       "type": "junction",
       "floor": 0,
-      "x": 15,
+      "x": 7.800000000000001,
       "y": 0
     },
     "J0_0_4": {
       "type": "junction",
       "floor": 0,
-      "x": 20,
+      "x": 10.4,
       "y": 0
     },
     "J0_0_5": {
       "type": "junction",
       "floor": 0,
-      "x": 25,
+      "x": 13.0,
       "y": 0
     },
     "J0_0_6": {
       "type": "junction",
       "floor": 0,
-      "x": 30,
+      "x": 15.600000000000001,
       "y": 0
     },
     "J0_0_7": {
       "type": "junction",
       "floor": 0,
-      "x": 35,
+      "x": 18.2,
       "y": 0
     },
     "J0_0_8": {
       "type": "junction",
       "floor": 0,
-      "x": 40,
+      "x": 20.8,
       "y": 0
     },
     "S0_1": {
       "type": "slot",
       "floor": 0,
-      "x": 5,
-      "y": -9,
+      "x": 2.6,
+      "y": -6,
       "size": "large"
     },
     "S0_9": {
       "type": "slot",
       "floor": 0,
-      "x": 5,
-      "y": 9,
+      "x": 2.6,
+      "y": 6,
       "size": "small"
     },
     "S0_2": {
       "type": "slot",
       "floor": 0,
-      "x": 10,
-      "y": -9,
+      "x": 5.2,
+      "y": -6,
       "size": "small"
     },
     "S0_10": {
       "type": "slot",
       "floor": 0,
-      "x": 10,
-      "y": 9,
+      "x": 5.2,
+      "y": 6,
       "size": "large"
     },
     "S0_3": {
       "type": "slot",
       "floor": 0,
-      "x": 15,
-      "y": -9,
+      "x": 7.800000000000001,
+      "y": -6,
       "size": "medium"
     },
     "S0_11": {
       "type": "slot",
       "floor": 0,
-      "x": 15,
-      "y": 9,
+      "x": 7.800000000000001,
+      "y": 6,
       "size": "small"
     },
     "S0_4": {
       "type": "slot",
       "floor": 0,
-      "x": 20,
-      "y": -9,
+      "x": 10.4,
+      "y": -6,
       "size": "small"
     },
     "S0_12": {
       "type": "slot",
       "floor": 0,
-      "x": 20,
-      "y": 9,
+      "x": 10.4,
+      "y": 6,
       "size": "small"
     },
     "S0_5": {
       "type": "slot",
       "floor": 0,
-      "x": 25,
-      "y": -9,
+      "x": 13.0,
+      "y": -6,
       "size": "large"
     },
     "S0_13": {
       "type": "slot",
       "floor": 0,
-      "x": 25,
-      "y": 9,
+      "x": 13.0,
+      "y": 6,
       "size": "small"
     },
     "S0_6": {
       "type": "slot",
       "floor": 0,
-      "x": 30,
-      "y": -9,
+      "x": 15.600000000000001,
+      "y": -6,
       "size": "large"
     },
     "S0_14": {
       "type": "slot",
       "floor": 0,
-      "x": 30,
-      "y": 9,
+      "x": 15.600000000000001,
+      "y": 6,
       "size": "large"
     },
     "S0_7": {
       "type": "slot",
       "floor": 0,
-      "x": 35,
-      "y": -9,
+      "x": 18.2,
+      "y": -6,
       "size": "large"
     },
     "S0_15": {
       "type": "slot",
       "floor": 0,
-      "x": 35,
-      "y": 9,
+      "x": 18.2,
+      "y": 6,
       "size": "small"
     },
     "S0_8": {
       "type": "slot",
       "floor": 0,
-      "x": 40,
-      "y": -9,
+      "x": 20.8,
+      "y": -6,
       "size": "large"
     },
     "S0_16": {
       "type": "slot",
       "floor": 0,
-      "x": 40,
-      "y": 9,
+      "x": 20.8,
+      "y": 6,
       "size": "medium"
     },
     "T0_0": {
       "type": "turn",
       "floor": 0,
-      "x": 45,
+      "x": 23.400000000000002,
       "y": 0
     },
     "J0_1_1": {
       "type": "junction",
       "floor": 0,
-      "x": 5,
-      "y": 24
+      "x": 2.6,
+      "y": 17
     },
     "J0_1_2": {
       "type": "junction",
       "floor": 0,
-      "x": 10,
-      "y": 24
+      "x": 5.2,
+      "y": 17
     },
     "J0_1_3": {
       "type": "junction",
       "floor": 0,
-      "x": 15,
-      "y": 24
+      "x": 7.800000000000001,
+      "y": 17
     },
     "J0_1_4": {
       "type": "junction",
       "floor": 0,
-      "x": 20,
-      "y": 24
+      "x": 10.4,
+      "y": 17
     },
     "J0_1_5": {
       "type": "junction",
       "floor": 0,
-      "x": 25,
-      "y": 24
+      "x": 13.0,
+      "y": 17
     },
     "J0_1_6": {
       "type": "junction",
       "floor": 0,
-      "x": 30,
-      "y": 24
+      "x": 15.600000000000001,
+      "y": 17
     },
     "J0_1_7": {
       "type": "junction",
       "floor": 0,
-      "x": 35,
-      "y": 24
+      "x": 18.2,
+      "y": 17
     },
     "J0_1_8": {
       "type": "junction",
       "floor": 0,
-      "x": 40,
-      "y": 24
+      "x": 20.8,
+      "y": 17
     },
     "S0_17": {
       "type": "slot",
       "floor": 0,
-      "x": 40,
-      "y": 15,
+      "x": 20.8,
+      "y": 11,
       "size": "small"
     },
     "S0_25": {
       "type": "slot",
       "floor": 0,
-      "x": 40,
-      "y": 33,
+      "x": 20.8,
+      "y": 23,
       "size": "small"
     },
     "S0_18": {
       "type": "slot",
       "floor": 0,
-      "x": 35,
-      "y": 15,
+      "x": 18.2,
+      "y": 11,
       "size": "small"
     },
     "S0_26": {
       "type": "slot",
       "floor": 0,
-      "x": 35,
-      "y": 33,
+      "x": 18.2,
+      "y": 23,
       "size": "small"
     },
     "S0_19": {
       "type": "slot",
       "floor": 0,
-      "x": 30,
-      "y": 15,
+      "x": 15.600000000000001,
+      "y": 11,
       "size": "small"
     },
     "S0_27": {
       "type": "slot",
       "floor": 0,
-      "x": 30,
-      "y": 33,
+      "x": 15.600000000000001,
+      "y": 23,
       "size": "large"
     },
     "S0_20": {
       "type": "slot",
       "floor": 0,
-      "x": 25,
-      "y": 15,
+      "x": 13.0,
+      "y": 11,
       "size": "large"
     },
     "S0_28": {
       "type": "slot",
       "floor": 0,
-      "x": 25,
-      "y": 33,
+      "x": 13.0,
+      "y": 23,
       "size": "small"
     },
     "S0_21": {
       "type": "slot",
       "floor": 0,
-      "x": 20,
-      "y": 15,
+      "x": 10.4,
+      "y": 11,
       "size": "large"
     },
     "S0_29": {
       "type": "slot",
       "floor": 0,
-      "x": 20,
-      "y": 33,
+      "x": 10.4,
+      "y": 23,
       "size": "small"
     },
     "S0_22": {
       "type": "slot",
       "floor": 0,
-      "x": 15,
-      "y": 15,
+      "x": 7.800000000000001,
+      "y": 11,
       "size": "large"
     },
     "S0_30": {
       "type": "slot",
       "floor": 0,
-      "x": 15,
-      "y": 33,
+      "x": 7.800000000000001,
+      "y": 23,
       "size": "large"
     },
     "S0_23": {
       "type": "slot",
       "floor": 0,
-      "x": 10,
-      "y": 15,
+      "x": 5.2,
+      "y": 11,
       "size": "large"
     },
     "S0_31": {
       "type": "slot",
       "floor": 0,
-      "x": 10,
-      "y": 33,
+      "x": 5.2,
+      "y": 23,
       "size": "large"
     },
     "S0_24": {
       "type": "slot",
       "floor": 0,
-      "x": 5,
-      "y": 15,
+      "x": 2.6,
+      "y": 11,
       "size": "medium"
     },
     "S0_32": {
       "type": "slot",
       "floor": 0,
-      "x": 5,
-      "y": 33,
+      "x": 2.6,
+      "y": 23,
       "size": "small"
     },
     "T0_1": {
       "type": "turn",
       "floor": 0,
       "x": 0,
-      "y": 24
+      "y": 17
     },
     "J0_2_1": {
       "type": "junction",
       "floor": 0,
-      "x": 5,
-      "y": 48
+      "x": 2.6,
+      "y": 34
     },
     "J0_2_2": {
       "type": "junction",
       "floor": 0,
-      "x": 10,
-      "y": 48
+      "x": 5.2,
+      "y": 34
     },
     "J0_2_3": {
       "type": "junction",
       "floor": 0,
-      "x": 15,
-      "y": 48
+      "x": 7.800000000000001,
+      "y": 34
     },
     "J0_2_4": {
       "type": "junction",
       "floor": 0,
-      "x": 20,
-      "y": 48
+      "x": 10.4,
+      "y": 34
     },
     "J0_2_5": {
       "type": "junction",
       "floor": 0,
-      "x": 25,
-      "y": 48
+      "x": 13.0,
+      "y": 34
     },
     "J0_2_6": {
       "type": "junction",
       "floor": 0,
-      "x": 30,
-      "y": 48
+      "x": 15.600000000000001,
+      "y": 34
     },
     "J0_2_7": {
       "type": "junction",
       "floor": 0,
-      "x": 35,
-      "y": 48
+      "x": 18.2,
+      "y": 34
     },
     "J0_2_8": {
       "type": "junction",
       "floor": 0,
-      "x": 40,
-      "y": 48
+      "x": 20.8,
+      "y": 34
     },
     "S0_33": {
       "type": "slot",
       "floor": 0,
-      "x": 5,
-      "y": 39,
+      "x": 2.6,
+      "y": 28,
       "size": "medium"
     },
     "S0_41": {
       "type": "slot",
       "floor": 0,
-      "x": 5,
-      "y": 57,
+      "x": 2.6,
+      "y": 40,
       "size": "large"
     },
     "S0_34": {
       "type": "slot",
       "floor": 0,
-      "x": 10,
-      "y": 39,
+      "x": 5.2,
+      "y": 28,
       "size": "medium"
     },
     "S0_42": {
       "type": "slot",
       "floor": 0,
-      "x": 10,
-      "y": 57,
+      "x": 5.2,
+      "y": 40,
       "size": "small"
     },
     "S0_35": {
       "type": "slot",
       "floor": 0,
-      "x": 15,
-      "y": 39,
+      "x": 7.800000000000001,
+      "y": 28,
       "size": "small"
     },
     "S0_43": {
       "type": "slot",
       "floor": 0,
-      "x": 15,
-      "y": 57,
+      "x": 7.800000000000001,
+      "y": 40,
       "size": "large"
     },
     "S0_36": {
       "type": "slot",
       "floor": 0,
-      "x": 20,
-      "y": 39,
+      "x": 10.4,
+      "y": 28,
       "size": "medium"
     },
     "S0_44": {
       "type": "slot",
       "floor": 0,
-      "x": 20,
-      "y": 57,
+      "x": 10.4,
+      "y": 40,
       "size": "medium"
     },
     "S0_37": {
       "type": "slot",
       "floor": 0,
-      "x": 25,
-      "y": 39,
+      "x": 13.0,
+      "y": 28,
       "size": "medium"
     },
     "S0_45": {
       "type": "slot",
       "floor": 0,
-      "x": 25,
-      "y": 57,
+      "x": 13.0,
+      "y": 40,
       "size": "small"
     },
     "S0_38": {
       "type": "slot",
       "floor": 0,
-      "x": 30,
-      "y": 39,
+      "x": 15.600000000000001,
+      "y": 28,
       "size": "small"
     },
     "S0_46": {
       "type": "slot",
       "floor": 0,
-      "x": 30,
-      "y": 57,
+      "x": 15.600000000000001,
+      "y": 40,
       "size": "medium"
     },
     "S0_39": {
       "type": "slot",
       "floor": 0,
-      "x": 35,
-      "y": 39,
+      "x": 18.2,
+      "y": 28,
       "size": "small"
     },
     "S0_47": {
       "type": "slot",
       "floor": 0,
-      "x": 35,
-      "y": 57,
+      "x": 18.2,
+      "y": 40,
       "size": "small"
     },
     "S0_40": {
       "type": "slot",
       "floor": 0,
-      "x": 40,
-      "y": 39,
+      "x": 20.8,
+      "y": 28,
       "size": "medium"
     },
     "S0_48": {
       "type": "slot",
       "floor": 0,
-      "x": 40,
-      "y": 57,
+      "x": 20.8,
+      "y": 40,
       "size": "small"
     },
     "T0_2": {
       "type": "turn",
       "floor": 0,
-      "x": 45,
-      "y": 48
+      "x": 23.400000000000002,
+      "y": 34
     },
     "J0_3_1": {
       "type": "junction",
       "floor": 0,
-      "x": 5,
-      "y": 72
+      "x": 2.6,
+      "y": 51
     },
     "J0_3_2": {
       "type": "junction",
       "floor": 0,
-      "x": 10,
-      "y": 72
+      "x": 5.2,
+      "y": 51
     },
     "J0_3_3": {
       "type": "junction",
       "floor": 0,
-      "x": 15,
-      "y": 72
+      "x": 7.800000000000001,
+      "y": 51
     },
     "J0_3_4": {
       "type": "junction",
       "floor": 0,
-      "x": 20,
-      "y": 72
+      "x": 10.4,
+      "y": 51
     },
     "J0_3_5": {
       "type": "junction",
       "floor": 0,
-      "x": 25,
-      "y": 72
+      "x": 13.0,
+      "y": 51
     },
     "J0_3_6": {
       "type": "junction",
       "floor": 0,
-      "x": 30,
-      "y": 72
+      "x": 15.600000000000001,
+      "y": 51
     },
     "J0_3_7": {
       "type": "junction",
       "floor": 0,
-      "x": 35,
-      "y": 72
+      "x": 18.2,
+      "y": 51
     },
     "J0_3_8": {
       "type": "junction",
       "floor": 0,
-      "x": 40,
-      "y": 72
+      "x": 20.8,
+      "y": 51
     },
     "S0_49": {
       "type": "slot",
       "floor": 0,
-      "x": 40,
-      "y": 63,
+      "x": 20.8,
+      "y": 45,
       "size": "medium"
     },
     "S0_57": {
       "type": "slot",
       "floor": 0,
-      "x": 40,
-      "y": 81,
+      "x": 20.8,
+      "y": 57,
       "size": "medium"
     },
     "S0_50": {
       "type": "slot",
       "floor": 0,
-      "x": 35,
-      "y": 63,
+      "x": 18.2,
+      "y": 45,
       "size": "large"
     },
     "S0_58": {
       "type": "slot",
       "floor": 0,
-      "x": 35,
-      "y": 81,
+      "x": 18.2,
+      "y": 57,
       "size": "medium"
     },
     "S0_51": {
       "type": "slot",
       "floor": 0,
-      "x": 30,
-      "y": 63,
+      "x": 15.600000000000001,
+      "y": 45,
       "size": "small"
     },
     "S0_59": {
       "type": "slot",
       "floor": 0,
-      "x": 30,
-      "y": 81,
+      "x": 15.600000000000001,
+      "y": 57,
       "size": "large"
     },
     "S0_52": {
       "type": "slot",
       "floor": 0,
-      "x": 25,
-      "y": 63,
+      "x": 13.0,
+      "y": 45,
       "size": "medium"
     },
     "S0_60": {
       "type": "slot",
       "floor": 0,
-      "x": 25,
-      "y": 81,
+      "x": 13.0,
+      "y": 57,
       "size": "large"
     },
     "S0_53": {
       "type": "slot",
       "floor": 0,
-      "x": 20,
-      "y": 63,
+      "x": 10.4,
+      "y": 45,
       "size": "small"
     },
     "S0_61": {
       "type": "slot",
       "floor": 0,
-      "x": 20,
-      "y": 81,
+      "x": 10.4,
+      "y": 57,
       "size": "medium"
     },
     "S0_54": {
       "type": "slot",
       "floor": 0,
-      "x": 15,
-      "y": 63,
+      "x": 7.800000000000001,
+      "y": 45,
       "size": "small"
     },
     "S0_62": {
       "type": "slot",
       "floor": 0,
-      "x": 15,
-      "y": 81,
+      "x": 7.800000000000001,
+      "y": 57,
       "size": "large"
     },
     "S0_55": {
       "type": "slot",
       "floor": 0,
-      "x": 10,
-      "y": 63,
+      "x": 5.2,
+      "y": 45,
       "size": "medium"
     },
     "S0_63": {
       "type": "slot",
       "floor": 0,
-      "x": 10,
-      "y": 81,
+      "x": 5.2,
+      "y": 57,
       "size": "large"
     },
     "S0_56": {
       "type": "slot",
       "floor": 0,
-      "x": 5,
-      "y": 63,
+      "x": 2.6,
+      "y": 45,
       "size": "large"
     },
     "S0_64": {
       "type": "slot",
       "floor": 0,
-      "x": 5,
-      "y": 81,
+      "x": 2.6,
+      "y": 57,
       "size": "medium"
     },
     "R0_up": {
       "type": "ramp_up",
       "floor": 0,
       "x": 0,
-      "y": 72
+      "y": 51
     },
     "R1_in": {
       "type": "ramp_in",
@@ -688,666 +688,666 @@
     "J1_0_1": {
       "type": "junction",
       "floor": 1,
-      "x": 5,
+      "x": 2.6,
       "y": 0
     },
     "J1_0_2": {
       "type": "junction",
       "floor": 1,
-      "x": 10,
+      "x": 5.2,
       "y": 0
     },
     "J1_0_3": {
       "type": "junction",
       "floor": 1,
-      "x": 15,
+      "x": 7.800000000000001,
       "y": 0
     },
     "J1_0_4": {
       "type": "junction",
       "floor": 1,
-      "x": 20,
+      "x": 10.4,
       "y": 0
     },
     "J1_0_5": {
       "type": "junction",
       "floor": 1,
-      "x": 25,
+      "x": 13.0,
       "y": 0
     },
     "J1_0_6": {
       "type": "junction",
       "floor": 1,
-      "x": 30,
+      "x": 15.600000000000001,
       "y": 0
     },
     "J1_0_7": {
       "type": "junction",
       "floor": 1,
-      "x": 35,
+      "x": 18.2,
       "y": 0
     },
     "J1_0_8": {
       "type": "junction",
       "floor": 1,
-      "x": 40,
+      "x": 20.8,
       "y": 0
     },
     "S1_1": {
       "type": "slot",
       "floor": 1,
-      "x": 5,
-      "y": -9,
+      "x": 2.6,
+      "y": -6,
       "size": "large"
     },
     "S1_9": {
       "type": "slot",
       "floor": 1,
-      "x": 5,
-      "y": 9,
+      "x": 2.6,
+      "y": 6,
       "size": "small"
     },
     "S1_2": {
       "type": "slot",
       "floor": 1,
-      "x": 10,
-      "y": -9,
+      "x": 5.2,
+      "y": -6,
       "size": "large"
     },
     "S1_10": {
       "type": "slot",
       "floor": 1,
-      "x": 10,
-      "y": 9,
+      "x": 5.2,
+      "y": 6,
       "size": "small"
     },
     "S1_3": {
       "type": "slot",
       "floor": 1,
-      "x": 15,
-      "y": -9,
+      "x": 7.800000000000001,
+      "y": -6,
       "size": "small"
     },
     "S1_11": {
       "type": "slot",
       "floor": 1,
-      "x": 15,
-      "y": 9,
+      "x": 7.800000000000001,
+      "y": 6,
       "size": "large"
     },
     "S1_4": {
       "type": "slot",
       "floor": 1,
-      "x": 20,
-      "y": -9,
+      "x": 10.4,
+      "y": -6,
       "size": "small"
     },
     "S1_12": {
       "type": "slot",
       "floor": 1,
-      "x": 20,
-      "y": 9,
+      "x": 10.4,
+      "y": 6,
       "size": "medium"
     },
     "S1_5": {
       "type": "slot",
       "floor": 1,
-      "x": 25,
-      "y": -9,
+      "x": 13.0,
+      "y": -6,
       "size": "small"
     },
     "S1_13": {
       "type": "slot",
       "floor": 1,
-      "x": 25,
-      "y": 9,
+      "x": 13.0,
+      "y": 6,
       "size": "small"
     },
     "S1_6": {
       "type": "slot",
       "floor": 1,
-      "x": 30,
-      "y": -9,
+      "x": 15.600000000000001,
+      "y": -6,
       "size": "small"
     },
     "S1_14": {
       "type": "slot",
       "floor": 1,
-      "x": 30,
-      "y": 9,
+      "x": 15.600000000000001,
+      "y": 6,
       "size": "medium"
     },
     "S1_7": {
       "type": "slot",
       "floor": 1,
-      "x": 35,
-      "y": -9,
+      "x": 18.2,
+      "y": -6,
       "size": "medium"
     },
     "S1_15": {
       "type": "slot",
       "floor": 1,
-      "x": 35,
-      "y": 9,
+      "x": 18.2,
+      "y": 6,
       "size": "medium"
     },
     "S1_8": {
       "type": "slot",
       "floor": 1,
-      "x": 40,
-      "y": -9,
+      "x": 20.8,
+      "y": -6,
       "size": "large"
     },
     "S1_16": {
       "type": "slot",
       "floor": 1,
-      "x": 40,
-      "y": 9,
+      "x": 20.8,
+      "y": 6,
       "size": "medium"
     },
     "T1_0": {
       "type": "turn",
       "floor": 1,
-      "x": 45,
+      "x": 23.400000000000002,
       "y": 0
     },
     "J1_1_1": {
       "type": "junction",
       "floor": 1,
-      "x": 5,
-      "y": 24
+      "x": 2.6,
+      "y": 17
     },
     "J1_1_2": {
       "type": "junction",
       "floor": 1,
-      "x": 10,
-      "y": 24
+      "x": 5.2,
+      "y": 17
     },
     "J1_1_3": {
       "type": "junction",
       "floor": 1,
-      "x": 15,
-      "y": 24
+      "x": 7.800000000000001,
+      "y": 17
     },
     "J1_1_4": {
       "type": "junction",
       "floor": 1,
-      "x": 20,
-      "y": 24
+      "x": 10.4,
+      "y": 17
     },
     "J1_1_5": {
       "type": "junction",
       "floor": 1,
-      "x": 25,
-      "y": 24
+      "x": 13.0,
+      "y": 17
     },
     "J1_1_6": {
       "type": "junction",
       "floor": 1,
-      "x": 30,
-      "y": 24
+      "x": 15.600000000000001,
+      "y": 17
     },
     "J1_1_7": {
       "type": "junction",
       "floor": 1,
-      "x": 35,
-      "y": 24
+      "x": 18.2,
+      "y": 17
     },
     "J1_1_8": {
       "type": "junction",
       "floor": 1,
-      "x": 40,
-      "y": 24
+      "x": 20.8,
+      "y": 17
     },
     "S1_17": {
       "type": "slot",
       "floor": 1,
-      "x": 40,
-      "y": 15,
+      "x": 20.8,
+      "y": 11,
       "size": "small"
     },
     "S1_25": {
       "type": "slot",
       "floor": 1,
-      "x": 40,
-      "y": 33,
+      "x": 20.8,
+      "y": 23,
       "size": "medium"
     },
     "S1_18": {
       "type": "slot",
       "floor": 1,
-      "x": 35,
-      "y": 15,
+      "x": 18.2,
+      "y": 11,
       "size": "medium"
     },
     "S1_26": {
       "type": "slot",
       "floor": 1,
-      "x": 35,
-      "y": 33,
+      "x": 18.2,
+      "y": 23,
       "size": "small"
     },
     "S1_19": {
       "type": "slot",
       "floor": 1,
-      "x": 30,
-      "y": 15,
+      "x": 15.600000000000001,
+      "y": 11,
       "size": "large"
     },
     "S1_27": {
       "type": "slot",
       "floor": 1,
-      "x": 30,
-      "y": 33,
+      "x": 15.600000000000001,
+      "y": 23,
       "size": "medium"
     },
     "S1_20": {
       "type": "slot",
       "floor": 1,
-      "x": 25,
-      "y": 15,
+      "x": 13.0,
+      "y": 11,
       "size": "large"
     },
     "S1_28": {
       "type": "slot",
       "floor": 1,
-      "x": 25,
-      "y": 33,
+      "x": 13.0,
+      "y": 23,
       "size": "large"
     },
     "S1_21": {
       "type": "slot",
       "floor": 1,
-      "x": 20,
-      "y": 15,
+      "x": 10.4,
+      "y": 11,
       "size": "large"
     },
     "S1_29": {
       "type": "slot",
       "floor": 1,
-      "x": 20,
-      "y": 33,
+      "x": 10.4,
+      "y": 23,
       "size": "small"
     },
     "S1_22": {
       "type": "slot",
       "floor": 1,
-      "x": 15,
-      "y": 15,
+      "x": 7.800000000000001,
+      "y": 11,
       "size": "large"
     },
     "S1_30": {
       "type": "slot",
       "floor": 1,
-      "x": 15,
-      "y": 33,
+      "x": 7.800000000000001,
+      "y": 23,
       "size": "large"
     },
     "S1_23": {
       "type": "slot",
       "floor": 1,
-      "x": 10,
-      "y": 15,
+      "x": 5.2,
+      "y": 11,
       "size": "small"
     },
     "S1_31": {
       "type": "slot",
       "floor": 1,
-      "x": 10,
-      "y": 33,
+      "x": 5.2,
+      "y": 23,
       "size": "large"
     },
     "S1_24": {
       "type": "slot",
       "floor": 1,
-      "x": 5,
-      "y": 15,
+      "x": 2.6,
+      "y": 11,
       "size": "large"
     },
     "S1_32": {
       "type": "slot",
       "floor": 1,
-      "x": 5,
-      "y": 33,
+      "x": 2.6,
+      "y": 23,
       "size": "small"
     },
     "T1_1": {
       "type": "turn",
       "floor": 1,
       "x": 0,
-      "y": 24
+      "y": 17
     },
     "J1_2_1": {
       "type": "junction",
       "floor": 1,
-      "x": 5,
-      "y": 48
+      "x": 2.6,
+      "y": 34
     },
     "J1_2_2": {
       "type": "junction",
       "floor": 1,
-      "x": 10,
-      "y": 48
+      "x": 5.2,
+      "y": 34
     },
     "J1_2_3": {
       "type": "junction",
       "floor": 1,
-      "x": 15,
-      "y": 48
+      "x": 7.800000000000001,
+      "y": 34
     },
     "J1_2_4": {
       "type": "junction",
       "floor": 1,
-      "x": 20,
-      "y": 48
+      "x": 10.4,
+      "y": 34
     },
     "J1_2_5": {
       "type": "junction",
       "floor": 1,
-      "x": 25,
-      "y": 48
+      "x": 13.0,
+      "y": 34
     },
     "J1_2_6": {
       "type": "junction",
       "floor": 1,
-      "x": 30,
-      "y": 48
+      "x": 15.600000000000001,
+      "y": 34
     },
     "J1_2_7": {
       "type": "junction",
       "floor": 1,
-      "x": 35,
-      "y": 48
+      "x": 18.2,
+      "y": 34
     },
     "J1_2_8": {
       "type": "junction",
       "floor": 1,
-      "x": 40,
-      "y": 48
+      "x": 20.8,
+      "y": 34
     },
     "S1_33": {
       "type": "slot",
       "floor": 1,
-      "x": 5,
-      "y": 39,
+      "x": 2.6,
+      "y": 28,
       "size": "small"
     },
     "S1_41": {
       "type": "slot",
       "floor": 1,
-      "x": 5,
-      "y": 57,
+      "x": 2.6,
+      "y": 40,
       "size": "medium"
     },
     "S1_34": {
       "type": "slot",
       "floor": 1,
-      "x": 10,
-      "y": 39,
+      "x": 5.2,
+      "y": 28,
       "size": "medium"
     },
     "S1_42": {
       "type": "slot",
       "floor": 1,
-      "x": 10,
-      "y": 57,
+      "x": 5.2,
+      "y": 40,
       "size": "medium"
     },
     "S1_35": {
       "type": "slot",
       "floor": 1,
-      "x": 15,
-      "y": 39,
+      "x": 7.800000000000001,
+      "y": 28,
       "size": "large"
     },
     "S1_43": {
       "type": "slot",
       "floor": 1,
-      "x": 15,
-      "y": 57,
+      "x": 7.800000000000001,
+      "y": 40,
       "size": "large"
     },
     "S1_36": {
       "type": "slot",
       "floor": 1,
-      "x": 20,
-      "y": 39,
+      "x": 10.4,
+      "y": 28,
       "size": "large"
     },
     "S1_44": {
       "type": "slot",
       "floor": 1,
-      "x": 20,
-      "y": 57,
+      "x": 10.4,
+      "y": 40,
       "size": "small"
     },
     "S1_37": {
       "type": "slot",
       "floor": 1,
-      "x": 25,
-      "y": 39,
+      "x": 13.0,
+      "y": 28,
       "size": "large"
     },
     "S1_45": {
       "type": "slot",
       "floor": 1,
-      "x": 25,
-      "y": 57,
+      "x": 13.0,
+      "y": 40,
       "size": "medium"
     },
     "S1_38": {
       "type": "slot",
       "floor": 1,
-      "x": 30,
-      "y": 39,
+      "x": 15.600000000000001,
+      "y": 28,
       "size": "small"
     },
     "S1_46": {
       "type": "slot",
       "floor": 1,
-      "x": 30,
-      "y": 57,
+      "x": 15.600000000000001,
+      "y": 40,
       "size": "small"
     },
     "S1_39": {
       "type": "slot",
       "floor": 1,
-      "x": 35,
-      "y": 39,
+      "x": 18.2,
+      "y": 28,
       "size": "small"
     },
     "S1_47": {
       "type": "slot",
       "floor": 1,
-      "x": 35,
-      "y": 57,
+      "x": 18.2,
+      "y": 40,
       "size": "medium"
     },
     "S1_40": {
       "type": "slot",
       "floor": 1,
-      "x": 40,
-      "y": 39,
+      "x": 20.8,
+      "y": 28,
       "size": "medium"
     },
     "S1_48": {
       "type": "slot",
       "floor": 1,
-      "x": 40,
-      "y": 57,
+      "x": 20.8,
+      "y": 40,
       "size": "medium"
     },
     "T1_2": {
       "type": "turn",
       "floor": 1,
-      "x": 45,
-      "y": 48
+      "x": 23.400000000000002,
+      "y": 34
     },
     "J1_3_1": {
       "type": "junction",
       "floor": 1,
-      "x": 5,
-      "y": 72
+      "x": 2.6,
+      "y": 51
     },
     "J1_3_2": {
       "type": "junction",
       "floor": 1,
-      "x": 10,
-      "y": 72
+      "x": 5.2,
+      "y": 51
     },
     "J1_3_3": {
       "type": "junction",
       "floor": 1,
-      "x": 15,
-      "y": 72
+      "x": 7.800000000000001,
+      "y": 51
     },
     "J1_3_4": {
       "type": "junction",
       "floor": 1,
-      "x": 20,
-      "y": 72
+      "x": 10.4,
+      "y": 51
     },
     "J1_3_5": {
       "type": "junction",
       "floor": 1,
-      "x": 25,
-      "y": 72
+      "x": 13.0,
+      "y": 51
     },
     "J1_3_6": {
       "type": "junction",
       "floor": 1,
-      "x": 30,
-      "y": 72
+      "x": 15.600000000000001,
+      "y": 51
     },
     "J1_3_7": {
       "type": "junction",
       "floor": 1,
-      "x": 35,
-      "y": 72
+      "x": 18.2,
+      "y": 51
     },
     "J1_3_8": {
       "type": "junction",
       "floor": 1,
-      "x": 40,
-      "y": 72
+      "x": 20.8,
+      "y": 51
     },
     "S1_49": {
       "type": "slot",
       "floor": 1,
-      "x": 40,
-      "y": 63,
+      "x": 20.8,
+      "y": 45,
       "size": "small"
     },
     "S1_57": {
       "type": "slot",
       "floor": 1,
-      "x": 40,
-      "y": 81,
+      "x": 20.8,
+      "y": 57,
       "size": "small"
     },
     "S1_50": {
       "type": "slot",
       "floor": 1,
-      "x": 35,
-      "y": 63,
+      "x": 18.2,
+      "y": 45,
       "size": "large"
     },
     "S1_58": {
       "type": "slot",
       "floor": 1,
-      "x": 35,
-      "y": 81,
+      "x": 18.2,
+      "y": 57,
       "size": "large"
     },
     "S1_51": {
       "type": "slot",
       "floor": 1,
-      "x": 30,
-      "y": 63,
+      "x": 15.600000000000001,
+      "y": 45,
       "size": "medium"
     },
     "S1_59": {
       "type": "slot",
       "floor": 1,
-      "x": 30,
-      "y": 81,
+      "x": 15.600000000000001,
+      "y": 57,
       "size": "small"
     },
     "S1_52": {
       "type": "slot",
       "floor": 1,
-      "x": 25,
-      "y": 63,
+      "x": 13.0,
+      "y": 45,
       "size": "large"
     },
     "S1_60": {
       "type": "slot",
       "floor": 1,
-      "x": 25,
-      "y": 81,
+      "x": 13.0,
+      "y": 57,
       "size": "medium"
     },
     "S1_53": {
       "type": "slot",
       "floor": 1,
-      "x": 20,
-      "y": 63,
+      "x": 10.4,
+      "y": 45,
       "size": "medium"
     },
     "S1_61": {
       "type": "slot",
       "floor": 1,
-      "x": 20,
-      "y": 81,
+      "x": 10.4,
+      "y": 57,
       "size": "large"
     },
     "S1_54": {
       "type": "slot",
       "floor": 1,
-      "x": 15,
-      "y": 63,
+      "x": 7.800000000000001,
+      "y": 45,
       "size": "medium"
     },
     "S1_62": {
       "type": "slot",
       "floor": 1,
-      "x": 15,
-      "y": 81,
+      "x": 7.800000000000001,
+      "y": 57,
       "size": "small"
     },
     "S1_55": {
       "type": "slot",
       "floor": 1,
-      "x": 10,
-      "y": 63,
+      "x": 5.2,
+      "y": 45,
       "size": "medium"
     },
     "S1_63": {
       "type": "slot",
       "floor": 1,
-      "x": 10,
-      "y": 81,
+      "x": 5.2,
+      "y": 57,
       "size": "small"
     },
     "S1_56": {
       "type": "slot",
       "floor": 1,
-      "x": 5,
-      "y": 63,
+      "x": 2.6,
+      "y": 45,
       "size": "small"
     },
     "S1_64": {
       "type": "slot",
       "floor": 1,
-      "x": 5,
-      "y": 81,
+      "x": 2.6,
+      "y": 57,
       "size": "large"
     },
     "R1_up": {
       "type": "ramp_up",
       "floor": 1,
       "x": 0,
-      "y": 72
+      "y": 51
     },
     "R2_in": {
       "type": "ramp_in",
@@ -1358,666 +1358,666 @@
     "J2_0_1": {
       "type": "junction",
       "floor": 2,
-      "x": 5,
+      "x": 2.6,
       "y": 0
     },
     "J2_0_2": {
       "type": "junction",
       "floor": 2,
-      "x": 10,
+      "x": 5.2,
       "y": 0
     },
     "J2_0_3": {
       "type": "junction",
       "floor": 2,
-      "x": 15,
+      "x": 7.800000000000001,
       "y": 0
     },
     "J2_0_4": {
       "type": "junction",
       "floor": 2,
-      "x": 20,
+      "x": 10.4,
       "y": 0
     },
     "J2_0_5": {
       "type": "junction",
       "floor": 2,
-      "x": 25,
+      "x": 13.0,
       "y": 0
     },
     "J2_0_6": {
       "type": "junction",
       "floor": 2,
-      "x": 30,
+      "x": 15.600000000000001,
       "y": 0
     },
     "J2_0_7": {
       "type": "junction",
       "floor": 2,
-      "x": 35,
+      "x": 18.2,
       "y": 0
     },
     "J2_0_8": {
       "type": "junction",
       "floor": 2,
-      "x": 40,
+      "x": 20.8,
       "y": 0
     },
     "S2_1": {
       "type": "slot",
       "floor": 2,
-      "x": 5,
-      "y": -9,
+      "x": 2.6,
+      "y": -6,
       "size": "large"
     },
     "S2_9": {
       "type": "slot",
       "floor": 2,
-      "x": 5,
-      "y": 9,
+      "x": 2.6,
+      "y": 6,
       "size": "large"
     },
     "S2_2": {
       "type": "slot",
       "floor": 2,
-      "x": 10,
-      "y": -9,
+      "x": 5.2,
+      "y": -6,
       "size": "medium"
     },
     "S2_10": {
       "type": "slot",
       "floor": 2,
-      "x": 10,
-      "y": 9,
+      "x": 5.2,
+      "y": 6,
       "size": "large"
     },
     "S2_3": {
       "type": "slot",
       "floor": 2,
-      "x": 15,
-      "y": -9,
+      "x": 7.800000000000001,
+      "y": -6,
       "size": "large"
     },
     "S2_11": {
       "type": "slot",
       "floor": 2,
-      "x": 15,
-      "y": 9,
+      "x": 7.800000000000001,
+      "y": 6,
       "size": "medium"
     },
     "S2_4": {
       "type": "slot",
       "floor": 2,
-      "x": 20,
-      "y": -9,
+      "x": 10.4,
+      "y": -6,
       "size": "large"
     },
     "S2_12": {
       "type": "slot",
       "floor": 2,
-      "x": 20,
-      "y": 9,
+      "x": 10.4,
+      "y": 6,
       "size": "medium"
     },
     "S2_5": {
       "type": "slot",
       "floor": 2,
-      "x": 25,
-      "y": -9,
+      "x": 13.0,
+      "y": -6,
       "size": "medium"
     },
     "S2_13": {
       "type": "slot",
       "floor": 2,
-      "x": 25,
-      "y": 9,
+      "x": 13.0,
+      "y": 6,
       "size": "small"
     },
     "S2_6": {
       "type": "slot",
       "floor": 2,
-      "x": 30,
-      "y": -9,
+      "x": 15.600000000000001,
+      "y": -6,
       "size": "small"
     },
     "S2_14": {
       "type": "slot",
       "floor": 2,
-      "x": 30,
-      "y": 9,
+      "x": 15.600000000000001,
+      "y": 6,
       "size": "large"
     },
     "S2_7": {
       "type": "slot",
       "floor": 2,
-      "x": 35,
-      "y": -9,
+      "x": 18.2,
+      "y": -6,
       "size": "medium"
     },
     "S2_15": {
       "type": "slot",
       "floor": 2,
-      "x": 35,
-      "y": 9,
+      "x": 18.2,
+      "y": 6,
       "size": "small"
     },
     "S2_8": {
       "type": "slot",
       "floor": 2,
-      "x": 40,
-      "y": -9,
+      "x": 20.8,
+      "y": -6,
       "size": "small"
     },
     "S2_16": {
       "type": "slot",
       "floor": 2,
-      "x": 40,
-      "y": 9,
+      "x": 20.8,
+      "y": 6,
       "size": "small"
     },
     "T2_0": {
       "type": "turn",
       "floor": 2,
-      "x": 45,
+      "x": 23.400000000000002,
       "y": 0
     },
     "J2_1_1": {
       "type": "junction",
       "floor": 2,
-      "x": 5,
-      "y": 24
+      "x": 2.6,
+      "y": 17
     },
     "J2_1_2": {
       "type": "junction",
       "floor": 2,
-      "x": 10,
-      "y": 24
+      "x": 5.2,
+      "y": 17
     },
     "J2_1_3": {
       "type": "junction",
       "floor": 2,
-      "x": 15,
-      "y": 24
+      "x": 7.800000000000001,
+      "y": 17
     },
     "J2_1_4": {
       "type": "junction",
       "floor": 2,
-      "x": 20,
-      "y": 24
+      "x": 10.4,
+      "y": 17
     },
     "J2_1_5": {
       "type": "junction",
       "floor": 2,
-      "x": 25,
-      "y": 24
+      "x": 13.0,
+      "y": 17
     },
     "J2_1_6": {
       "type": "junction",
       "floor": 2,
-      "x": 30,
-      "y": 24
+      "x": 15.600000000000001,
+      "y": 17
     },
     "J2_1_7": {
       "type": "junction",
       "floor": 2,
-      "x": 35,
-      "y": 24
+      "x": 18.2,
+      "y": 17
     },
     "J2_1_8": {
       "type": "junction",
       "floor": 2,
-      "x": 40,
-      "y": 24
+      "x": 20.8,
+      "y": 17
     },
     "S2_17": {
       "type": "slot",
       "floor": 2,
-      "x": 40,
-      "y": 15,
+      "x": 20.8,
+      "y": 11,
       "size": "small"
     },
     "S2_25": {
       "type": "slot",
       "floor": 2,
-      "x": 40,
-      "y": 33,
+      "x": 20.8,
+      "y": 23,
       "size": "large"
     },
     "S2_18": {
       "type": "slot",
       "floor": 2,
-      "x": 35,
-      "y": 15,
+      "x": 18.2,
+      "y": 11,
       "size": "small"
     },
     "S2_26": {
       "type": "slot",
       "floor": 2,
-      "x": 35,
-      "y": 33,
+      "x": 18.2,
+      "y": 23,
       "size": "large"
     },
     "S2_19": {
       "type": "slot",
       "floor": 2,
-      "x": 30,
-      "y": 15,
+      "x": 15.600000000000001,
+      "y": 11,
       "size": "medium"
     },
     "S2_27": {
       "type": "slot",
       "floor": 2,
-      "x": 30,
-      "y": 33,
+      "x": 15.600000000000001,
+      "y": 23,
       "size": "large"
     },
     "S2_20": {
       "type": "slot",
       "floor": 2,
-      "x": 25,
-      "y": 15,
+      "x": 13.0,
+      "y": 11,
       "size": "small"
     },
     "S2_28": {
       "type": "slot",
       "floor": 2,
-      "x": 25,
-      "y": 33,
+      "x": 13.0,
+      "y": 23,
       "size": "medium"
     },
     "S2_21": {
       "type": "slot",
       "floor": 2,
-      "x": 20,
-      "y": 15,
+      "x": 10.4,
+      "y": 11,
       "size": "medium"
     },
     "S2_29": {
       "type": "slot",
       "floor": 2,
-      "x": 20,
-      "y": 33,
+      "x": 10.4,
+      "y": 23,
       "size": "large"
     },
     "S2_22": {
       "type": "slot",
       "floor": 2,
-      "x": 15,
-      "y": 15,
+      "x": 7.800000000000001,
+      "y": 11,
       "size": "medium"
     },
     "S2_30": {
       "type": "slot",
       "floor": 2,
-      "x": 15,
-      "y": 33,
+      "x": 7.800000000000001,
+      "y": 23,
       "size": "large"
     },
     "S2_23": {
       "type": "slot",
       "floor": 2,
-      "x": 10,
-      "y": 15,
+      "x": 5.2,
+      "y": 11,
       "size": "medium"
     },
     "S2_31": {
       "type": "slot",
       "floor": 2,
-      "x": 10,
-      "y": 33,
+      "x": 5.2,
+      "y": 23,
       "size": "large"
     },
     "S2_24": {
       "type": "slot",
       "floor": 2,
-      "x": 5,
-      "y": 15,
+      "x": 2.6,
+      "y": 11,
       "size": "small"
     },
     "S2_32": {
       "type": "slot",
       "floor": 2,
-      "x": 5,
-      "y": 33,
+      "x": 2.6,
+      "y": 23,
       "size": "large"
     },
     "T2_1": {
       "type": "turn",
       "floor": 2,
       "x": 0,
-      "y": 24
+      "y": 17
     },
     "J2_2_1": {
       "type": "junction",
       "floor": 2,
-      "x": 5,
-      "y": 48
+      "x": 2.6,
+      "y": 34
     },
     "J2_2_2": {
       "type": "junction",
       "floor": 2,
-      "x": 10,
-      "y": 48
+      "x": 5.2,
+      "y": 34
     },
     "J2_2_3": {
       "type": "junction",
       "floor": 2,
-      "x": 15,
-      "y": 48
+      "x": 7.800000000000001,
+      "y": 34
     },
     "J2_2_4": {
       "type": "junction",
       "floor": 2,
-      "x": 20,
-      "y": 48
+      "x": 10.4,
+      "y": 34
     },
     "J2_2_5": {
       "type": "junction",
       "floor": 2,
-      "x": 25,
-      "y": 48
+      "x": 13.0,
+      "y": 34
     },
     "J2_2_6": {
       "type": "junction",
       "floor": 2,
-      "x": 30,
-      "y": 48
+      "x": 15.600000000000001,
+      "y": 34
     },
     "J2_2_7": {
       "type": "junction",
       "floor": 2,
-      "x": 35,
-      "y": 48
+      "x": 18.2,
+      "y": 34
     },
     "J2_2_8": {
       "type": "junction",
       "floor": 2,
-      "x": 40,
-      "y": 48
+      "x": 20.8,
+      "y": 34
     },
     "S2_33": {
       "type": "slot",
       "floor": 2,
-      "x": 5,
-      "y": 39,
+      "x": 2.6,
+      "y": 28,
       "size": "large"
     },
     "S2_41": {
       "type": "slot",
       "floor": 2,
-      "x": 5,
-      "y": 57,
+      "x": 2.6,
+      "y": 40,
       "size": "small"
     },
     "S2_34": {
       "type": "slot",
       "floor": 2,
-      "x": 10,
-      "y": 39,
+      "x": 5.2,
+      "y": 28,
       "size": "large"
     },
     "S2_42": {
       "type": "slot",
       "floor": 2,
-      "x": 10,
-      "y": 57,
+      "x": 5.2,
+      "y": 40,
       "size": "large"
     },
     "S2_35": {
       "type": "slot",
       "floor": 2,
-      "x": 15,
-      "y": 39,
+      "x": 7.800000000000001,
+      "y": 28,
       "size": "medium"
     },
     "S2_43": {
       "type": "slot",
       "floor": 2,
-      "x": 15,
-      "y": 57,
+      "x": 7.800000000000001,
+      "y": 40,
       "size": "large"
     },
     "S2_36": {
       "type": "slot",
       "floor": 2,
-      "x": 20,
-      "y": 39,
+      "x": 10.4,
+      "y": 28,
       "size": "medium"
     },
     "S2_44": {
       "type": "slot",
       "floor": 2,
-      "x": 20,
-      "y": 57,
+      "x": 10.4,
+      "y": 40,
       "size": "small"
     },
     "S2_37": {
       "type": "slot",
       "floor": 2,
-      "x": 25,
-      "y": 39,
+      "x": 13.0,
+      "y": 28,
       "size": "medium"
     },
     "S2_45": {
       "type": "slot",
       "floor": 2,
-      "x": 25,
-      "y": 57,
+      "x": 13.0,
+      "y": 40,
       "size": "medium"
     },
     "S2_38": {
       "type": "slot",
       "floor": 2,
-      "x": 30,
-      "y": 39,
+      "x": 15.600000000000001,
+      "y": 28,
       "size": "small"
     },
     "S2_46": {
       "type": "slot",
       "floor": 2,
-      "x": 30,
-      "y": 57,
+      "x": 15.600000000000001,
+      "y": 40,
       "size": "medium"
     },
     "S2_39": {
       "type": "slot",
       "floor": 2,
-      "x": 35,
-      "y": 39,
+      "x": 18.2,
+      "y": 28,
       "size": "small"
     },
     "S2_47": {
       "type": "slot",
       "floor": 2,
-      "x": 35,
-      "y": 57,
+      "x": 18.2,
+      "y": 40,
       "size": "large"
     },
     "S2_40": {
       "type": "slot",
       "floor": 2,
-      "x": 40,
-      "y": 39,
+      "x": 20.8,
+      "y": 28,
       "size": "large"
     },
     "S2_48": {
       "type": "slot",
       "floor": 2,
-      "x": 40,
-      "y": 57,
+      "x": 20.8,
+      "y": 40,
       "size": "medium"
     },
     "T2_2": {
       "type": "turn",
       "floor": 2,
-      "x": 45,
-      "y": 48
+      "x": 23.400000000000002,
+      "y": 34
     },
     "J2_3_1": {
       "type": "junction",
       "floor": 2,
-      "x": 5,
-      "y": 72
+      "x": 2.6,
+      "y": 51
     },
     "J2_3_2": {
       "type": "junction",
       "floor": 2,
-      "x": 10,
-      "y": 72
+      "x": 5.2,
+      "y": 51
     },
     "J2_3_3": {
       "type": "junction",
       "floor": 2,
-      "x": 15,
-      "y": 72
+      "x": 7.800000000000001,
+      "y": 51
     },
     "J2_3_4": {
       "type": "junction",
       "floor": 2,
-      "x": 20,
-      "y": 72
+      "x": 10.4,
+      "y": 51
     },
     "J2_3_5": {
       "type": "junction",
       "floor": 2,
-      "x": 25,
-      "y": 72
+      "x": 13.0,
+      "y": 51
     },
     "J2_3_6": {
       "type": "junction",
       "floor": 2,
-      "x": 30,
-      "y": 72
+      "x": 15.600000000000001,
+      "y": 51
     },
     "J2_3_7": {
       "type": "junction",
       "floor": 2,
-      "x": 35,
-      "y": 72
+      "x": 18.2,
+      "y": 51
     },
     "J2_3_8": {
       "type": "junction",
       "floor": 2,
-      "x": 40,
-      "y": 72
+      "x": 20.8,
+      "y": 51
     },
     "S2_49": {
       "type": "slot",
       "floor": 2,
-      "x": 40,
-      "y": 63,
+      "x": 20.8,
+      "y": 45,
       "size": "large"
     },
     "S2_57": {
       "type": "slot",
       "floor": 2,
-      "x": 40,
-      "y": 81,
+      "x": 20.8,
+      "y": 57,
       "size": "small"
     },
     "S2_50": {
       "type": "slot",
       "floor": 2,
-      "x": 35,
-      "y": 63,
+      "x": 18.2,
+      "y": 45,
       "size": "large"
     },
     "S2_58": {
       "type": "slot",
       "floor": 2,
-      "x": 35,
-      "y": 81,
+      "x": 18.2,
+      "y": 57,
       "size": "small"
     },
     "S2_51": {
       "type": "slot",
       "floor": 2,
-      "x": 30,
-      "y": 63,
+      "x": 15.600000000000001,
+      "y": 45,
       "size": "large"
     },
     "S2_59": {
       "type": "slot",
       "floor": 2,
-      "x": 30,
-      "y": 81,
+      "x": 15.600000000000001,
+      "y": 57,
       "size": "medium"
     },
     "S2_52": {
       "type": "slot",
       "floor": 2,
-      "x": 25,
-      "y": 63,
+      "x": 13.0,
+      "y": 45,
       "size": "large"
     },
     "S2_60": {
       "type": "slot",
       "floor": 2,
-      "x": 25,
-      "y": 81,
+      "x": 13.0,
+      "y": 57,
       "size": "large"
     },
     "S2_53": {
       "type": "slot",
       "floor": 2,
-      "x": 20,
-      "y": 63,
+      "x": 10.4,
+      "y": 45,
       "size": "large"
     },
     "S2_61": {
       "type": "slot",
       "floor": 2,
-      "x": 20,
-      "y": 81,
+      "x": 10.4,
+      "y": 57,
       "size": "small"
     },
     "S2_54": {
       "type": "slot",
       "floor": 2,
-      "x": 15,
-      "y": 63,
+      "x": 7.800000000000001,
+      "y": 45,
       "size": "small"
     },
     "S2_62": {
       "type": "slot",
       "floor": 2,
-      "x": 15,
-      "y": 81,
+      "x": 7.800000000000001,
+      "y": 57,
       "size": "medium"
     },
     "S2_55": {
       "type": "slot",
       "floor": 2,
-      "x": 10,
-      "y": 63,
+      "x": 5.2,
+      "y": 45,
       "size": "small"
     },
     "S2_63": {
       "type": "slot",
       "floor": 2,
-      "x": 10,
-      "y": 81,
+      "x": 5.2,
+      "y": 57,
       "size": "large"
     },
     "S2_56": {
       "type": "slot",
       "floor": 2,
-      "x": 5,
-      "y": 63,
+      "x": 2.6,
+      "y": 45,
       "size": "large"
     },
     "S2_64": {
       "type": "slot",
       "floor": 2,
-      "x": 5,
-      "y": 81,
+      "x": 2.6,
+      "y": 57,
       "size": "small"
     },
     "EXIT2": {
       "type": "exit",
       "floor": 2,
       "x": 0,
-      "y": 72
+      "y": 51
     },
     "ENTRY_ROAD": {
       "type": "approach",
@@ -2029,7 +2029,7 @@
       "type": "approach",
       "floor": 2,
       "x": -15,
-      "y": 72
+      "y": 51
     }
   },
   "edges": {

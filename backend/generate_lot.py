@@ -31,10 +31,10 @@ FLOORS = 3
 AISLES_PER_FLOOR = 4
 JUNCTIONS_PER_AISLE = 8
 SLOTS_PER_JUNCTION = 2  # left + right
-JUNCTION_SPACING = 5    # x-distance between junctions along an aisle
-AISLE_SPACING = 24      # y-distance between aisle centrelines
-SLOT_OFFSET = 9         # y-distance from aisle centre to slot centre
-ROAD_WIDTH = 9          # full driving-road width across both lanes (±4.5 of centre)
+JUNCTION_SPACING = 2.6  # x-distance between junctions = one parking bay pitch
+AISLE_SPACING = 17      # y-distance between aisle centrelines (road + a bay each side)
+SLOT_OFFSET = 6         # y-distance from aisle centre to slot centre
+ROAD_WIDTH = 7          # full driving-road width across both lanes (±3.5 of centre)
 SLOT_DEPTH = 5          # parking bay depth (perpendicular to the aisle)
 SLOT_SIZES = ["small", "medium", "large"]
 FLOOR_HEIGHT = 15       # z-distance between floors (used by frontend only)
@@ -100,21 +100,12 @@ def main():
                     nodes[sid] = {"type": "slot", "floor": f, "x": jx, "y": sy, "size": size}
 
             # --- Chain: previous node → first junction of this aisle ---
+            # Always "straight": the 180° direction changes between aisles are
+            # represented by the turn nodes, not by this edge.
             first_j = junction_ids[0]
-            # Determine direction from prev_node to first_j
-            if going_right:
-                chain_dir = "straight"
-            else:
-                chain_dir = "left" if aisle == 1 else "right"  # alternate turn direction
-            # Actually, the turn direction depends on the geometry.
-            # Going right on aisle 0, then turn to go left on aisle 1: that's a right-curving U-turn
-            # Going left on aisle 1, then turn to go right on aisle 2: that's a left-curving U-turn
-            # Simplify: use "straight" for entry-to-first, and "turn" for inter-aisle connections
-            chain_dir = "straight" if aisle == 0 else "straight"  # turns are handled by turn nodes
-
             if prev_node not in edges:
                 edges[prev_node] = []
-            edges[prev_node].append({"dir": chain_dir, "to": first_j})
+            edges[prev_node].append({"dir": "straight", "to": first_j})
 
             # --- Edges along the aisle: each junction → its slots + next junction ---
             for j_idx, jid in enumerate(junction_ids):
@@ -166,12 +157,6 @@ def main():
                     edges[last_j].append({"dir": "straight", "to": exit_id})
                     edges[exit_id] = []
                 prev_node = None  # end of chain
-
-        # Ramp-in node for upper floors needs to chain to first aisle
-        if floor > 0:
-            # The ramp_in node was created at the top; its edges will be set
-            # when the first aisle chains from it (prev_node starts as entry_id = ramp_in)
-            pass
 
     # --- Entry / exit approach roads (road segments outside the lot) ---
     # Entry approach: cars arrive from the west and enter at E0 (floor 0).

@@ -8,35 +8,33 @@ import type { CarColor, CarSize, SlotSize } from "../types";
 export const FLOOR_HEIGHT = 15;
 
 /** Distance between consecutive junctions along an aisle (lot.json). */
-export const JUNCTION_SPACING = 5;
+export const JUNCTION_SPACING = 2.6;
 
 /** Distance between adjacent aisles, centre-to-centre (lot.json). */
-export const AISLE_SPACING = 24;
+export const AISLE_SPACING = 17;
 
 /** Distance from an aisle centreline to a slot centre (lot.json: slot_offset). */
-export const SLOT_OFFSET = 9;
+export const SLOT_OFFSET = 6;
 
 /* ------------------------------------------------------------------ *
  *  Geometry constants for the 3D structure
  * ------------------------------------------------------------------ */
 
-/** Parking bay opening width (along the aisle). */
-export const SLOT_WIDTH = 4.5;
+/** Parking bay opening width (along the aisle). Matches JUNCTION_SPACING so
+ *  bays sit edge to edge down the row, as in a real garage. */
+export const SLOT_WIDTH = 2.5;
 
 /** Parking bay depth (perpendicular to the aisle). */
 export const SLOT_DEPTH = 5;
 
 /** One driving lane width. Two lanes sit side by side per aisle. */
-export const LANE_WIDTH = 4.5;
+export const LANE_WIDTH = 3.5;
 
 /** Full road width across both lanes of an aisle. */
 export const ROAD_WIDTH = LANE_WIDTH * 2;
 
-/** Curve radius used for the 180° turns between aisles. */
-export const RAMP_RADIUS = 12;
-
 /** Length of the spiral ramp connecting one floor to the next. */
-export const RAMP_LENGTH = 25;
+export const RAMP_LENGTH = 14;
 
 /** Height of a structural pillar (one storey). */
 export const PILLAR_HEIGHT = FLOOR_HEIGHT;
@@ -44,33 +42,42 @@ export const PILLAR_HEIGHT = FLOOR_HEIGHT;
 /** World-space scale: 1 lot unit = SCALE three.js units. */
 export const SCALE = 1;
 
-/** How high a car sits above the floor surface (top of road layer). */
-export const CAR_Y_OFFSET = 0.2;
+/** How high a car sits above the surface it rests on. The GLTF models put
+ *  their tyre contact patch at y=0, so this must be 0 or the cars visibly
+ *  hover. Kept as a named constant because several files position cars. */
+export const CAR_Y_OFFSET = 0;
 
 /* ------------------------------------------------------------------ *
  *  World-space lot framing (used by Scene + CameraRig)
- *  Lot spans z=-9..81 (world), x=0..45; computeBounds pads by
- *  AISLE_SPACING/2 giving minX=-13, maxX=58, minZ=-16, maxZ=88.
+ *  Structural nodes span x=0..23.4, z=-6..57. computeBounds() in
+ *  ParkingLot pads x by AISLE_SPACING/2 + 1 and z by SLOT_DEPTH + 2,
+ *  giving minX=-9.5, maxX=32.9, minZ=-13, maxZ=64.
  * ------------------------------------------------------------------ */
 
 /** World-space center of the lot footprint along X. */
-export const LOT_CENTER_X = 22.5;
+export const LOT_CENTER_X = 11.7; // (-9.5 + 32.9) / 2
 /** World-space center of the lot footprint along Z. */
-export const LOT_CENTER_Z = 36; // (minZ + maxZ) / 2 ≈ (-16 + 88) / 2
+export const LOT_CENTER_Z = 25.5; // (-13 + 64) / 2
 /** Padded lot min Z (front edge, where floor labels sit). */
-export const LOT_MIN_Z = -16;
+export const LOT_MIN_Z = -13;
 /** Padded lot max Z (back edge). */
-export const LOT_MAX_Z = 88;
+export const LOT_MAX_Z = 64;
 
 /* ------------------------------------------------------------------ *
  *  Slot / car dimensions
  * ------------------------------------------------------------------ */
 
-/** Slot bay dimensions in lot units, by size. */
+/** Slot bay dimensions in lot units, by size.
+ *
+ *  Geometry is uniform across sizes on purpose: bays are laid out at a fixed
+ *  JUNCTION_SPACING pitch, so a wider "large" bay would overlap its neighbour
+ *  and a shallower "small" bay would leave a gap against the road edge. The
+ *  car-size rule the backend enforces is shown by SLOT_OUTLINE_HEX on the
+ *  aisle-facing edge instead, which stays legible from any camera angle. */
 export const SLOT_SIZE: Record<SlotSize, { w: number; l: number }> = {
-  small: { w: SLOT_WIDTH * 0.9, l: SLOT_DEPTH * 0.85 },
+  small: { w: SLOT_WIDTH, l: SLOT_DEPTH },
   medium: { w: SLOT_WIDTH, l: SLOT_DEPTH },
-  large: { w: SLOT_WIDTH * 1.1, l: SLOT_DEPTH * 1.15 },
+  large: { w: SLOT_WIDTH, l: SLOT_DEPTH },
 };
 
 /** Car body dimensions by car size (length along travel axis, width across). */
@@ -78,13 +85,6 @@ export const CAR_DIMS: Record<CarSize, { length: number; width: number; height: 
   small:  { length: 3.6, width: 1.65, height: 1.35 },
   medium: { length: 4.5, width: 1.80, height: 1.45 },
   large:  { length: 5.0, width: 1.95, height: 1.65 },
-};
-
-/** Visual scale multiplier applied to a car mesh by size. */
-export const CAR_SIZE_MULTIPLIERS: Record<CarSize, number> = {
-  small: 0.85,
-  medium: 1.0,
-  large: 1.15,
 };
 
 /* ------------------------------------------------------------------ *
