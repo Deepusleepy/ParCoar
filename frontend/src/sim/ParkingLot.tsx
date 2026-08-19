@@ -5,12 +5,10 @@ import { Html, Text } from "@react-three/drei";
 import type { CarRosterEntry, LotData, LotNode, NodeSign, NodeType, SlotSize } from "../types";
 import {
   AISLE_SPACING,
-  CENTER_LINE_COLOR,
   DIVIDER_COLOR,
   FLOOR_COLOR,
   FLOOR_HEIGHT,
   GUARDRAIL_COLOR,
-  JUNCTION_SPACING,
   LANE_COLOR,
   LANE_WIDTH,
   MARKING_WHITE,
@@ -19,11 +17,10 @@ import {
   RAMP_COLOR,
   ROAD_WIDTH,
   SLOT_DEPTH,
-  SLOT_OUTLINE_HEX,
-  SLOT_SIZE,
   SLOT_WIDTH,
   toWorld,
 } from "./constants";
+import { FloorPaint } from "./FloorPaint";
 import { PermanentSignboard } from "./PermanentSignboard";
 import { rampPoints, semicirclePoints } from "./geometry";
 
@@ -62,6 +59,11 @@ const ROAD_Y = 0.15;
 const DIVIDER_WIDTH = 0.4;
 /** Height of a raised concrete divider (above the road surface). */
 const DIVIDER_HEIGHT = 0.3;
+
+/** Spacing between perimeter pillars. Kept local to this file because the
+ *  lot's JUNCTION_SPACING (2.6) is far too dense for structural columns and
+ *  would render as a solid black wall of poles. */
+const PILLAR_SPACING = 10;
 
 /** Build a flat ribbon (road surface) following a polyline of points. */
 function buildRibbon(points: THREE.Vector3[], width: number, yLift: number): THREE.BufferGeometry {
@@ -137,6 +139,13 @@ function buildSolidBarAlongPath(
   return mergeGeometries(geos, false) ?? new THREE.BufferGeometry();
 }
 
+/** A BoxGeometry translated to (x, y, z). Used to build merged trim/bar sets. */
+function makeBox(w: number, h: number, d: number, x: number, y: number, z: number): THREE.BufferGeometry {
+  const g = new THREE.BoxGeometry(w, h, d);
+  g.applyMatrix4(new THREE.Matrix4().setPosition(x, y, z));
+  return g;
+}
+
 /** Offset every point of a polyline perpendicular to its tangent (in the X-Z plane). */
 function offsetPoints(points: THREE.Vector3[], offset: number): THREE.Vector3[] {
   const n = points.length;
@@ -193,6 +202,151 @@ function cumulativeLengths(points: THREE.Vector3[]): number[] {
   }
   return cum;
 }
+
+/* ================================================================== *
+ *  Shared materials (module scope — live for the app lifetime)
+ * ================================================================== */
+
+const MAT_SLAB = new THREE.MeshStandardMaterial({
+  color: FLOOR_COLOR,
+  roughness: 0.96,
+  metalness: 0,
+  side: THREE.DoubleSide,
+  envMapIntensity: 0.3,
+});
+const MAT_TRIM = new THREE.MeshStandardMaterial({
+  color: "#2a2d34",
+  roughness: 0.7,
+  envMapIntensity: 0.3,
+});
+const MAT_ASPHALT = new THREE.MeshStandardMaterial({
+  color: LANE_COLOR,
+  roughness: 0.95,
+  side: THREE.DoubleSide,
+  envMapIntensity: 0.3,
+});
+const MAT_RAMP = new THREE.MeshStandardMaterial({
+  color: RAMP_COLOR,
+  roughness: 0.95,
+  side: THREE.DoubleSide,
+  envMapIntensity: 0.3,
+});
+const MAT_EDGE = new THREE.MeshStandardMaterial({
+  color: MARKING_WHITE,
+  roughness: 0.5,
+  emissive: MARKING_WHITE,
+  emissiveIntensity: 0.1,
+  side: THREE.DoubleSide,
+  envMapIntensity: 0.3,
+});
+const MAT_DIVIDER = new THREE.MeshStandardMaterial({
+  color: DIVIDER_COLOR,
+  roughness: 0.9,
+  side: THREE.DoubleSide,
+  envMapIntensity: 0.3,
+});
+const MAT_GUARDRAIL = new THREE.MeshStandardMaterial({
+  color: GUARDRAIL_COLOR,
+  roughness: 0.5,
+  metalness: 0.6,
+  envMapIntensity: 0.3,
+});
+const MAT_PILLAR = new THREE.MeshStandardMaterial({
+  color: PILLAR_COLOR,
+  roughness: 0.9,
+  metalness: 0.1,
+  envMapIntensity: 0.3,
+});
+const MAT_ARROW = new THREE.MeshStandardMaterial({
+  color: MARKING_WHITE,
+  roughness: 0.5,
+  emissive: MARKING_WHITE,
+  emissiveIntensity: 0.2,
+  envMapIntensity: 0.3,
+});
+const MAT_GATE_FRAME = new THREE.MeshStandardMaterial({
+  color: "#20242c",
+  roughness: 0.8,
+});
+const MAT_GATE_GREEN = new THREE.MeshStandardMaterial({
+  color: "#22c55e",
+  emissive: "#22c55e",
+  emissiveIntensity: 0.55,
+  roughness: 0.4,
+});
+const MAT_GATE_RED = new THREE.MeshStandardMaterial({
+  color: "#e5484d",
+  emissive: "#e5484d",
+  emissiveIntensity: 0.55,
+  roughness: 0.4,
+});
+const MAT_AREA_DARK = new THREE.MeshStandardMaterial({
+  color: "#080a10",
+  metalness: 0.45,
+  roughness: 0.55,
+});
+const MAT_AREA_SCREEN = new THREE.MeshStandardMaterial({
+  color: "#000000",
+  emissive: "#0a1622",
+  emissiveIntensity: 0.4,
+  roughness: 0.5,
+  metalness: 0.1,
+});
+
+/* --- Shared static geometries (built once, reused, never disposed) --- */
+
+/** Merged painted direction arrow: shaft + two chevron bars in one geometry. */
+const ARROW_GEO = (() => {
+  const parts: THREE.BufferGeometry[] = [];
+  const shaft = new THREE.BoxGeometry(1.4, 0.02, 0.45);
+  shaft.applyMatrix4(new THREE.Matrix4().setPosition(0, 0.005, 0));
+  parts.push(shaft);
+  for (const [dz, ry] of [[0.18, Math.PI / 4], [-0.18, -Math.PI / 4]] as const) {
+    const bar = new THREE.BoxGeometry(0.55, 0.02, 0.28);
+    const m = new THREE.Matrix4().makeRotationY(ry);
+    m.setPosition(0.97, 0.005, dz);
+    bar.applyMatrix4(m);
+    parts.push(bar);
+  }
+  return mergeGeometries(parts, false) ?? new THREE.BufferGeometry();
+})();
+
+/** Merged gate legs (two side posts). */
+const GATE_LEGS_GEO = (() => {
+  const half = ROAD_WIDTH / 2;
+  return (
+    mergeGeometries(
+      [makeBox(0.3, 4, 0.3, 0, 2, -half), makeBox(0.3, 4, 0.3, 0, 2, half)],
+      false,
+    ) ?? new THREE.BufferGeometry()
+  );
+})();
+
+/** Merged gate top bar + label panel. */
+const GATE_BARS_GEO = (() =>
+  mergeGeometries(
+    [makeBox(0.3, 0.3, ROAD_WIDTH + 0.4, 0, 4, 0), makeBox(1.6, 0.9, 0.12, 0, 3.2, 0)],
+    false,
+  ) ?? new THREE.BufferGeometry())();
+
+/** Area-sign dimensions shared by the merged sign body and the screen plane. */
+const AREA_POST_H = 4;
+const AREA_PANEL_W = 5.0;
+const AREA_PANEL_H = 2.2;
+
+/** Merged area-sign body: vertical post + tilted panel frame in one geometry. */
+const AREA_SIGN_GEO = (() => {
+  const post = new THREE.CylinderGeometry(0.08, 0.08, AREA_POST_H, 8);
+  post.applyMatrix4(new THREE.Matrix4().setPosition(0, AREA_POST_H / 2, 0));
+  const panel = new THREE.BoxGeometry(AREA_PANEL_W, AREA_PANEL_H, 0.15);
+  const m = new THREE.Matrix4().makeRotationX(0.15);
+  m.setPosition(0, AREA_POST_H + AREA_PANEL_H / 2, 0);
+  panel.applyMatrix4(m);
+  return mergeGeometries([post, panel], false) ?? new THREE.BufferGeometry();
+})();
+
+/** Emissive screen plane for area signs. */
+const AREA_SCREEN_GEO = new THREE.PlaneGeometry(AREA_PANEL_W - 0.4, AREA_PANEL_H - 0.3);
 
 /* ================================================================== *
  *  Derived geometry descriptors
@@ -498,7 +652,9 @@ function computeBounds(lot: LotData): Bounds {
 /** A concrete floor slab (doubles as the ceiling for the floor below).
  *  When `rampHole` is given (a world [centerX, centerZ, halfX, halfZ] tuple),
  *  a rectangular hole of those half-extents is cut out of the slab there so a
- *  ramp can pass through. */
+ *  ramp can pass through. All slab pieces share one material; the perimeter
+ *  edge-trim bars are merged into one geometry, and the hole-trim bars into
+ *  another, so each slab renders at most 3 draw calls. */
 const FloorSlab = memo(function FloorSlab({
   floor,
   bounds,
@@ -514,123 +670,81 @@ const FloorSlab = memo(function FloorSlab({
   const cz = (bounds.minZ + bounds.maxZ) / 2;
   const y = floor * FLOOR_HEIGHT;
 
-  // Slab material shared by every slab piece. Opaque so shadows work.
-  const slabMat = (
-    <meshStandardMaterial
-      color={FLOOR_COLOR}
-      roughness={0.96}
-      metalness={0}
-      envMapIntensity={0.3}
-    />
-  );
+  const { slabGeo, perimTrimGeo, holeTrimGeo } = useMemo(() => {
+    // Perimeter edge trim — four bars, merged into one geometry.
+    const perim = [
+      makeBox(w, 0.06, 0.12, 0, 0.02, d / 2),
+      makeBox(w, 0.06, 0.12, 0, 0.02, -d / 2),
+      makeBox(0.12, 0.06, d, w / 2, 0.02, 0),
+      makeBox(0.12, 0.06, d, -w / 2, 0.02, 0),
+    ];
+    const perimTrimGeo = mergeGeometries(perim, false) ?? new THREE.BufferGeometry();
 
-  // When no hole is needed, render one solid slab box.
-  if (!rampHole) {
-    return (
-      <group position={[cx, y, cz]}>
-        {/* Driving surface / ceiling slab */}
-        <mesh receiveShadow castShadow position={[0, -0.25, 0]}>
-          <boxGeometry args={[w, 0.5, d]} />
-          {slabMat}
-        </mesh>
-        {/* Bright edge trim for depth perception */}
-        <mesh position={[0, 0.02, d / 2]}>
-          <boxGeometry args={[w, 0.06, 0.12]} />
-          <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-        </mesh>
-        <mesh position={[0, 0.02, -d / 2]}>
-          <boxGeometry args={[w, 0.06, 0.12]} />
-          <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-        </mesh>
-        <mesh position={[w / 2, 0.02, 0]}>
-          <boxGeometry args={[0.12, 0.06, d]} />
-          <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-        </mesh>
-        <mesh position={[-w / 2, 0.02, 0]}>
-          <boxGeometry args={[0.12, 0.06, d]} />
-          <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-        </mesh>
-      </group>
-    );
-  }
+    if (!rampHole) {
+      const slabGeo = makeBox(w, 0.5, d, 0, -0.25, 0);
+      return { slabGeo, perimTrimGeo, holeTrimGeo: null as THREE.BufferGeometry | null };
+    }
 
-  // Hole case: split the slab into 4 boxes surrounding a rectangular hole.
-  // rampHole = [centerX, centerZ, halfX, halfZ] (world coords).
-  const holeHalfX = rampHole[2];
-  const holeHalfZ = rampHole[3];
-  const holeSizeX = holeHalfX * 2;
-  const holeSizeZ = holeHalfZ * 2;
-  // Hole centre relative to the slab group origin.
-  const ox = rampHole[0] - cx;
-  const oz = rampHole[1] - cz;
-  const holeLeft = ox - holeHalfX;
-  const holeRight = ox + holeHalfX;
-  const holeMinZ = oz - holeHalfZ;
-  const holeMaxZ = oz + holeHalfZ;
+    // Hole case: split the slab into 4 boxes surrounding a rectangular hole.
+    // rampHole = [centerX, centerZ, halfX, halfZ] (world coords).
+    const holeHalfX = rampHole[2];
+    const holeHalfZ = rampHole[3];
+    const holeSizeX = holeHalfX * 2;
+    const holeSizeZ = holeHalfZ * 2;
+    // Hole centre relative to the slab group origin.
+    const ox = rampHole[0] - cx;
+    const oz = rampHole[1] - cz;
+    const holeLeft = ox - holeHalfX;
+    const holeRight = ox + holeHalfX;
+    const holeMinZ = oz - holeHalfZ;
+    const holeMaxZ = oz + holeHalfZ;
 
-  // Four surrounding boxes (each as [width, depth, centerX, centerZ]).
-  // Left/right span the full slab depth; top/bottom span the hole width in X.
-  const leftW = holeLeft - -w / 2;
-  const rightW = w / 2 - holeRight;
-  const topD = holeMinZ - -d / 2;
-  const botD = d / 2 - holeMaxZ;
-  const pieces: { size: [number, number]; pos: [number, number] }[] = [];
-  if (leftW > 0.01)
-    pieces.push({ size: [leftW, d], pos: [(-w / 2 + holeLeft) / 2, 0] });
-  if (rightW > 0.01)
-    pieces.push({ size: [rightW, d], pos: [(holeRight + w / 2) / 2, 0] });
-  if (topD > 0.01)
-    pieces.push({ size: [holeSizeX, topD], pos: [ox, (-d / 2 + holeMinZ) / 2] });
-  if (botD > 0.01)
-    pieces.push({ size: [holeSizeX, botD], pos: [ox, (holeMaxZ + d / 2) / 2] });
+    const leftW = holeLeft - -w / 2;
+    const rightW = w / 2 - holeRight;
+    const topD = holeMinZ - -d / 2;
+    const botD = d / 2 - holeMaxZ;
+    const slabParts: THREE.BufferGeometry[] = [];
+    if (leftW > 0.01)
+      slabParts.push(makeBox(leftW, 0.5, d, (-w / 2 + holeLeft) / 2, -0.25, 0));
+    if (rightW > 0.01)
+      slabParts.push(makeBox(rightW, 0.5, d, (holeRight + w / 2) / 2, -0.25, 0));
+    if (topD > 0.01)
+      slabParts.push(makeBox(holeSizeX, 0.5, topD, ox, -0.25, (-d / 2 + holeMinZ) / 2));
+    if (botD > 0.01)
+      slabParts.push(makeBox(holeSizeX, 0.5, botD, ox, -0.25, (holeMaxZ + d / 2) / 2));
+    const slabGeo = mergeGeometries(slabParts, false) ?? new THREE.BufferGeometry();
+
+    // Hole edge trim — four thin bars framing the ramp opening, merged.
+    const holeTrim = [
+      makeBox(holeSizeX, 0.06, 0.12, ox, 0.02, holeMinZ),
+      makeBox(holeSizeX, 0.06, 0.12, ox, 0.02, holeMaxZ),
+      makeBox(0.12, 0.06, holeSizeZ, holeLeft, 0.02, oz),
+      makeBox(0.12, 0.06, holeSizeZ, holeRight, 0.02, oz),
+    ];
+    const holeTrimGeo = mergeGeometries(holeTrim, false) ?? new THREE.BufferGeometry();
+    return { slabGeo, perimTrimGeo, holeTrimGeo };
+  }, [w, d, cx, cz, rampHole]);
+
+  useEffect(() => {
+    return () => {
+      slabGeo.dispose();
+      perimTrimGeo.dispose();
+      holeTrimGeo?.dispose();
+    };
+  }, [slabGeo, perimTrimGeo, holeTrimGeo]);
 
   return (
     <group position={[cx, y, cz]}>
-      {pieces.map((p, i) => (
-        <mesh key={`slab${i}`} receiveShadow castShadow position={[p.pos[0], -0.25, p.pos[1]]}>
-          <boxGeometry args={[p.size[0], 0.5, p.size[1]]} />
-          {slabMat}
-        </mesh>
-      ))}
-      {/* Bright edge trim for depth perception (full perimeter) */}
-      <mesh position={[0, 0.02, d / 2]}>
-        <boxGeometry args={[w, 0.06, 0.12]} />
-        <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-      </mesh>
-      <mesh position={[0, 0.02, -d / 2]}>
-        <boxGeometry args={[w, 0.06, 0.12]} />
-        <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-      </mesh>
-      <mesh position={[w / 2, 0.02, 0]}>
-        <boxGeometry args={[0.12, 0.06, d]} />
-        <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-      </mesh>
-      <mesh position={[-w / 2, 0.02, 0]}>
-        <boxGeometry args={[0.12, 0.06, d]} />
-        <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-      </mesh>
-      {/* Hole edge trim — four thin bars framing the ramp opening */}
-      <mesh position={[ox, 0.02, holeMinZ]}>
-        <boxGeometry args={[holeSizeX, 0.06, 0.12]} />
-        <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-      </mesh>
-      <mesh position={[ox, 0.02, holeMaxZ]}>
-        <boxGeometry args={[holeSizeX, 0.06, 0.12]} />
-        <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-      </mesh>
-      <mesh position={[holeLeft, 0.02, oz]}>
-        <boxGeometry args={[0.12, 0.06, holeSizeZ]} />
-        <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-      </mesh>
-      <mesh position={[holeRight, 0.02, oz]}>
-        <boxGeometry args={[0.12, 0.06, holeSizeZ]} />
-        <meshStandardMaterial color="#2a2d34" roughness={0.7} envMapIntensity={0.3} />
-      </mesh>
+      <mesh geometry={slabGeo} material={MAT_SLAB} receiveShadow castShadow />
+      <mesh geometry={perimTrimGeo} material={MAT_TRIM} />
+      {holeTrimGeo && <mesh geometry={holeTrimGeo} material={MAT_TRIM} />}
     </group>
   );
 });
 
-/** A large painted directional arrow on the road surface (2.5 long, 0.6 wide). */
+/** A large painted directional arrow on the road surface (2.5 long, 0.6 wide).
+ *  The shaft + chevron head are pre-merged into ARROW_GEO so each arrow is a
+ *  single draw call sharing MAT_ARROW. */
 function DirectionArrow({
   position,
   rotY = 0,
@@ -638,146 +752,41 @@ function DirectionArrow({
   position: [number, number, number];
   rotY?: number;
 }) {
-  const mat = (
-    <meshStandardMaterial
-      color={MARKING_WHITE}
-      roughness={0.5}
-      emissive={MARKING_WHITE}
-      emissiveIntensity={0.2}
-      envMapIntensity={0.3}
-    />
-  );
   // Arrow points along +x by default; rotate around Y to steer it.
-  return (
-    <group position={position} rotation={[0, rotY, 0]}>
-      {/* Shaft (1.4 long, spans x from -0.7 to +0.7) */}
-      <mesh position={[0, 0.005, 0]}>
-        <boxGeometry args={[1.4, 0.02, 0.45]} />
-        {mat}
-      </mesh>
-      {/* Chevron head: two short bars forming a > at the +x end.
-          Each bar is offset in Z so they start at the sides of the shaft
-          and converge to a point past the shaft tip, creating a clean
-          chevron instead of an X. */}
-      <mesh position={[0.97, 0.005, 0.18]} rotation={[0, Math.PI / 4, 0]}>
-        <boxGeometry args={[0.55, 0.02, 0.28]} />
-        {mat}
-      </mesh>
-      <mesh position={[0.97, 0.005, -0.18]} rotation={[0, -Math.PI / 4, 0]}>
-        <boxGeometry args={[0.55, 0.02, 0.28]} />
-        {mat}
-      </mesh>
-    </group>
-  );
+  return <mesh position={position} rotation={[0, rotY, 0]} geometry={ARROW_GEO} material={MAT_ARROW} />;
 }
 
-/** A straight one-way aisle with two lanes separated by a physical concrete divider. */
+/** A straight one-way aisle. The flat paint (edges, centre line, arrows, bay
+ *  outlines) is now baked by <FloorPaint>; this component renders only the
+ *  raised asphalt box that gives the road its 3D thickness and shadow. */
 const AisleRoad = memo(function AisleRoad({ aisle }: { aisle: AisleDesc }) {
-  const { floor, y, x0, x1, index } = aisle;
+  const { floor, y, x0, x1 } = aisle;
   const len = x1 - x0;
   const cx = (x0 + x1) / 2;
   const baseY = floor * FLOOR_HEIGHT + ROAD_Y;
-  const half = ROAD_WIDTH / 2;
-  // Even aisles flow +x, odd aisles flow -x.
-  const dir = index % 2 === 0 ? 1 : -1;
-  const arrowRotY = dir > 0 ? 0 : Math.PI;
-
-  // Two driving lanes: -z lane and +z lane, separated by the centre divider.
-  const laneNegZ = y - LANE_WIDTH / 2;
-  const lanePosZ = y + LANE_WIDTH / 2;
-
-  // Generate arrow positions every 25 units along the aisle.
-  const arrowXs: number[] = [];
-  for (let d = 4; d < len; d += 25) {
-    arrowXs.push(x0 + d);
-  }
 
   return (
-    <group>
-      {/* Road surface (dark asphalt, full width). Box top sits at baseY = ROAD_Y. */}
-      <mesh position={[cx, baseY - 0.1, y]} receiveShadow>
-        <boxGeometry args={[len, 0.2, ROAD_WIDTH]} />
-        <meshStandardMaterial color={LANE_COLOR} roughness={0.95} envMapIntensity={0.3} />
-      </mesh>
-
-      {/* White edge lines on outer edges (0.15 wide) */}
-      <mesh position={[cx, baseY + 0.01, y - half + 0.075]}>
-        <boxGeometry args={[len, 0.02, 0.15]} />
-        <meshStandardMaterial
-          color={MARKING_WHITE}
-          roughness={0.5}
-          emissive={MARKING_WHITE}
-          emissiveIntensity={0.1}
-          envMapIntensity={0.3}
-        />
-      </mesh>
-      <mesh position={[cx, baseY + 0.01, y + half - 0.075]}>
-        <boxGeometry args={[len, 0.02, 0.15]} />
-        <meshStandardMaterial
-          color={MARKING_WHITE}
-          roughness={0.5}
-          emissive={MARKING_WHITE}
-          emissiveIntensity={0.1}
-          envMapIntensity={0.3}
-        />
-      </mesh>
-
-      {/* Center lane marking: double-yellow line (two thin yellow lines). */}
-      <mesh position={[cx, baseY + 0.005, y - 0.1]}>
-        <boxGeometry args={[len, 0.01, 0.08]} />
-        <meshStandardMaterial
-          color={CENTER_LINE_COLOR}
-          roughness={0.5}
-          emissive={CENTER_LINE_COLOR}
-          emissiveIntensity={0.15}
-          envMapIntensity={0.3}
-        />
-      </mesh>
-      <mesh position={[cx, baseY + 0.005, y + 0.1]}>
-        <boxGeometry args={[len, 0.01, 0.08]} />
-        <meshStandardMaterial
-          color={CENTER_LINE_COLOR}
-          roughness={0.5}
-          emissive={CENTER_LINE_COLOR}
-          emissiveIntensity={0.15}
-          envMapIntensity={0.3}
-        />
-      </mesh>
-
-      {/* Direction arrows in BOTH driving lanes, both pointing in the travel
-          direction (the lot is one-way serpentine, so both lanes flow the same way). */}
-      {arrowXs.map((ax, i) => (
-        <DirectionArrow
-          key={`arrowN${i}`}
-          position={[ax, baseY + 0.01, laneNegZ]}
-          rotY={arrowRotY}
-        />
-      ))}
-      {arrowXs.map((ax, i) => (
-        <DirectionArrow
-          key={`arrowP${i}`}
-          position={[ax, baseY + 0.01, lanePosZ]}
-          rotY={arrowRotY}
-        />
-      ))}
-    </group>
+    <mesh position={[cx, baseY - 0.1, y]} material={MAT_ASPHALT} receiveShadow>
+      <boxGeometry args={[len, 0.2, ROAD_WIDTH]} />
+    </mesh>
   );
 });
 
-/** A curved 180° turn road with divider, edge lines, and one direction arrow. */
+/** A curved 180° turn road with divider, merged edge lines, guardrails, and
+ *  one direction arrow. */
 const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
   const edgeOffset = ROAD_WIDTH / 2 - 0.08;
-  const fy = turn.floor * FLOOR_HEIGHT;
   const ribbon = useMemo(
     () => buildRibbon(turn.points, ROAD_WIDTH, ROAD_Y + 0.005),
     [turn.points],
   );
-  const leftEdge = useMemo(
-    () => buildRibbon(offsetPoints(turn.points, edgeOffset), 0.22, ROAD_Y + 0.02),
-    [turn.points, edgeOffset],
-  );
-  const rightEdge = useMemo(
-    () => buildRibbon(offsetPoints(turn.points, -edgeOffset), 0.22, ROAD_Y + 0.02),
+  // Both edge ribbons share MAT_EDGE, so merge them into one geometry.
+  const edges = useMemo(
+    () => {
+      const l = buildRibbon(offsetPoints(turn.points, edgeOffset), 0.22, ROAD_Y + 0.02);
+      const r = buildRibbon(offsetPoints(turn.points, -edgeOffset), 0.22, ROAD_Y + 0.02);
+      return mergeGeometries([l, r], false) ?? new THREE.BufferGeometry();
+    },
     [turn.points, edgeOffset],
   );
   // Raised concrete divider on turns (no parking here, cars cannot cross).
@@ -820,44 +829,27 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
     const dz = side.z * LANE_WIDTH / 2;
     const dx = side.x * LANE_WIDTH / 2;
     return {
-      pos: [p.x - dx, fy + ROAD_Y + 0.02, p.z - dz] as [number, number, number],
+      pos: [p.x - dx, p.y + ROAD_Y + 0.02, p.z - dz] as [number, number, number],
       rotY,
     };
-  }, [turn.points, fy]);
+  }, [turn.points]);
+
+  useEffect(() => {
+    return () => {
+      ribbon.dispose();
+      edges.dispose();
+      divider.dispose();
+    };
+  }, [ribbon, edges, divider]);
 
   return (
     <group>
       {/* Road surface */}
-      <mesh geometry={ribbon} receiveShadow>
-        <meshStandardMaterial color={LANE_COLOR} roughness={0.95} side={THREE.DoubleSide} envMapIntensity={0.3} />
-      </mesh>
-      {/* Edge lines */}
-      <mesh geometry={leftEdge}>
-        <meshStandardMaterial
-          color={MARKING_WHITE}
-          roughness={0.5}
-          emissive={MARKING_WHITE}
-          emissiveIntensity={0.1}
-          envMapIntensity={0.3}
-        />
-      </mesh>
-      <mesh geometry={rightEdge}>
-        <meshStandardMaterial
-          color={MARKING_WHITE}
-          roughness={0.5}
-          emissive={MARKING_WHITE}
-          emissiveIntensity={0.1}
-          envMapIntensity={0.3}
-        />
-      </mesh>
+      <mesh geometry={ribbon} material={MAT_ASPHALT} receiveShadow />
+      {/* Edge lines (left + right merged) */}
+      <mesh geometry={edges} material={MAT_EDGE} />
       {/* Raised concrete divider through the turn (no parking, cars cannot cross) */}
-      <mesh geometry={divider} castShadow receiveShadow>
-        <meshStandardMaterial
-          color={DIVIDER_COLOR}
-          roughness={0.9}
-          envMapIntensity={0.3}
-        />
-      </mesh>
+      <mesh geometry={divider} material={MAT_DIVIDER} castShadow receiveShadow />
       {/* Guardrails on both outer edges of the turn */}
       <GuardRailAlongPath points={leftRailPts} yBase={ROAD_Y} />
       <GuardRailAlongPath points={rightRailPts} yBase={ROAD_Y} />
@@ -870,23 +862,27 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
 /** A spiral ramp between floors with guardrails and a direction arrow. */
 const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
   const edgeOffset = ROAD_WIDTH / 2 - 0.08;
-  const ribbon = useMemo(
-    () => buildRibbon(ramp.points, ROAD_WIDTH, ROAD_Y),
-    [ramp.points],
-  );
   // Soffit / support slab under the ramp (wider than the road).
   const soffit = useMemo(
     () => buildRibbon(ramp.points, ROAD_WIDTH + 1.2, ROAD_Y - 0.1),
     [ramp.points],
   );
-  const leftEdge = useMemo(
-    () => buildRibbon(offsetPoints(ramp.points, edgeOffset), 0.22, ROAD_Y + 0.02),
-    [ramp.points, edgeOffset],
-  );
-  const rightEdge = useMemo(
-    () => buildRibbon(offsetPoints(ramp.points, -edgeOffset), 0.22, ROAD_Y + 0.02),
-    [ramp.points, edgeOffset],
-  );
+  // Road surface + the two threshold aprons all share MAT_RAMP, so merge them
+  // into a single geometry.
+  const road = useMemo(() => {
+    const ribbon = buildRibbon(ramp.points, ROAD_WIDTH, ROAD_Y);
+    const p0 = ramp.points[0];
+    const pN = ramp.points[ramp.points.length - 1];
+    const apron0 = makeBox(2, 0.65, ROAD_WIDTH, p0.x - 1, p0.y + ROAD_Y - 0.325, p0.z);
+    const apronN = makeBox(2, 0.65, ROAD_WIDTH, pN.x - 1, pN.y + ROAD_Y - 0.325, pN.z);
+    return mergeGeometries([ribbon, apron0, apronN], false) ?? new THREE.BufferGeometry();
+  }, [ramp.points]);
+  // Both edge ribbons share MAT_EDGE, so merge them into one geometry.
+  const edges = useMemo(() => {
+    const l = buildRibbon(offsetPoints(ramp.points, edgeOffset), 0.22, ROAD_Y + 0.02);
+    const r = buildRibbon(offsetPoints(ramp.points, -edgeOffset), 0.22, ROAD_Y + 0.02);
+    return mergeGeometries([l, r], false) ?? new THREE.BufferGeometry();
+  }, [ramp.points, edgeOffset]);
   // Raised concrete divider on ramps (no parking here, cars cannot cross).
   const divider = useMemo(
     () => buildSolidBarAlongPath(ramp.points, DIVIDER_WIDTH, DIVIDER_HEIGHT, ROAD_Y),
@@ -921,51 +917,25 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
     return { pos: [p.x - dx, p.y + ROAD_Y + 0.02, p.z - dz] as [number, number, number], rotY };
   }, [ramp.points]);
 
+  useEffect(() => {
+    return () => {
+      soffit.dispose();
+      road.dispose();
+      edges.dispose();
+      divider.dispose();
+    };
+  }, [soffit, road, edges, divider]);
+
   return (
     <group>
       {/* Support slab under ramp */}
-      <mesh geometry={soffit} receiveShadow>
-        <meshStandardMaterial color={FLOOR_COLOR} roughness={0.96} side={THREE.DoubleSide} envMapIntensity={0.3} />
-      </mesh>
-      {/* Threshold apron at ramp start — solid box bridging road-to-ramp
-          transition. After Fix 1 the start tangent is purely -x, so a box
-          spanning 2 units in -x from the start point sits flush. */}
-      <mesh position={[ramp.points[0].x - 1, ramp.points[0].y + ROAD_Y - 0.325, ramp.points[0].z]}>
-        <boxGeometry args={[2, 0.65, ROAD_WIDTH]} />
-        <meshStandardMaterial color={RAMP_COLOR} roughness={0.95} envMapIntensity={0.3} />
-      </mesh>
-      {/* Threshold apron at ramp end — solid box bridging ramp-to-road
-          transition at the ramp_in side. */}
-      <mesh
-        position={[
-          ramp.points[ramp.points.length - 1].x - 1,
-          ramp.points[ramp.points.length - 1].y + ROAD_Y - 0.325,
-          ramp.points[ramp.points.length - 1].z,
-        ]}
-      >
-        <boxGeometry args={[2, 0.65, ROAD_WIDTH]} />
-        <meshStandardMaterial color={RAMP_COLOR} roughness={0.95} envMapIntensity={0.3} />
-      </mesh>
-      {/* Road surface */}
-      <mesh geometry={ribbon} receiveShadow>
-        <meshStandardMaterial color={RAMP_COLOR} roughness={0.95} side={THREE.DoubleSide} envMapIntensity={0.3} />
-      </mesh>
-      {/* Edge lines */}
-      <mesh geometry={leftEdge}>
-        <meshStandardMaterial color={MARKING_WHITE} roughness={0.6} side={THREE.DoubleSide} envMapIntensity={0.3} />
-      </mesh>
-      <mesh geometry={rightEdge}>
-        <meshStandardMaterial color={MARKING_WHITE} roughness={0.6} side={THREE.DoubleSide} envMapIntensity={0.3} />
-      </mesh>
+      <mesh geometry={soffit} material={MAT_SLAB} receiveShadow />
+      {/* Road surface + threshold aprons (merged) */}
+      <mesh geometry={road} material={MAT_RAMP} receiveShadow />
+      {/* Edge lines (left + right merged) */}
+      <mesh geometry={edges} material={MAT_EDGE} />
       {/* Raised concrete divider through the ramp (no parking, cars cannot cross) */}
-      <mesh geometry={divider} castShadow receiveShadow>
-        <meshStandardMaterial
-          color={DIVIDER_COLOR}
-          roughness={0.9}
-          side={THREE.DoubleSide}
-          envMapIntensity={0.3}
-        />
-      </mesh>
+      <mesh geometry={divider} material={MAT_DIVIDER} castShadow receiveShadow />
       {/* Guardrails on both sides of the ramp */}
       <GuardRailAlongPath points={leftRailPts} yBase={ROAD_Y} />
       <GuardRailAlongPath points={rightRailPts} yBase={ROAD_Y} />
@@ -975,119 +945,53 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
   );
 });
 
-/** A marked parking bay with L-shaped corner lines, a colour-coded border, and a slot number. */
-const SlotMarking = memo(function SlotMarking({ slot }: { slot: SlotDesc }) {
-  const sizeColor = SLOT_OUTLINE_HEX[slot.size];
-  const [x, y, z] = slot.pos;
-  const { w, l: d } = SLOT_SIZE[slot.size];
-  const lineW = 0.15;
-  const lineH = 0.03;
-  const paintY = y + 0.02; // Slots are on bare floor slab, not road surface
-  // Build a floor-prefixed label: S0_42 -> "A42", S1_7 -> "B7", S2_1 -> "C1".
-  const floorLetter = String.fromCharCode(65 + Number(slot.id.match(/^S(\d+)_/)?.[1] ?? 0));
-  const slotNum = slot.id.replace(/^S\d+_/, "");
-  const numLabel = `${floorLetter}${slotNum}`;
-
-  return (
-    <group position={[x, paintY, z]} rotation={[0, slot.rotY, 0]}>
-      {/* Left side line */}
-      <mesh position={[-w / 2 + lineW / 2, lineH / 2, 0]}>
-        <boxGeometry args={[lineW, lineH, d]} />
-        <meshStandardMaterial
-          color={MARKING_WHITE}
-          roughness={0.5}
-          emissive={MARKING_WHITE}
-          emissiveIntensity={0.15}
-          envMapIntensity={0.3}
-        />
-      </mesh>
-      {/* Right side line */}
-      <mesh position={[w / 2 - lineW / 2, lineH / 2, 0]}>
-        <boxGeometry args={[lineW, lineH, d]} />
-        <meshStandardMaterial
-          color={MARKING_WHITE}
-          roughness={0.5}
-          emissive={MARKING_WHITE}
-          emissiveIntensity={0.15}
-          envMapIntensity={0.3}
-        />
-      </mesh>
-      {/* Back line (closed end, away from the aisle) */}
-      <mesh position={[0, lineH / 2, -d / 2 + lineW / 2]}>
-        <boxGeometry args={[w, lineH, lineW]} />
-        <meshStandardMaterial
-          color={MARKING_WHITE}
-          roughness={0.5}
-          emissive={MARKING_WHITE}
-          emissiveIntensity={0.15}
-          envMapIntensity={0.3}
-        />
-      </mesh>
-      {/* Colour-coded border on the aisle-facing edge (0.2 wide) */}
-      <mesh position={[0, lineH / 2 + 0.005, d / 2 - 0.1]}>
-        <boxGeometry args={[w, lineH, 0.2]} />
-        <meshStandardMaterial
-          color={sizeColor}
-          emissive={sizeColor}
-          emissiveIntensity={0.35}
-          roughness={0.5}
-          envMapIntensity={0.3}
-        />
-      </mesh>
-      {/* Slot number painted in the centre */}
-      <Text
-        position={[0, lineH / 2 + 0.01, 0]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        fontSize={1.0}
-        color={MARKING_WHITE}
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.04}
-        outlineColor="#000000"
-      >
-        {numLabel}
-      </Text>
-    </group>
-  );
-});
-
-/** Structural pillars around the perimeter of one storey. */
+/** Structural pillars around the perimeter of one storey, rendered as a single
+ *  InstancedMesh. Uses PILLAR_SPACING (10) instead of the lot's
+ *  JUNCTION_SPACING (2.6) so columns read as columns, not a solid wall. */
 const Pillars = memo(function Pillars({ floor, bounds }: { floor: number; bounds: Bounds }) {
-  const cols: React.ReactElement[] = [];
-  const y0 = floor * FLOOR_HEIGHT;
-  const y1 = y0 + PILLAR_HEIGHT;
-  const cy = (y0 + y1) / 2;
-  const zA = bounds.minZ + 1.5;
-  const zB = bounds.maxZ - 1.5;
-  const xStart = Math.ceil(bounds.minX / JUNCTION_SPACING) * JUNCTION_SPACING;
-  const xEnd = bounds.maxX;
-  let i = 0;
-  for (let x = xStart; x <= xEnd; x += JUNCTION_SPACING) {
-    for (const z of [zA, zB]) {
-      cols.push(
-        <mesh key={`p${i++}`} position={[x, cy, z]} castShadow>
-          <cylinderGeometry args={[0.35, 0.4, PILLAR_HEIGHT, 12]} />
-          <meshStandardMaterial color={PILLAR_COLOR} roughness={0.9} metalness={0.1} envMapIntensity={0.3} />
-        </mesh>,
-      );
+  const mesh = useMemo(() => {
+    const y0 = floor * FLOOR_HEIGHT;
+    const cy = y0 + PILLAR_HEIGHT / 2;
+    const zA = bounds.minZ + 1.5;
+    const zB = bounds.maxZ - 1.5;
+    const positions: [number, number, number][] = [];
+    const xStart = Math.ceil(bounds.minX / PILLAR_SPACING) * PILLAR_SPACING;
+    for (let x = xStart; x <= bounds.maxX; x += PILLAR_SPACING) {
+      positions.push([x, cy, zA], [x, cy, zB]);
     }
-  }
-  // Corner pillars on the short ends.
-  for (const x of [bounds.minX + 1.5, bounds.maxX - 1.5]) {
-    for (const z of [zA, zB]) {
-      cols.push(
-        <mesh key={`p${i++}`} position={[x, cy, z]} castShadow>
-          <cylinderGeometry args={[0.4, 0.45, PILLAR_HEIGHT, 12]} />
-          <meshStandardMaterial color={PILLAR_COLOR} roughness={0.9} metalness={0.1} envMapIntensity={0.3} />
-        </mesh>,
-      );
+    // Corner pillars on the short ends.
+    for (const x of [bounds.minX + 1.5, bounds.maxX - 1.5]) {
+      positions.push([x, cy, zA], [x, cy, zB]);
     }
-  }
-  return <group>{cols}</group>;
+    if (positions.length === 0) return null;
+    const geo = new THREE.CylinderGeometry(0.35, 0.4, PILLAR_HEIGHT, 12);
+    const inst = new THREE.InstancedMesh(geo, MAT_PILLAR, positions.length);
+    inst.castShadow = true;
+    const m = new THREE.Matrix4();
+    for (let i = 0; i < positions.length; i++) {
+      m.setPosition(positions[i][0], positions[i][1], positions[i][2]);
+      inst.setMatrixAt(i, m);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    inst.computeBoundingSphere();
+    return inst;
+  }, [floor, bounds]);
+
+  useEffect(() => {
+    return () => {
+      // Dispose the per-storey geometry; the shared material is not disposed.
+      mesh?.geometry.dispose();
+    };
+  }, [mesh]);
+
+  if (!mesh) return null;
+  return <primitive object={mesh} />;
 });
 
 /**
- * Post-and-rail guardrail along a polyline.
+ * Post-and-rail guardrail along a polyline, built as ONE merged geometry
+ * (every post + every rail segment) so the whole rail renders as a single
+ * draw call sharing MAT_GUARDRAIL.
  * Posts: 0.8 high, 0.08 diameter cylinders every 4 units.
  * Rail: 0.06 diameter horizontal cylinder at 0.7 height.
  */
@@ -1098,10 +1002,8 @@ function GuardRailAlongPath({
   points: THREE.Vector3[];
   yBase: number;
 }) {
-  const { posts, railMeshes } = useMemo(() => {
-    if (points.length < 2) {
-      return { posts: [] as THREE.Vector3[], railMeshes: [] as { mid: THREE.Vector3; quat: THREE.Quaternion; len: number }[] };
-    }
+  const geo = useMemo(() => {
+    if (points.length < 2) return new THREE.BufferGeometry();
     const cum = cumulativeLengths(points);
     const total = cum[cum.length - 1];
     const postPts: THREE.Vector3[] = [];
@@ -1113,45 +1015,37 @@ function GuardRailAlongPath({
     if (postPts[postPts.length - 1].distanceTo(last) > 0.5) {
       postPts.push(last.clone());
     }
-    // Pre-compute the rail segment transforms (midpoint, orientation, length)
-    // once here so the render body doesn't allocate temp Vector3/Quaternion
-    // objects on every React render.
-    const meshes: { mid: THREE.Vector3; quat: THREE.Quaternion; len: number }[] = [];
+
+    const parts: THREE.BufferGeometry[] = [];
+    const up = new THREE.Vector3(0, 1, 0);
+    for (const p of postPts) {
+      const post = new THREE.CylinderGeometry(0.04, 0.04, 0.8, 8);
+      post.applyMatrix4(new THREE.Matrix4().setPosition(p.x, p.y + yBase + 0.4, p.z));
+      parts.push(post);
+    }
     for (let i = 0; i < postPts.length - 1; i++) {
       const a = postPts[i];
       const b = postPts[i + 1];
       const mid = a.clone().add(b).multiplyScalar(0.5);
-      const dir3d = b.clone().sub(a).normalize();
-      const quat = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 1, 0),
-        dir3d,
+      const dir = b.clone().sub(a).normalize();
+      const len = a.distanceTo(b);
+      const rail = new THREE.CylinderGeometry(0.03, 0.03, len, 8);
+      const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
+      const matrix = new THREE.Matrix4().compose(
+        new THREE.Vector3(mid.x, mid.y + yBase + 0.7, mid.z),
+        quat,
+        new THREE.Vector3(1, 1, 1),
       );
-      meshes.push({ mid, quat, len: a.distanceTo(b) });
+      rail.applyMatrix4(matrix);
+      parts.push(rail);
     }
-    return { posts: postPts, railMeshes: meshes };
-  }, [points]);
+    return mergeGeometries(parts, false) ?? new THREE.BufferGeometry();
+  }, [points, yBase]);
 
-  return (
-    <group>
-      {posts.map((p, i) => (
-        <mesh key={`post${i}`} position={[p.x, p.y + yBase + 0.4, p.z]} castShadow>
-          <cylinderGeometry args={[0.04, 0.04, 0.8, 8]} />
-          <meshStandardMaterial color={GUARDRAIL_COLOR} roughness={0.5} metalness={0.6} envMapIntensity={0.3} />
-        </mesh>
-      ))}
-      {railMeshes.map((r, i) => (
-        <mesh
-          key={`rail${i}`}
-          position={[r.mid.x, r.mid.y + yBase + 0.7, r.mid.z]}
-          quaternion={r.quat}
-          castShadow
-        >
-          <cylinderGeometry args={[0.03, 0.03, r.len, 8]} />
-          <meshStandardMaterial color={GUARDRAIL_COLOR} roughness={0.5} metalness={0.6} envMapIntensity={0.3} />
-        </mesh>
-      ))}
-    </group>
-  );
+  useEffect(() => () => geo.dispose(), [geo]);
+
+  if (points.length < 2) return null;
+  return <mesh geometry={geo} material={MAT_GUARDRAIL} castShadow />;
 }
 
 /**
@@ -1229,34 +1123,13 @@ const Gate = memo(function Gate({
   label: string;
 }) {
   const [x, y, z] = position;
+  const barMat = color === "#22c55e" ? MAT_GATE_GREEN : MAT_GATE_RED;
   return (
     <group position={[x, y, z]}>
-      <mesh position={[0, 2, -ROAD_WIDTH / 2]} castShadow>
-        <boxGeometry args={[0.3, 4, 0.3]} />
-        <meshStandardMaterial color="#20242c" roughness={0.8} />
-      </mesh>
-      <mesh position={[0, 2, ROAD_WIDTH / 2]} castShadow>
-        <boxGeometry args={[0.3, 4, 0.3]} />
-        <meshStandardMaterial color="#20242c" roughness={0.8} />
-      </mesh>
-      <mesh position={[0, 4, 0]}>
-        <boxGeometry args={[0.3, 0.3, ROAD_WIDTH + 0.4]} />
-        <meshStandardMaterial
-          color={color}
-          emissive={color}
-          emissiveIntensity={0.6}
-          roughness={0.4}
-        />
-      </mesh>
-      <mesh position={[0, 3.2, 0]}>
-        <boxGeometry args={[1.6, 0.9, 0.12]} />
-        <meshStandardMaterial
-          color={color}
-          emissive={color}
-          emissiveIntensity={0.5}
-          roughness={0.4}
-        />
-      </mesh>
+      {/* Two side legs (merged) */}
+      <mesh geometry={GATE_LEGS_GEO} material={MAT_GATE_FRAME} castShadow />
+      {/* Top bar + label panel (merged) */}
+      <mesh geometry={GATE_BARS_GEO} material={barMat} />
       <Html position={[0, 3.2, 0.08]} center distanceFactor={80} occlude={false}>
         <div
           style={{
@@ -1294,34 +1167,23 @@ const ApproachRoad = memo(function ApproachRoad({
   const baseY = floor * FLOOR_HEIGHT + ROAD_Y;
   const half = ROAD_WIDTH / 2;
 
+  // Both edge lines share MAT_EDGE, so merge them into one geometry.
+  const edges = useMemo(() => {
+    const a = makeBox(len, 0.02, 0.15, cx, baseY + 0.01, cz - half + 0.075);
+    const b = makeBox(len, 0.02, 0.15, cx, baseY + 0.01, cz + half - 0.075);
+    return mergeGeometries([a, b], false) ?? new THREE.BufferGeometry();
+  }, [len, cx, cz, baseY, half]);
+
+  useEffect(() => () => edges.dispose(), [edges]);
+
   return (
     <group>
       {/* Road surface */}
-      <mesh position={[cx, baseY - 0.1, cz]} receiveShadow>
+      <mesh position={[cx, baseY - 0.1, cz]} material={MAT_ASPHALT} receiveShadow>
         <boxGeometry args={[len, 0.2, ROAD_WIDTH]} />
-        <meshStandardMaterial color={LANE_COLOR} roughness={0.95} envMapIntensity={0.3} />
       </mesh>
-      {/* Edge lines */}
-      <mesh position={[cx, baseY + 0.01, cz - half + 0.075]}>
-        <boxGeometry args={[len, 0.02, 0.15]} />
-        <meshStandardMaterial
-          color={MARKING_WHITE}
-          roughness={0.5}
-          emissive={MARKING_WHITE}
-          emissiveIntensity={0.1}
-          envMapIntensity={0.3}
-        />
-      </mesh>
-      <mesh position={[cx, baseY + 0.01, cz + half - 0.075]}>
-        <boxGeometry args={[len, 0.02, 0.15]} />
-        <meshStandardMaterial
-          color={MARKING_WHITE}
-          roughness={0.5}
-          emissive={MARKING_WHITE}
-          emissiveIntensity={0.1}
-          envMapIntensity={0.3}
-        />
-      </mesh>
+      {/* Edge lines (left + right merged) */}
+      <mesh geometry={edges} material={MAT_EDGE} />
     </group>
   );
 });
@@ -1330,38 +1192,21 @@ const ApproachRoad = memo(function ApproachRoad({
 /** A post-mounted parking-area info sign at an aisle entry.
  *  Shows the slot number range for that aisle (e.g. "A1 - A16") with an
  *  arrow pointing in the direction of travel. Dark LED aesthetic matching
- *  the permanent signboards: matte-black frame, sky-blue accent. */
+ *  the permanent signboards: matte-black frame, sky-blue accent. The post +
+ *  tilted panel frame are pre-merged into AREA_SIGN_GEO so each sign is two
+ *  meshes (body + screen) plus its two troika labels. */
 const AreaSignboard = memo(function AreaSignboard({ sign }: { sign: AreaSignDesc }) {
   const [x, y, z] = sign.position;
-  const panelW = 5.0;
-  const panelH = 2.2;
-  const postH = 4;
   const ACCENT = "#38bdf8";
 
   return (
     <group position={[x, y, z]} rotation={[0, sign.rotY, 0]}>
-      {/* Vertical post */}
-      <mesh position={[0, postH / 2, 0]} castShadow>
-        <cylinderGeometry args={[0.08, 0.08, postH, 8]} />
-        <meshStandardMaterial color="#080a10" metalness={0.5} roughness={0.5} />
-      </mesh>
-      {/* Sign panel — matte black frame */}
-      <group position={[0, postH + panelH / 2, 0]} rotation={[0.15, 0, 0]}>
-        <mesh castShadow>
-          <boxGeometry args={[panelW, panelH, 0.15]} />
-          <meshStandardMaterial color="#080a10" metalness={0.4} roughness={0.6} />
-        </mesh>
+      {/* Merged post + tilted panel frame */}
+      <mesh geometry={AREA_SIGN_GEO} material={MAT_AREA_DARK} castShadow />
+      {/* Tilted screen group (matches the tilt baked into the panel frame) */}
+      <group position={[0, AREA_POST_H + AREA_PANEL_H / 2, 0]} rotation={[0.15, 0, 0]}>
         {/* Emissive screen — true black with dark-blue glow */}
-        <mesh position={[0, 0, 0.08]}>
-          <planeGeometry args={[panelW - 0.4, panelH - 0.3]} />
-          <meshStandardMaterial
-            color="#000000"
-            emissive="#0a1622"
-            emissiveIntensity={0.4}
-            roughness={0.5}
-            metalness={0.1}
-          />
-        </mesh>
+        <mesh geometry={AREA_SCREEN_GEO} material={MAT_AREA_SCREEN} position={[0, 0, 0.08]} />
         {/* Slot range label */}
         <Text
           position={[0, 0.2, 0.1]}
@@ -1457,6 +1302,12 @@ export const ParkingLot = memo(function ParkingLot({
         <FloorSlab key={`slab${f}`} floor={f} bounds={bounds} rampHole={geo.rampHoles.get(f)} />
       ))}
 
+      {/* Baked flat paint per floor: road surface, edge/centre lines, bay
+          outlines, bay numbers, and direction arrows — one textured plane. */}
+      {floors.map((f) => (
+        <FloorPaint key={`paint${f}`} lot={lot} floor={f} bounds={bounds} />
+      ))}
+
       {/* Pillars hold up the ceiling of each non-top storey. */}
       {floors
         .filter((f) => f < maxFloor)
@@ -1506,11 +1357,6 @@ export const ParkingLot = memo(function ParkingLot({
       {/* Parking area info signs at aisle entries (slot range per aisle). */}
       {geo.areaSigns.map((s, i) => (
         <AreaSignboard key={`as${i}`} sign={s} />
-      ))}
-
-      {/* Parking bay markings. */}
-      {geo.slots.map((s, i) => (
-        <SlotMarking key={`s${i}`} slot={s} />
       ))}
 
       {/* Floor labels are now rendered in Scene.tsx (bright, billboarded). */}
