@@ -189,6 +189,22 @@ function isNodeBusy(
       const legLength = nodeGap(lot, other.fromNode, other.toNode);
       if (other.progress * legLength > CAR_LENGTH * 1.5) return false;
     }
+    // The mirror of the same idea, and the one that produced the jam Deepu
+    // could see: a car heading TOWARD `target` held it for the whole leg. On
+    // a 2.6-unit aisle hop that is a third of a second and correct. On the
+    // ramp, which is one leg 53 units end to end, a car entering it reserved
+    // the node at the TOP for the whole twelve-second climb, so every car
+    // behind stopped dead at the ramp foot — which is exactly where the RAMP
+    // UP board hangs. Same on a turn loop, which is one 17-unit leg.
+    //
+    // A car now only holds the node it is heading for once it is genuinely
+    // about to arrive. Two car lengths is far enough out that it still owns
+    // the node before anyone else can reach it, and on every aisle hop the
+    // leg is shorter than that, so short-range behaviour is unchanged.
+    if (other.toNode === target && other.fromNode !== target) {
+      const legLength = nodeGap(lot, other.fromNode, other.toNode);
+      if ((1 - other.progress) * legLength > CAR_LENGTH * 2) return false;
+    }
     const otherDirection = carRoadDirection(lot, other, instructions);
     return direction === null || otherDirection === null || direction === otherDirection;
   };

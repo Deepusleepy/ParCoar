@@ -123,6 +123,9 @@ const RULE_Y = HERO_TOP - HERO_H - 0.1;
 const QUEUE_TOP_Y = RULE_Y - 0.5;
 const QUEUE_PITCH = 0.8;
 const QUEUE_ROWS = 2;
+/** How far the hero chevron is stretched along its own shaft, so the line
+ *  reads as "47 m ----> RIGHT" rather than a small tick between two words. */
+const HERO_ARROW_LENGTH = 1.5;
 
 /* --- Shared geometry: one of each, reused across all eleven boards. --- */
 const ARROW_SHAPE = (() => {
@@ -218,9 +221,18 @@ const ARROW_DIM_MATERIAL = new THREE.MeshStandardMaterial({
   roughness: 0.6,
 });
 
-/** The car at the front of the queue, printed large across the top of the
- *  board: colour block, plate, the move to make here, where it is going, and
- *  how far off it still is. */
+/**
+ * The car at the front of the queue, printed large across the top.
+ *
+ * Two lines, each reading left to right as one sentence:
+ *   line 1   PLATE ........................ BAY
+ *   line 2   distance  ---->  DIRECTION
+ *
+ * Who it is and where they are going on top; how far and which way underneath.
+ * The earlier layout put the direction word hard left and the distance under
+ * the plate, which split the two halves of the same instruction across
+ * opposite corners of the board.
+ */
 function HeroCar({ car }: { car: BoardCar }) {
   const hex = COLOR_HEX[car.color];
   return (
@@ -234,6 +246,8 @@ function HeroCar({ car }: { car: BoardCar }) {
       <mesh position={[-SCREEN_HALF_W + 0.22, HERO_CENTER_Y, 0.01]} geometry={HERO_BAR_GEO}>
         <meshStandardMaterial color={hex} emissive={hex} emissiveIntensity={0.95} roughness={0.4} />
       </mesh>
+
+      {/* Line 1: who, and where they are going. */}
       <Text
         position={[-SCREEN_HALF_W + 0.62, HERO_LINE1_Y, 0.02]}
         fontSize={0.66}
@@ -247,9 +261,22 @@ function HeroCar({ car }: { car: BoardCar }) {
       </Text>
       <Text
         position={[SCREEN_HALF_W - 0.15, HERO_LINE1_Y, 0.02]}
-        fontSize={0.5}
+        fontSize={0.72}
         color={BODY_TEXT}
         anchorX="right"
+        anchorY="middle"
+        outlineWidth={0.03}
+        outlineColor="#000000"
+      >
+        {destinationLabel(car)}
+      </Text>
+
+      {/* Line 2: how far, then which way. */}
+      <Text
+        position={[-SCREEN_HALF_W + 0.62, HERO_LINE2_Y, 0.02]}
+        fontSize={0.52}
+        color={ACCENT}
+        anchorX="left"
         anchorY="middle"
         outlineWidth={0.03}
         outlineColor="#000000"
@@ -257,99 +284,62 @@ function HeroCar({ car }: { car: BoardCar }) {
         {distanceWord(car.distance)}
       </Text>
       <mesh
-        position={[-SCREEN_HALF_W + 0.85, HERO_LINE2_Y, 0.02]}
-        scale={[0.62, 0.62, 0.62]}
+        position={[0.45, HERO_LINE2_Y, 0.02]}
+        scale={[0.55, HERO_ARROW_LENGTH, 0.55]}
         rotation={[0, 0, directionToRotation(car.direction)]}
         geometry={ARROW_GEOMETRY}
         material={ARROW_BRIGHT_MATERIAL}
       />
       <Text
-        position={[-SCREEN_HALF_W + 1.25, HERO_LINE2_Y, 0.02]}
-        fontSize={0.8}
-        color={BODY_TEXT}
-        anchorX="left"
-        anchorY="middle"
-        outlineWidth={0.03}
-        outlineColor="#000000"
-      >
-        {directionWord(car.direction)}
-      </Text>
-      <Text
         position={[SCREEN_HALF_W - 0.15, HERO_LINE2_Y, 0.02]}
-        fontSize={0.68}
+        fontSize={0.8}
         color={BODY_TEXT}
         anchorX="right"
         anchorY="middle"
         outlineWidth={0.03}
         outlineColor="#000000"
       >
-        {destinationLabel(car)}
+        {directionWord(car.direction)}
       </Text>
     </group>
   );
 }
 
-/** One waiting car, small, under the rule. Same five facts as the hero row so
- *  a driver three back can read their own instruction and act on it. */
+/** One waiting car, small, under the rule. Same five facts as the hero block
+ *  and in the same reading order, so a driver two back scans it the same way:
+ *  plate, bay, then distance and direction. */
 function QueuedCar({ car, index }: { car: BoardCar; index: number }) {
   const y = QUEUE_TOP_Y - index * QUEUE_PITCH;
   const hex = COLOR_HEX[car.color];
+  const label = (x: number, text: string, size = 0.46) => (
+    <Text
+      position={[x, 0, 0.02]}
+      fontSize={size}
+      color={DIM_TEXT}
+      anchorX="left"
+      anchorY="middle"
+      outlineWidth={0.02}
+      outlineColor="#000000"
+    >
+      {text}
+    </Text>
+  );
   return (
     <group position={[0, y, 0]}>
       <mesh position={[-SCREEN_HALF_W + 0.35, 0, 0.01]} geometry={QUEUE_SWATCH_GEO}>
         <meshStandardMaterial color={hex} emissive={hex} emissiveIntensity={0.5} roughness={0.45} />
       </mesh>
-      <Text
-        position={[-SCREEN_HALF_W + 0.8, 0, 0.02]}
-        fontSize={0.46}
-        color={DIM_TEXT}
-        anchorX="left"
-        anchorY="middle"
-        outlineWidth={0.02}
-        outlineColor="#000000"
-      >
-        {car.plate}
-      </Text>
+      {label(-SCREEN_HALF_W + 0.8, car.plate)}
+      {label(-1.5, destinationLabel(car))}
+      {label(0.55, distanceWord(car.distance), 0.4)}
       <mesh
-        position={[-1.5, 0, 0.02]}
-        scale={[0.4, 0.4, 0.4]}
+        position={[2.05, 0, 0.02]}
+        scale={[0.3, 0.55, 0.3]}
         rotation={[0, 0, directionToRotation(car.direction)]}
         geometry={ARROW_GEOMETRY}
         material={ARROW_DIM_MATERIAL}
       />
-      <Text
-        position={[-1.25, 0, 0.02]}
-        fontSize={0.46}
-        color={DIM_TEXT}
-        anchorX="left"
-        anchorY="middle"
-        outlineWidth={0.02}
-        outlineColor="#000000"
-      >
-        {directionWord(car.direction)}
-      </Text>
-      <Text
-        position={[1.1, 0, 0.02]}
-        fontSize={0.46}
-        color={DIM_TEXT}
-        anchorX="left"
-        anchorY="middle"
-        outlineWidth={0.02}
-        outlineColor="#000000"
-      >
-        {destinationLabel(car)}
-      </Text>
-      <Text
-        position={[SCREEN_HALF_W - 0.15, 0, 0.02]}
-        fontSize={0.4}
-        color={DIM_TEXT}
-        anchorX="right"
-        anchorY="middle"
-        outlineWidth={0.02}
-        outlineColor="#000000"
-      >
-        {distanceWord(car.distance)}
-      </Text>
+      {label(2.4, directionWord(car.direction))}
     </group>
   );
 }
