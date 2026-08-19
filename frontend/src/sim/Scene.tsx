@@ -39,8 +39,9 @@ const FLOORS = [0, 1, 2];
  *  Total: 1 directional + 5 pointLights = 6 real lights (same count as the
  *  previous rig, which had 3 overhead + 1 fill + sun + rim = 6).
  *
- *  Visible light sources are emissive geometry (free): three InstancedMeshes
- *  of ceiling strip fixtures, one per floor — 3 draw calls total.
+ *  Visible light sources are emissive geometry (free): two InstancedMeshes
+ *  per covered floor (a dark housing + an emissive lamp panel), so 4 draw
+ *  calls total for ceiling fixtures across the two enclosed storeys.
  */
 
 /** Shadow frustum half-extents, centred on the lot. The footprint is ~55 wide
@@ -69,66 +70,125 @@ const INSTANCES_PER_FLOOR = AISLE_Z.length * SEG_OFFSETS.length; // 4 * 3 = 12
 /** Only storeys with a slab above them get ceiling fixtures. */
 const COVERED_FLOORS = FLOORS.slice(0, -1);
 
-/** One InstancedMesh of ceiling strips per COVERED floor, mounted just below
- *  that floor's ceiling slab. The ceiling of storey N is the slab of floor
- *  N+1, whose underside sits at (N+1)*FLOOR_HEIGHT - 0.5; the strips hang 0.2
- *  below that.
+/** A batten-style ceiling fixture: a matte near-black housing whose top is
+ *  flush against the slab above (so it reads as mounted, not hovering), with
+ *  an emissive lamp panel recessed into its underside only. The lamp is
+ *  slightly narrower than the housing so a dark rim shows around the glowing
+ *  face, selling the "recessed" read.
  *
- *  The top storey has no slab above it, so it gets no strips. Hanging them
+ *  The ceiling of storey N is the slab of floor N+1, whose underside sits at
+ *  (N+1)*FLOOR_HEIGHT - 0.5. The housing top is placed exactly there (flush
+ *  mount — no drop stem needed), so each fixture is visibly attached to the
+ *  slab rather than floating.
+ *
+ *  The top storey has no slab above it, so it gets no fixtures. Hanging them
  *  there anyway left a row of bright bars floating unsupported in the sky,
  *  clearly visible from every outside camera angle. It is an open roof deck;
- *  the directional skylight already lights it. */
+ *  the directional skylight already lights it.
+ *
+ *  Two InstancedMeshes per covered floor (housing + lamp) sharing one
+ *  geometry and one material each across floors — 4 draw calls total, no
+ *  real lights added. */
+const HOUSING_HEIGHT = 0.3;
+const HOUSING_WIDTH = 0.5;
+const HOUSING_TOP_Y = (floor: number) => (floor + 1) * FLOOR_HEIGHT - 0.5;
+const HOUSING_CENTER_Y = (floor: number) => HOUSING_TOP_Y(floor) - HOUSING_HEIGHT / 2;
+// Lamp sits just inside the housing's underside face, slightly inset in X/Z
+// so the dark housing rim frames it.
+const LAMP_LENGTH = SEG_LENGTH - 0.4;
+const LAMP_WIDTH = 0.34;
+const LAMP_THICKNESS = 0.06;
+const LAMP_CENTER_Y = (floor: number) => HOUSING_TOP_Y(floor) - HOUSING_HEIGHT + LAMP_THICKNESS / 2;
+
 function CeilingFixtures() {
-  const meshRefs = [
+  const housingRefs = [
+    useRef<THREE.InstancedMesh>(null),
+    useRef<THREE.InstancedMesh>(null),
+  ];
+  const lampRefs = [
     useRef<THREE.InstancedMesh>(null),
     useRef<THREE.InstancedMesh>(null),
   ];
 
-  // One shared box geometry + one emissive material for all floors.
-  const geometry = useMemo(() => new THREE.BoxGeometry(SEG_LENGTH, 0.1, 0.32), []);
-  const material = useMemo(
+  // One shared geometry + material per role, reused across both floors.
+  const housingGeometry = useMemo(
+    () => new THREE.BoxGeometry(SEG_LENGTH, HOUSING_HEIGHT, HOUSING_WIDTH),
+    [],
+  );
+  const housingMaterial = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        // Matte near-black matching the garage palette (CEILING_COLOR).
+        color: 0x0a0b0e,
+        roughness: 0.9,
+        metalness: 0,
+      }),
+    [],
+  );
+  const lampGeometry = useMemo(
+    () => new THREE.BoxGeometry(LAMP_LENGTH, LAMP_THICKNESS, LAMP_WIDTH),
+    [],
+  );
+  const lampMaterial = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
         color: 0x000000,
         emissive: new THREE.Color(0xfff2e0),
-        emissiveIntensity: 1.5,
+        // Tone mapping re-enabled: with toneMapped:false the emissive was
+        // jumping straight to sRGB white and clipping to a flat disc. Keeping
+        // toneMapped:true lets ACESFilmic curve the bright value so the lamp
+        // reads as bright warm white while retaining shading, and the
+        // surrounding ceiling picks up a soft falloff instead of a hard
+        // white blob. Intensity tuned high enough to still read as a source.
+        emissiveIntensity: 2.6,
         roughness: 1,
         metalness: 0,
-        // Read as a bright source rather than being tonemapped back to grey.
-        toneMapped: false,
+        toneMapped: true,
       }),
     [],
   );
 
-  // Write instance matrices once for every floor's InstancedMesh. A single
-  // effect (rather than one per floor) keeps the hook count stable.
+  // Write instance matrices once for every floor's two InstancedMeshes. A
+  // single effect (rather than one per floor) keeps the hook count stable.
   useLayoutEffect(() => {
     const m = new THREE.Matrix4();
     COVERED_FLOORS.forEach((floor, fi) => {
-      const mesh = meshRefs[fi].current;
-      if (!mesh) return;
-      const ceilY = (floor + 1) * FLOOR_HEIGHT - 0.7;
+      const housing = housingRefs[fi].current;
+      const lamp = lampRefs[fi].current;
+      if (!housing || !lamp) return;
+      const housingY = HOUSING_CENTER_Y(floor);
+      const lampY = LAMP_CENTER_Y(floor);
       let i = 0;
       for (const z of AISLE_Z) {
         for (const ox of SEG_OFFSETS) {
-          m.makeTranslation(AISLE_X_CENTER + ox, ceilY, z);
-          mesh.setMatrixAt(i, m);
+          const x = AISLE_X_CENTER + ox;
+          m.makeTranslation(x, housingY, z);
+          housing.setMatrixAt(i, m);
+          m.makeTranslation(x, lampY, z);
+          lamp.setMatrixAt(i, m);
           i += 1;
         }
       }
-      mesh.instanceMatrix.needsUpdate = true;
+      housing.instanceMatrix.needsUpdate = true;
+      lamp.instanceMatrix.needsUpdate = true;
     });
   }, []);
 
   return (
     <>
       {COVERED_FLOORS.map((f, fi) => (
-        <instancedMesh
-          key={`fixtures-${f}`}
-          ref={meshRefs[fi]}
-          args={[geometry, material, INSTANCES_PER_FLOOR]}
-          frustumCulled={false}
-        />
+        <group key={`fixtures-${f}`}>
+          <instancedMesh
+            ref={housingRefs[fi]}
+            args={[housingGeometry, housingMaterial, INSTANCES_PER_FLOOR]}
+            frustumCulled={false}
+          />
+          <instancedMesh
+            ref={lampRefs[fi]}
+            args={[lampGeometry, lampMaterial, INSTANCES_PER_FLOOR]}
+            frustumCulled={false}
+          />
+        </group>
       ))}
     </>
   );
