@@ -18,6 +18,15 @@ const MARGIN = 10;
 
 const FLOOR_LABEL = ["A", "B", "C"];
 
+/** Node id to the label painted on the floor and shown on every board:
+ *  "S0_4" -> "A4". Anything that is not a bay (the exit, say) is passed
+ *  through unchanged so it still reads sensibly. */
+function bayLabel(id: string | null): string {
+  if (!id) return "no bay";
+  const m = id.match(/^S(\d+)_(\d+)$/);
+  return m ? `${String.fromCharCode(65 + Number(m[1]))}${m[2]}` : id;
+}
+
 /** Radius and opacity per node type, tuned so 160 bays per floor do not
  *  overwhelm the schematic. Bays are tiny and dim; structure nodes are
  *  larger and brighter. */
@@ -73,7 +82,7 @@ export const RoutePanel = memo(function RoutePanel({
   const floorLabel = FLOOR_LABEL[floor] ?? String(floor);
 
   return (
-    <div className="pointer-events-auto absolute bottom-4 left-4 w-[360px] rounded-lg border border-neutral-800 bg-black/80 p-3 backdrop-blur-sm">
+    <div className="pointer-events-auto absolute bottom-14 left-4 w-[360px] rounded-lg border border-neutral-800 bg-black/80 p-3 backdrop-blur-sm">
       <CarChips
         cars={cars}
         selectedCarId={selectedCarId}
@@ -119,7 +128,7 @@ function CarChips({
             />
             <span>{c.plate}</span>
             <span className="text-neutral-500">·</span>
-            <span className="text-neutral-400">{c.slot ?? "—"}</span>
+            <span className="text-neutral-400">{bayLabel(c.slot)}</span>
           </button>
         );
       })}
@@ -171,7 +180,7 @@ function Schematic({
           <line
             key={key}
             x1={ax} y1={ay} x2={bx} y2={by}
-            stroke="#27272a" strokeWidth={0.6}
+            stroke="#4b5566" strokeWidth={1.1}
           />
         );
       }
@@ -280,10 +289,10 @@ function Readout({ car }: { car: RoutePanelCar | null }) {
   return (
     <div className="mt-2 flex items-center justify-between text-[11px]">
       <span className="text-neutral-400">
-        Bay <span className="font-semibold text-neutral-100">{car.slot ?? "—"}</span>
+        Bay <span className="font-semibold text-neutral-100">{bayLabel(car.slot)}</span>
       </span>
       <span className="text-neutral-400">
-        <span className="font-semibold tabular-nums text-neutral-100">{hops}</span> hops left
+        <span className="font-semibold tabular-nums text-neutral-100">{hops}</span> {hops === 1 ? "hop" : "hops"} left
       </span>
     </div>
   );

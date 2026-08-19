@@ -616,20 +616,23 @@ interface CarExteriorProps {
    *  animated). Steering is applied as a rotation about world Y, separate
    *  from the spin group so the two rotations never share an object. */
   steerRefs: React.MutableRefObject<(THREE.Group | null)[]>;
-  /** When false the GLTF body mesh is hidden (POV mode — the procedural
-   *  interior provides the visible cockpit). Wheels remain visible. */
-  bodyVisible?: boolean;
 }
 
 /** Loads the GLTF body, removes wheel nodes, recolors with race-red clearcoat. */
-function CarExteriorInner({ wheelRefs, steerRefs, bodyVisible = true }: CarExteriorProps) {
+function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
   const { scene } = useGLTF(PLAYER_MODEL_PATH);
 
   const { bodyMat, glassMat, scene: cloned } = useMemo(() => {
     const s = scene.clone();
 
     // Race-red clearcoat paint — distinct from AI car colours.
+    // DoubleSide matters: in POV the camera is INSIDE this shell. With the
+    // default front-side-only rendering the body panels are culled from within,
+    // so the cabin had no walls at all and parked cars showed through where the
+    // driver's door should be. Hiding the body in POV (the previous fix for the
+    // interior clipping through it) caused exactly that.
     const body = new THREE.MeshPhysicalMaterial({
+      side: THREE.DoubleSide,
       color: new THREE.Color("#e0141b"),
       metalness: 0.6,
       roughness: 0.35,
@@ -699,7 +702,7 @@ function CarExteriorInner({ wheelRefs, steerRefs, bodyVisible = true }: CarExter
       {/* GLTF body — rotated to face +X, scaled to 4.5 length.
           Hidden in POV mode so its opaque panels don't block the cockpit
           view; the procedural CarInterior provides the visible dashboard. */}
-      <primitive object={cloned} visible={bodyVisible} rotation={[0, PLAYER_FORWARD_ROT, 0]} scale={PLAYER_MODEL_SCALE} />
+      <primitive object={cloned} rotation={[0, PLAYER_FORWARD_ROT, 0]} scale={PLAYER_MODEL_SCALE} />
 
       {/* Procedural wheels with spin + steer refs (animated in DrivableCar
           useFrame). Three nested groups keep the three rotations on separate
@@ -1617,7 +1620,7 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
   return (
     <>
       <group ref={groupRef} position={spawn.pos} rotation={[0, spawn.heading, 0]}>
-        <CarExterior wheelRefs={wheelRefs} steerRefs={steerRefs} bodyVisible={!pov} />
+        <CarExterior wheelRefs={wheelRefs} steerRefs={steerRefs} />
         {/* The procedural interior exists only to be seen from the driver's-eye
             camera. Rendering it in third person draws the box-model cockpit
             through the GLTF body (roof liner, windows, seats all clip), so it

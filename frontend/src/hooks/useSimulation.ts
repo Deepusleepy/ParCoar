@@ -4,6 +4,7 @@ import type {
   Direction,
   CarColor,
   CarRosterEntry,
+  CarRoute,
   InstructionSign,
   InstructionsMessage,
   LotData,
@@ -58,6 +59,7 @@ export interface SimulationState {
   lotFull: boolean;
   nodeSigns: NodeSign[];
   carRoster: CarRosterEntry[];
+  carRoutes: CarRoute[];
   onArrive: (carId: string, node: string) => void;
 }
 
@@ -157,6 +159,7 @@ export function useSimulation(): SimulationState {
   const [lotFull, setLotFull] = useState(false);
   const [nodeSigns, setNodeSigns] = useState<NodeSign[]>([]);
   const [carRoster, setCarRoster] = useState<CarRosterEntry[]>([]);
+  const [carRoutes, setCarRoutes] = useState<CarRoute[]>([]);
 
   // Refs for values needed inside stable callbacks / intervals.
   const activeCarsRef = useRef<ActiveCar[]>([]);
@@ -172,6 +175,7 @@ export function useSimulation(): SimulationState {
   // Signature of the last carRoster array we committed to state, so we
   // only call setCarRoster when the set of active cars actually changes.
   const lastRosterSigRef = useRef("");
+  const lastRouteSigRef = useRef("");
   // Pending no_slot removal timers; cleared on unmount so a teardown
   // mid-grace-period doesn't fire setActiveCars after the hook is gone.
   const noSlotTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
@@ -436,6 +440,33 @@ export function useSimulation(): SimulationState {
           status: car.status,
         });
       }
+      // --- Routes for the 2D route panel ---
+      // Same instruction data the boards use, surfaced so the panel can draw
+      // the search result the backend produced. Gated on a signature so a
+      // 5 Hz tick does not redraw the schematic when nothing has moved.
+      const routes: CarRoute[] = [];
+      for (const car of cars) {
+        if (car.parked) continue;
+        const sign = map.get(car.id);
+        if (!sign) continue;
+        // A one-node path is a car sitting on its destination; there is no
+        // route to draw, and selecting it left the panel showing "0 hops".
+        if (!sign.path || sign.path.length < 2) continue;
+        routes.push({
+          carId: car.id,
+          plate: sign.plate,
+          color: sign.color,
+          slot: sign.slot ?? null,
+          path: sign.path ?? [],
+          floor: lotData.nodes[sign.node]?.floor ?? 0,
+        });
+      }
+      const routeSig = routes.map((r) => `${r.carId}:${r.path[0]}:${r.path.length}`).join("|");
+      if (routeSig !== lastRouteSigRef.current) {
+        lastRouteSigRef.current = routeSig;
+        setCarRoutes(routes);
+      }
+
       const rosterSig = roster
         .map((r) => `${r.carId}:${r.plate}:${r.slot}:${r.status}`)
         .join("|");
@@ -600,6 +631,7 @@ export function useSimulation(): SimulationState {
     lotFull,
     nodeSigns,
     carRoster,
+    carRoutes,
     onArrive,
   };
 }

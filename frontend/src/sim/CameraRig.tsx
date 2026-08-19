@@ -402,7 +402,12 @@ export function CameraRig({
         // the dash top (about y=1.06) rather than skimming it.
         const EYE_FWD = -0.05;
         const EYE_RIGHT = 0.42;
-        const EYE_UP = 1.19;
+        // The cabin floor is at y=0.26, so 1.19 put the eye only 0.93 above it
+        // where a real driver sits 1.15 to 1.25 up. Being that low meant the
+        // rim and dash top filled the frame and no road was visible at all.
+        // 1.31 overshot the other way, lifting the eye above the windscreen
+        // header so the cabin stopped framing the view. 1.25 sits between.
+        const EYE_UP = 1.25;
         tmpPos.current.set(EYE_FWD, EYE_UP, -EYE_RIGHT);
         tmpLook.current.set(EYE_FWD + 14, EYE_UP - 0.25, -EYE_RIGHT);
         tmpEuler.current.set(0, yaw, pitch, "XYZ");

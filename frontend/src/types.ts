@@ -147,6 +147,21 @@ export interface CarRosterEntry {
   status: CarStatus;
 }
 
+/** One active car's current route, for the 2D route panel. This is the same
+ *  data the signboards use, surfaced so the panel can draw the search result
+ *  the Python backend produced. */
+export interface CarRoute {
+  carId: string;
+  plate: string;
+  color: CarColor;
+  /** Where it is heading: a bay, or the exit if it is on its way out. */
+  slot: string | null;
+  /** Whole remaining route, current node first. */
+  path: string[];
+  /** Floor the car is on right now. */
+  floor: number;
+}
+
 /** A dynamic sign at a junction node, showing info about the car waiting
  *  there. Computed from the latest backend instructions on every WS message
  *  — only present while a car is actually stopped at the node. */

@@ -168,6 +168,11 @@ export const Scene = memo(function Scene({
 
   // Target object for the skylight so its shadow frustum is centred on the
   // lot, not the world origin.
+  // Floor labels are camera-facing billboards, which reads well from outside
+  // but puts enormous unforeshortened text across the aisle when the camera is
+  // down inside the garage driving a car.
+  const inCar = cameraMode === "pov" || cameraMode === "drive" || cameraMode === "follow";
+
   const lightTarget = useMemo(() => {
     const obj = new THREE.Object3D();
     obj.position.set(LOT_CENTER_X, 0, LOT_CENTER_Z);
@@ -278,13 +283,13 @@ export const Scene = memo(function Scene({
           camera distance: fine from far away, but flying close blew a single
           label up to fill half the screen. In-world text scales the way
           everything else in the scene does. */}
-      {FLOORS.map((f) => (
+      {!inCar && FLOORS.map((f) => (
         <Billboard
           key={`flabel${f}`}
-          position={[LOT_CENTER_X, f * FLOOR_HEIGHT + 4.5, LOT_MIN_Z + 0.4]}
+          position={[LOT_CENTER_X, f * FLOOR_HEIGHT + 5, LOT_MIN_Z - 4]}
         >
         <Text
-          fontSize={2.6}
+          fontSize={2}
           color="#ffffff"
           anchorX="center"
           anchorY="middle"

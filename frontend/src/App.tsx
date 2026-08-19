@@ -6,6 +6,7 @@ import { ActiveCarMesh, ParkedCarField, type ParkedCarInstance } from "./sim/Car
 import { DrivableCar, buildRoadSegments, type ParkedCarPos, type PlayerSpeedRef } from "./sim/DrivableCar";
 import { AISLE_SPACING, CAR_Y_OFFSET, COLOR_HEX, toWorld } from "./sim/constants";
 import type { CameraMode } from "./sim/CameraRig";
+import { RoutePanel, type RoutePanelCar } from "./ui/RoutePanel";
 
 export function App() {
   const sim = useSimulation();
@@ -15,6 +16,9 @@ export function App() {
 
   // Camera system state.
   const [cameraMode, setCameraMode] = useState<CameraMode>("orbit");
+  // Which car's route the 2D panel is drawing. This is what turns the demo
+  // from "cars drive around" into "here is the search the backend ran".
+  const [routeCarId, setRouteCarId] = useState<string | null>(null);
   const [followCarId, setFollowCarId] = useState<string | null>(null);
   // Live car transforms (id -> THREE.Group), populated by ActiveCarMesh each
   // frame and read by CameraRig for follow/POV modes.
@@ -37,6 +41,14 @@ export function App() {
       setFollowCarId(ids[0]);
     }
   }, [cameraMode, followCarId, sim.activeCars]);
+
+  // Drop the route selection when that car parks or leaves, and adopt the
+  // first available car so the panel is never empty for no reason.
+  useEffect(() => {
+    const ids = sim.carRoutes.map((r) => r.carId);
+    if (routeCarId && !ids.includes(routeCarId)) setRouteCarId(ids[0] ?? null);
+    else if (!routeCarId && ids.length > 0) setRouteCarId(ids[0]);
+  }, [sim.carRoutes, routeCarId]);
 
   // Poll the player car's speed for the driving HUD (~10 Hz is enough for a
   // speedometer; faster updates just waste renders).
@@ -90,6 +102,13 @@ export function App() {
     for (const c of sim.parked) push(c);
     return out;
   }, [sim.preParked, sim.parked, lot]);
+
+  // Route panel view-model: the sim speaks in colour names, the panel wants
+  // hex it can drop straight into an SVG fill.
+  const routePanelCars = useMemo<RoutePanelCar[]>(
+    () => sim.carRoutes.map((r) => ({ ...r, color: COLOR_HEX[r.color] })),
+    [sim.carRoutes],
+  );
 
   // Road centerline segments for DrivableCar road-edge clamping.
   const roadSegments = useMemo(() => (lot ? buildRoadSegments(lot) : []), [lot]);
@@ -218,6 +237,18 @@ export function App() {
           )}
         </div>
       </div>
+
+      {/* Live route panel: the graph the Python backend searched, with the
+          selected car's path lit up. Hidden in the driving modes, where the
+          bottom-left corner belongs to the driving HUD. */}
+      {cameraMode !== "pov" && cameraMode !== "drive" && lot && (
+        <RoutePanel
+          lot={lot}
+          cars={routePanelCars}
+          selectedCarId={routeCarId}
+          onSelectCar={setRouteCarId}
+        />
+      )}
 
       {/* Camera mode controls (bottom-center). */}
       <CameraControls
