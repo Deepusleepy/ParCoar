@@ -110,7 +110,11 @@ const HOUSING_CENTER_Y = (floor: number) => HOUSING_TOP_Y(floor) - HOUSING_HEIGH
 // Lamp sits just inside the housing's underside face, slightly inset in X/Z
 // so the dark housing rim frames it.
 const LAMP_LENGTH = SEG_LENGTH - 0.4;
-const LAMP_WIDTH = 0.34;
+// Widened from 0.34 so the bright face stays above a pixel at distance and
+// grazing angles — the old sub-pixel width aliased into jagged white streaks
+// along the aisle. Still narrower than HOUSING_WIDTH (0.5) so the dark rim
+// frames it.
+const LAMP_WIDTH = 0.42;
 const LAMP_THICKNESS = 0.06;
 const LAMP_CENTER_Y = (floor: number) => HOUSING_TOP_Y(floor) - HOUSING_HEIGHT + LAMP_THICKNESS / 2;
 
@@ -153,8 +157,10 @@ function CeilingFixtures() {
         // toneMapped:true lets ACESFilmic curve the bright value so the lamp
         // reads as bright warm white while retaining shading, and the
         // surrounding ceiling picks up a soft falloff instead of a hard
-        // white blob. Intensity tuned high enough to still read as a source.
-        emissiveIntensity: 2.6,
+        // white blob. Intensity lowered from 2.6 so ACESFilmic no longer
+        // clips the lamp to flat white — it reads as a bright source but
+        // keeps gradient across the face.
+        emissiveIntensity: 1.4,
         roughness: 1,
         metalness: 0,
         toneMapped: true,
@@ -284,7 +290,11 @@ export const Scene = memo(function Scene({
         // Very dark blue-gray background (not a pure black void) with subtle
         // depth fog so distant floors fade slightly.
         scene.background = new THREE.Color(0x0a0b0e);
-        scene.fog = new THREE.Fog(0x0a0b0e, 200, 500);
+        // Retuned: the building is ~100 units across, so the old near=200
+        // far=500 fog never touched it. near=80 keeps the interior clear
+        // (in-garage distances are <60) while far=220 lets distant floors
+        // and the far apron edge fade from outside aerial views.
+        scene.fog = new THREE.Fog(0x0a0b0e, 80, 220);
         // Keep the city environment for car-paint reflections but cut its
         // ambient lift so it stops flattening the mid tones.
         scene.environmentIntensity = 0.35;
@@ -356,7 +366,7 @@ export const Scene = memo(function Scene({
         receiveShadow
       >
         <planeGeometry args={[400, 220]} />
-        <meshStandardMaterial color="#08090c" roughness={1} metalness={0} />
+        <meshStandardMaterial color="#08090c" roughness={1} metalness={0} side={THREE.DoubleSide} />
       </mesh>
 
       {/* The parking garage environment. */}

@@ -712,15 +712,23 @@ const FloorSlab = memo(function FloorSlab({
     // rampHole = [centerX, centerZ, halfX, halfZ] (world coords).
     const holeHalfX = rampHole[2];
     const holeHalfZ = rampHole[3];
-    const holeSizeX = holeHalfX * 2;
     const holeSizeZ = holeHalfZ * 2;
     // Hole centre relative to the slab group origin.
     const ox = rampHole[0] - cx;
     const oz = rampHole[1] - cz;
-    const holeLeft = ox - holeHalfX;
-    const holeRight = ox + holeHalfX;
-    const holeMinZ = oz - holeHalfZ;
-    const holeMaxZ = oz + holeHalfZ;
+    // CLAMP the hole to the slab. The ramp opening is centred on the ramp,
+    // which starts outside the building, so the raw hole extended 4.5 units
+    // past the west edge. The left piece was then skipped (negative width)
+    // while the top and bottom pieces were still drawn at the hole's FULL
+    // width, so floors B and C grew a 4.5 x 77 tongue of slab sticking out
+    // past floor A with no parapet and no guardrail over a 15 and 30 unit
+    // drop. Clamping first keeps every piece inside the footprint.
+    const holeLeft = Math.max(ox - holeHalfX, -w / 2);
+    const holeRight = Math.min(ox + holeHalfX, w / 2);
+    const holeMinZ = Math.max(oz - holeHalfZ, -d / 2);
+    const holeMaxZ = Math.min(oz + holeHalfZ, d / 2);
+    const clampedSizeX = Math.max(0, holeRight - holeLeft);
+    const clampedCx = (holeLeft + holeRight) / 2;
 
     const leftW = holeLeft - -w / 2;
     const rightW = w / 2 - holeRight;
@@ -732,15 +740,15 @@ const FloorSlab = memo(function FloorSlab({
     if (rightW > 0.01)
       slabParts.push(makeBox(rightW, 0.5, d, (holeRight + w / 2) / 2, -0.25, 0));
     if (topD > 0.01)
-      slabParts.push(makeBox(holeSizeX, 0.5, topD, ox, -0.25, (-d / 2 + holeMinZ) / 2));
+      slabParts.push(makeBox(clampedSizeX, 0.5, topD, clampedCx, -0.25, (-d / 2 + holeMinZ) / 2));
     if (botD > 0.01)
-      slabParts.push(makeBox(holeSizeX, 0.5, botD, ox, -0.25, (holeMaxZ + d / 2) / 2));
+      slabParts.push(makeBox(clampedSizeX, 0.5, botD, clampedCx, -0.25, (holeMaxZ + d / 2) / 2));
     const slabGeo = mergeGeometries(slabParts, false) ?? new THREE.BufferGeometry();
 
     // Hole edge trim — four thin bars framing the ramp opening, merged.
     const holeTrim = [
-      makeBox(holeSizeX, 0.06, 0.12, ox, 0.02, holeMinZ),
-      makeBox(holeSizeX, 0.06, 0.12, ox, 0.02, holeMaxZ),
+      makeBox(clampedSizeX, 0.06, 0.12, clampedCx, 0.02, holeMinZ),
+      makeBox(clampedSizeX, 0.06, 0.12, clampedCx, 0.02, holeMaxZ),
       makeBox(0.12, 0.06, holeSizeZ, holeLeft, 0.02, oz),
       makeBox(0.12, 0.06, holeSizeZ, holeRight, 0.02, oz),
     ];

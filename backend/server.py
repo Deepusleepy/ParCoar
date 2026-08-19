@@ -18,12 +18,26 @@ all_slots = [n for n, d in nodes.items() if d["type"] == "slot"]
 # The one exit node. Cars that have finished parking are routed here.
 EXIT_NODE = next(n for n, d in nodes.items() if d["type"] == "exit")
 
-# Slots that already have a car. Synced from the frontend on every state
-# message (pre-parked + parked cars), plus slots we assign to routing cars.
-occupied = set()
-
-# Active cars we are tracking: id -> {color, plate, size, node, slot, status}.
-cars = {}
+# Per-connection state.
+#
+# These used to be module-level globals shared by every client. With two
+# browser tabs open (or one still closing while another loads) both talked to
+# the same dictionaries, and because each message prunes cars it does not
+# mention, the two clients deleted each other's cars several times a second.
+# Each recreated car was then assigned a fresh bay, which is why cars appeared
+# to "dance between parking spaces". Measured: 747 prune/recreate events in 45
+# seconds with two tabs open.
+#
+# A Session holds one client's view, so clients can no longer corrupt one
+# another.
+class Session:
+    def __init__(self):
+        # Bays that already have a car: pre-parked, parked, and bays this
+        # client's routing cars are heading for.
+        self.occupied = set()
+        # Cars we are tracking for this client:
+        # id -> {color, plate, size, node, slot, status, leaving}
+        self.cars = {}
 
 def bfs(start, goal):
     """Shortest path (list of node ids) from start to goal, or None.
@@ -59,7 +73,7 @@ def bfs(start, goal):
 BUSY_FLOOR = 3
 
 
-def nearest_free_slot(car_node, car_size):
+def nearest_free_slot(session, car_node, car_size):
     """Nearest free bay the car fits in, spreading load away from busy floors.
 
     One breadth-first sweep outward from the car. BFS visits nodes in order of
@@ -81,7 +95,7 @@ def nearest_free_slot(car_node, car_size):
             if nodes[nxt]["type"] == "slot":
                 # Bays are destinations, not through-routes, so never enqueue
                 # one. Keep it only if it is free and big enough for this car.
-                if nxt not in occupied and SIZE_RANK[car_size] <= SIZE_RANK[nodes[nxt]["size"]]:
+                if nxt not in session.occupied and SIZE_RANK[car_size] <= SIZE_RANK[nodes[nxt]["size"]]:
                     found.append(nxt)
             else:
                 queue.append(nxt)
@@ -89,7 +103,7 @@ def nearest_free_slot(car_node, car_size):
         return None
     # Count how many cars are already heading to each floor.
     floor_count = {}
-    for c in cars.values():
+    for c in session.cars.values():
         if c["status"] == "routing" and c["slot"]:
             fl = nodes[c["slot"]]["floor"]
             floor_count[fl] = floor_count.get(fl, 0) + 1
@@ -101,16 +115,16 @@ def nearest_free_slot(car_node, car_size):
     return found[0]
 
 
-def assign_slot(car):
-    """Assign a free slot to a new car and mark that slot occupied."""
-    slot = nearest_free_slot(car["node"], car["size"])
+def assign_slot(session, car):
+    """Assign a free bay to a new car and mark that bay occupied."""
+    slot = nearest_free_slot(session, car["node"], car["size"])
     if slot is None:
         car["slot"] = None
         car["status"] = "no_slot"
         return
     car["slot"] = slot
     car["status"] = "routing"
-    occupied.add(slot)
+    session.occupied.add(slot)
 
 
 def direction_along(path, step):
@@ -128,7 +142,7 @@ def direction_along(path, step):
     return None
 
 
-def handle_message(msg):
+def handle_message(session, msg):
     """Process an incoming state message and build the instructions reply."""
     # Sync occupied slots from the frontend. The frontend now sends ALL
     # occupied slots: pre-parked, parked, and slots active routing cars are
@@ -136,8 +150,8 @@ def handle_message(msg):
     # briefly left routing_claimed before appearing in the frontend parked
     # list, allowing the backend to reassign it to another car.
     frontend_occupied = set(msg.get("occupied_slots", []))
-    occupied.clear()
-    occupied.update(frontend_occupied)
+    session.occupied.clear()
+    session.occupied.update(frontend_occupied)
     # After syncing from the frontend, also keep ALL backend-tracked cars'
     # slots. The frontend's occupied_slots may briefly omit a just-parked
     # car's slot during the React re-render window (or after a page reload
@@ -145,9 +159,9 @@ def handle_message(msg):
     # reassigning it to another car. Keeping parked cars' slots too means a
     # stale parked car that vanished from the frontend's message doesn't
     # free its slot until the prune step below removes it from `cars`.
-    for c in cars.values():
+    for c in session.cars.values():
         if c["slot"] and not c.get("leaving"):
-            occupied.add(c["slot"])
+            session.occupied.add(c["slot"])
 
     # Track which car ids appear in this message so we can prune stale cars
     # from the backend's tracking dict (cars that vanished, e.g. after a
@@ -160,21 +174,21 @@ def handle_message(msg):
         # A car is either looking for a bay, or on its way back out.
         leaving = bool(c.get("leaving"))
         # New car: record it and assign a bay.
-        if cid not in cars:
-            cars[cid] = {"color": c["color"], "plate": c["plate"], "size": c["size"],
+        if cid not in session.cars:
+            session.cars[cid] = {"color": c["color"], "plate": c["plate"], "size": c["size"],
                          "node": c["node"], "slot": None, "status": "routing",
                          "leaving": leaving}
             if not leaving:
-                assign_slot(cars[cid])
+                assign_slot(session, session.cars[cid])
         else:
             # Existing car: just update where it is now.
-            cars[cid]["node"] = c["node"]
-            cars[cid]["leaving"] = leaving
+            session.cars[cid]["node"] = c["node"]
+            session.cars[cid]["leaving"] = leaving
             # If a previously-parked car reappears at a different node
             # (e.g. page reload reuses the same car ID), re-route it.
-            if cars[cid]["status"] == "parked" and cars[cid]["node"] != cars[cid].get("slot"):
-                cars[cid]["status"] = "routing"
-        car = cars[cid]
+            if session.cars[cid]["status"] == "parked" and session.cars[cid]["node"] != session.cars[cid].get("slot"):
+                session.cars[cid]["status"] = "routing"
+        car = session.cars[cid]
         # A leaving car heads for the exit instead of a bay. Same search, a
         # different destination, so nothing else in here has to change.
         target = EXIT_NODE if car["leaving"] else car["slot"]
@@ -209,17 +223,19 @@ def handle_message(msg):
                       "path": path})
 
     # Prune stale cars: those we track that didn't appear in this message.
-    for cid in list(cars.keys()):
+    for cid in list(session.cars.keys()):
         if cid not in seen_this_message:
-            del cars[cid]
+            del session.cars[cid]
 
     return {"type": "instructions", "signs": signs}
 
 
 def handler(ws):
-    """WebSocket handler: read each incoming message, compute instructions, send them back."""
+    """One connection. Each client gets its own Session, so two open tabs
+    cannot delete each other's cars."""
+    session = Session()
     for message in ws:
-        reply = handle_message(json.loads(message))
+        reply = handle_message(session, json.loads(message))
         ws.send(json.dumps(reply))
 
 

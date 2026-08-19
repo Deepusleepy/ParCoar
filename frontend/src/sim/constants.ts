@@ -157,6 +157,9 @@ export const COLOR_HEX: Record<CarColor, string> = {
  *  Simulation tuning (used by useSimulation / Car / Signboard)
  * ------------------------------------------------------------------ */
 
+/** Longest car body, used as the minimum gap cars keep from one another. */
+export const CAR_LENGTH = 4.5;
+
 /** Car travel speed in lot-units per second. */
 export const CAR_SPEED = 7;
 

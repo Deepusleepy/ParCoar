@@ -22,6 +22,7 @@ const MAT_APRON = new THREE.MeshStandardMaterial({
   roughness: 0.96,
   metalness: 0,
   envMapIntensity: 0.3,
+  side: THREE.DoubleSide,
 });
 const MAT_SPANDREL = new THREE.MeshStandardMaterial({
   color: WALL_COLOR,
@@ -130,7 +131,10 @@ export const Envelope = memo(function Envelope({
     const core = makeBox(coreSize, coreH, coreSize, coreCx, coreH / 2, coreCz);
     // Glazing strip on the south face (faces the building interior, -z).
     const glazeH = coreH - 6;
-    const coreGlazing = makeBox(0.12, glazeH, 4, coreCx, glazeH / 2 + 1.5, coreCz - coreSize / 2 + 0.06);
+    // 4-wide pane lying flat against the core's south face (-z). Thin axis
+    // is Z (depth 0.12), proud of the face by 0.06 so it sits on the outside
+    // of the core rather than buried inside it.
+    const coreGlazing = makeBox(4, glazeH, 0.12, coreCx, glazeH / 2 + 1.5, coreCz - coreSize / 2 - 0.06);
 
     return { apron, spandrel, cap, core, coreGlazing };
   }, [bounds, floors]);

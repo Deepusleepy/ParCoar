@@ -14,6 +14,8 @@ import type {
   StateMessage,
 } from "../types";
 import {
+  CAR_LENGTH,
+  FLOOR_HEIGHT,
   MAX_ACTIVE_CARS,
   nextCarId,
   randomColor,
@@ -74,22 +76,48 @@ function directionAt(lot: LotData, route: string[], hop: number): Direction {
   return edge ? edge.dir : "arrived";
 }
 
-/** Is `node` (or the node just beyond it) held by another moving car?
+/** Straight-line distance between two graph nodes, in world units. */
+function nodeGap(lot: LotData, a: string, b: string): number {
+  const A = lot.nodes[a];
+  const B = lot.nodes[b];
+  if (!A || !B) return Infinity;
+  return Math.hypot(A.x - B.x, A.y - B.y, (A.floor - B.floor) * FLOOR_HEIGHT);
+}
+
+/** Is `node` held by another moving car, or too tightly followed by one?
  *
- *  Cars are longer than the gap between junctions, so "one car per node" is
- *  not enough separation; a car occupies its node and overhangs the previous
- *  one. Checking one node of look-ahead as well gives a real gap. */
+ *  A car is 4.5 long but junctions are only 2.6 apart, so one node of
+ *  reservation is not enough separation down an aisle: a car occupies its own
+ *  node and overhangs the previous one. So we also refuse to enter a node
+ *  whose immediate successor is occupied.
+ *
+ *  That look-ahead must be conditional, which the first version got wrong in
+ *  two ways that between them jammed the whole garage:
+ *
+ *   - The successor of a BAY is the junction the car is currently standing on,
+ *     so any car merely approaching that junction stopped this one from
+ *     parking. Bays are dead ends; nothing follows them. Skip the check.
+ *   - Legs are not all the same length. The ramp is 53 units end to end, so a
+ *     car at the foot of it was being blocked by a car a whole floor above, at
+ *     a node it would not reach for eleven seconds. That is what left cars
+ *     stuck at the joint between the ramp and the floor. Only look ahead when
+ *     the next two nodes are genuinely within a car length of each other. */
 function isNodeBusy(
   lot: LotData,
   cars: ActiveCar[],
   self: ActiveCar,
   node: string,
 ): boolean {
-  const beyond = lot.edges[node]?.find((e) => e.dir === "straight" || e.dir === "up")?.to;
   for (const other of cars) {
     if (other === self || other.parked) continue;
     if (other.fromNode === node || other.toNode === node) return true;
-    if (beyond && (other.fromNode === beyond || other.toNode === beyond)) return true;
+  }
+  if (lot.nodes[node]?.type === "slot") return false;
+  const beyond = lot.edges[node]?.find((e) => e.dir === "straight" || e.dir === "up")?.to;
+  if (!beyond || nodeGap(lot, node, beyond) > CAR_LENGTH) return false;
+  for (const other of cars) {
+    if (other === self || other.parked) continue;
+    if (other.fromNode === beyond || other.toNode === beyond) return true;
   }
   return false;
 }
@@ -174,6 +202,7 @@ function departCar(p: ParkedCarData, size: ActiveCar["size"]): ActiveCar {
 }
 
 export function useSimulation(): SimulationState {
+
   const [lot, setLot] = useState<LotData | null>(null);
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(false);
@@ -522,6 +551,35 @@ export function useSimulation(): SimulationState {
     },
     [],
   );
+
+  // --- Dev-only: publish sim state so an automated pass can see what a car
+  //     believes it is doing, rather than inferring it from pixels. ---
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const id = setInterval(() => {
+      (window as unknown as Record<string, unknown>).__parcoarSim = {
+        cars: activeCarsRef.current.map((c) => ({
+          id: c.id,
+          from: c.fromNode,
+          to: c.toNode,
+          slot: c.slot,
+          status: c.status,
+          leaving: c.leaving,
+          parked: c.parked,
+        })),
+        signs: [...latestInstructionsRef.current.entries()].map(([k, v]) => ({
+          id: k,
+          node: v.node,
+          dir: v.direction,
+          slot: v.slot,
+          status: v.status,
+          hops: v.path?.length ?? 0,
+        })),
+        parked: parkedRef.current.length,
+      };
+    }, 500);
+    return () => clearInterval(id);
+  }, []);
 
   // --- WebSocket connection with auto-reconnect ---
   useEffect(() => {
