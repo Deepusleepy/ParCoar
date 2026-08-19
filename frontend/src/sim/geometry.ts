@@ -97,6 +97,35 @@ function roundedCorner(
  * car can actually drive it. Height rises linearly with distance travelled,
  * so the gradient is constant end to end rather than all in the middle.
  */
+/** Length of the parabolic vertical curve at each end of a ramp. */
+const RAMP_VERTICAL_CURVE = 6;
+
+/**
+ * Fraction of the total rise reached after travelling `d` of `total` along a
+ * ramp, with a parabolic vertical curve at each end.
+ *
+ * Height used to rise linearly with distance, which is right in the middle
+ * and wrong at the ends: the grade went from 0% on the flat deck to 18.08% on
+ * the ramp with nothing in between, a 10.25-degree break, four times per
+ * ramp. A real ramp eases in and out over a few metres, and so does a car.
+ *
+ * Grade is zero at both ends, rises smoothly over RAMP_VERTICAL_CURVE, and is
+ * constant across the middle. Easing costs a slightly steeper middle for the
+ * same rise over the same run: 19.5% instead of 18.1%.
+ */
+function heightFraction(d: number, total: number): number {
+  const lc = Math.min(RAMP_VERTICAL_CURVE, total / 2 - 1e-3);
+  if (lc <= 0) return d / total;
+  // Grade of the constant-grade middle, chosen so the whole profile sums to 1.
+  const grade = 1 / (total - lc);
+  if (d <= lc) return (grade * d * d) / (2 * lc);
+  if (d >= total - lc) {
+    const remaining = total - d;
+    return 1 - (grade * remaining * remaining) / (2 * lc);
+  }
+  return grade * (d - lc / 2);
+}
+
 export function rampPoints(
   from: [number, number, number],
   to: [number, number, number],
@@ -110,8 +139,14 @@ export function rampPoints(
   const cornerB = new THREE.Vector2(x1 - RAMP_OUTSET, z1); // south along the face
   const end = new THREE.Vector2(x1, z1);
 
-  const a = roundedCorner(start, cornerA, cornerB, RAMP_CORNER_RADIUS);
-  const b = roundedCorner(cornerA, cornerB, end, RAMP_CORNER_RADIUS);
+  // 32 segments, not 12. The resample below runs at 0.5, and a 12-segment
+  // 90-degree arc of radius 7 has a chord of 0.916 — nearly twice the
+  // resample spacing — so the arc was being decimated to about six chords
+  // and the ramp deck read as a hexagon. Measured 16.1 degrees of heading
+  // change per vertex through a corner, against 5.63 on the turn loops
+  // right beside it.
+  const a = roundedCorner(start, cornerA, cornerB, RAMP_CORNER_RADIUS, 32);
+  const b = roundedCorner(cornerA, cornerB, end, RAMP_CORNER_RADIUS, 32);
 
   // Straight run out, arc, straight run along the face, arc, straight run in.
   const flat: THREE.Vector2[] = [
@@ -121,7 +156,8 @@ export function rampPoints(
     end,
   ];
 
-  // Distance along the path, so height can rise at a constant gradient.
+  // Distance along the path. Height follows heightFraction, which eases the
+  // grade in and out at the two ends.
   const cum: number[] = [0];
   for (let i = 1; i < flat.length; i++) {
     cum.push(cum[i - 1] + flat[i].distanceTo(flat[i - 1]));
@@ -134,7 +170,7 @@ export function rampPoints(
   // snapping to the nearest centreline POINT, so a 37-unit gap would yank a
   // car sideways in the middle of the straight. Even spacing also gives the
   // road ribbon and the guardrails a consistent look.
-  const step = 2;
+  const step = 0.5;
   const count = Math.max(2, Math.ceil(total / step));
   const out: THREE.Vector3[] = [];
   let seg = 1;
@@ -144,17 +180,18 @@ export function rampPoints(
     const segLen = cum[seg] - cum[seg - 1];
     const t = segLen > 0 ? (d - cum[seg - 1]) / segLen : 0;
     const p = new THREE.Vector2().lerpVectors(flat[seg - 1], flat[seg], t);
-    out.push(new THREE.Vector3(p.x, y0 + (y1 - y0) * (d / total), p.y));
+    out.push(new THREE.Vector3(p.x, y0 + (y1 - y0) * heightFraction(d, total), p.y));
   }
   return out;
 }
 
-/** Gradient of the ramp as a fraction (0.15 = 15%), for sanity checks. */
+/** Steepest gradient anywhere on the ramp, as a fraction (0.15 = 15%). */
 export function rampGradient(): number {
   const pts = rampPoints([0, 0, (4 - 1) * AISLE_SPACING], [0, FLOOR_HEIGHT, 0]);
-  let run = 0;
+  let worst = 0;
   for (let i = 1; i < pts.length; i++) {
-    run += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
+    const run = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
+    if (run > 1e-6) worst = Math.max(worst, Math.abs(pts[i].y - pts[i - 1].y) / run);
   }
-  return FLOOR_HEIGHT / run;
+  return worst;
 }

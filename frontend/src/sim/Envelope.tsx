@@ -57,11 +57,59 @@ function makeBox(w: number, h: number, d: number, x: number, y: number, z: numbe
   return g;
 }
 
-/** Z-range of the west-face spandrel. The west face carries the entry (z=0),
- *  exit (z=51), and the ramp crossings at both ends, so the spandrel only
- *  covers the middle band — leaving both end zones open for gates and ramp. */
-const WEST_SPANDREL_Z0 = 4;
-const WEST_SPANDREL_Z1 = 47;
+/** Openings in the west face, in world Z. The west face carries the entry
+ *  (z=0), the exit (z=51) and both ramp crossings, and those need to stay
+ *  open — but only those.
+ *
+ *  The spandrel used to be one band from z=4 to z=47, which left 17 units at
+ *  the south end and 11 at the north with no spandrel AND no guardrail: a
+ *  bare deck lip over a 15 and a 30 unit drop on the upper storeys. Openings
+ *  are now cut to size and everything else on the face is closed. */
+const WEST_OPENINGS: Array<[number, number]> = [
+  [-5, 5],
+  [46, 56],
+];
+
+/** Plan footprint of the stair/lift core, so the deck guardrails and the
+ *  perimeter columns can avoid building inside it. */
+export function coreFootprint(bounds: EnvelopeBounds) {
+  const size = CORE_SIZE;
+  return {
+    minX: bounds.minX,
+    maxX: bounds.minX + size,
+    minZ: bounds.maxZ - size,
+    maxZ: bounds.maxZ,
+  };
+}
+
+/** Plan size of the stair/lift core (square, at the north-west corner). */
+const CORE_SIZE = 6;
+/** Height of the top storey's spandrel, which doubles as the roof parapet. */
+const TOP_SPANDREL_H = 2.0;
+/** How far the core rises above the roof parapet. A lift overrun and a stair
+ *  head-house is a few units, not most of a storey: this was a full storey
+ *  height, putting a blank 45-unit black tower 12.85 above a 32-unit
+ *  building, which dominated the silhouette from every outside angle. */
+const CORE_OVERRUN = 3.5;
+
+/** Split a span into the pieces left after removing a set of openings. */
+export function spansOutside(
+  from: number,
+  to: number,
+  openings: Array<[number, number]>,
+): Array<[number, number]> {
+  let pieces: Array<[number, number]> = [[from, to]];
+  for (const [a, b] of openings) {
+    const next: Array<[number, number]> = [];
+    for (const [s, e] of pieces) {
+      if (b <= s || a >= e) { next.push([s, e]); continue; }
+      if (a > s) next.push([s, a]);
+      if (b < e) next.push([b, e]);
+    }
+    pieces = next;
+  }
+  return pieces.filter(([s, e]) => e - s > 0.05);
+}
 
 export const Envelope = memo(function Envelope({
   bounds,
@@ -97,37 +145,41 @@ export const Envelope = memo(function Envelope({
     for (const f of floors) {
       const y0 = f * FLOOR_HEIGHT;
       const isTop = f === maxFloor;
-      const h = isTop ? 2.0 : 1.0; // top storey: spandrel + parapet
+      const h = isTop ? TOP_SPANDREL_H : 1.0; // top storey: spandrel + parapet
       const yMid = y0 + h / 2;
       const capY = y0 + h + 0.075;
-      const westLen = WEST_SPANDREL_Z1 - WEST_SPANDREL_Z0;
-      const westCz = (WEST_SPANDREL_Z0 + WEST_SPANDREL_Z1) / 2;
 
       spandrelParts.push(
         makeBox(w, h, 0.3, cx, yMid, minZ + 0.15), // south
         makeBox(w, h, 0.3, cx, yMid, maxZ - 0.15), // north
         makeBox(0.3, h, d, maxX - 0.15, yMid, cz), // east
-        makeBox(0.3, h, westLen, minX + 0.15, yMid, westCz), // west middle
       );
       // Lighter cap band, slightly wider so it reads as a precast coping.
       capParts.push(
         makeBox(w, 0.15, 0.36, cx, capY, minZ + 0.15),
         makeBox(w, 0.15, 0.36, cx, capY, maxZ - 0.15),
         makeBox(0.36, 0.15, d, maxX - 0.15, capY, cz),
-        makeBox(0.36, 0.15, westLen, minX + 0.15, capY, westCz),
       );
+      // West face: everything except the entry, exit and ramp openings.
+      for (const [z0, z1] of spansOutside(minZ, maxZ, WEST_OPENINGS)) {
+        const len = z1 - z0;
+        const mid = (z0 + z1) / 2;
+        spandrelParts.push(makeBox(0.3, h, len, minX + 0.15, yMid, mid));
+        capParts.push(makeBox(0.36, 0.15, len, minX + 0.15, capY, mid));
+      }
     }
     const spandrel = mergeGeometries(spandrelParts, false) ?? new THREE.BufferGeometry();
-    const cap = mergeGeometries(capParts, false) ?? new THREE.BufferGeometry();
+    // The core's own coping, added below once its height is known.
+    const capBands = capParts;
 
     // --- Stair/lift core at the NW corner (clear of the ramp on the west
     //     face and the turn loops on the east face). A full-height solid
     //     volume with a tall glazing strip on its south face so it reads as
     //     a lit stairwell, not a plain block. ---
-    const coreSize = 6;
+    const coreSize = CORE_SIZE;
     const coreCx = minX + coreSize / 2;
     const coreCz = maxZ - coreSize / 2;
-    const coreH = (maxFloor + 1) * FLOOR_HEIGHT;
+    const coreH = maxFloor * FLOOR_HEIGHT + TOP_SPANDREL_H + CORE_OVERRUN;
     const core = makeBox(coreSize, coreH, coreSize, coreCx, coreH / 2, coreCz);
     // Glazing strip on the south face (faces the building interior, -z).
     const glazeH = coreH - 6;
@@ -135,6 +187,11 @@ export const Envelope = memo(function Envelope({
     // is Z (depth 0.12), proud of the face by 0.06 so it sits on the outside
     // of the core rather than buried inside it.
     const coreGlazing = makeBox(4, glazeH, 0.12, coreCx, glazeH / 2 + 1.5, coreCz - coreSize / 2 - 0.06);
+
+    capBands.push(
+      makeBox(coreSize + 0.36, 0.18, coreSize + 0.36, coreCx, coreH + 0.09, coreCz),
+    );
+    const cap = mergeGeometries(capBands, false) ?? new THREE.BufferGeometry();
 
     return { apron, spandrel, cap, core, coreGlazing };
   }, [bounds, floors]);

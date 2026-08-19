@@ -70,9 +70,21 @@ const ROAD_Y = 0.15;
  *  Invariant: `onRamp` never disables the lot clamp for a car out in space. */
 const RAMP_TRIGGER_DIST = ROAD_WIDTH / 2 + 0.35;
 
-/** Vertical dead-zone shared by ramp capture and floor transfer.
- *  Invariant: a ramp endpoint that is flush with a floor still behaves as flat road. */
+/** Vertical dead-zone for FLOOR TRANSFER only: how close to a ramp endpoint
+ *  the car must get before it is considered to belong to the other storey.
+ *  This one has to stay generous, or a car can step past the window in a
+ *  single frame and keep the wrong floor for the rest of its drive. */
 const RAMP_ENDPOINT_HEIGHT_EPSILON = 0.2;
+
+/** Vertical dead-zone for the FLAT-versus-RAMP decision.
+ *
+ *  While the ramp surface is within this of the flat floor the car is pinned
+ *  to the flat height, and at the threshold it snaps by exactly this much.
+ *  Sharing 0.2 with the transfer window above meant a visible 20cm pop at
+ *  every ramp entry and exit, in both directions, on a car 1.45 tall. The
+ *  ramp now starts and ends flush and eases its grade in, so this only has to
+ *  cover floating-point noise. */
+const RAMP_FLAT_EPSILON = 0.02;
 
 /** Lane shift to the right of the travel direction (mirrors paths.ts). */
 const LANE_SHIFT = -LANE_WIDTH / 2;
@@ -1420,8 +1432,7 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
     // rescaled tolerance removes the old one-unit dead zone while keeping the
     // shared flat endpoint free of ramp clamping.
     const onRamp =
-      bestRamp != null &&
-      Math.abs(bestRampSurfaceY - flatFloorY) > RAMP_ENDPOINT_HEIGHT_EPSILON;
+      bestRamp != null && Math.abs(bestRampSurfaceY - flatFloorY) > RAMP_FLAT_EPSILON;
 
     // --- Ramp edge clamp: keep the car within the road width of the ramp
     // centerline so it can't drive off the side and teleport/clip. Done

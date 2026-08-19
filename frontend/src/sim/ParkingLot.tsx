@@ -22,7 +22,7 @@ import {
   SLOT_WIDTH,
   toWorld,
 } from "./constants";
-import { Envelope } from "./Envelope";
+import { Envelope, coreFootprint, spansOutside } from "./Envelope";
 import { FloorPaint } from "./FloorPaint";
 import { PermanentSignboard } from "./PermanentSignboard";
 import { rampPoints, semicirclePoints } from "./geometry";
@@ -62,6 +62,18 @@ const ROAD_Y = 0.15;
 const DIVIDER_WIDTH = 0.4;
 /** Height of a raised concrete divider (above the road surface). */
 const DIVIDER_HEIGHT = 0.22;
+/** How far from each end a median fades down to road level, so it never ends
+ *  as a square-nosed kerb stub in the middle of the carriageway — including
+ *  one planted at the centre of each ramp mouth, where cars drive. */
+const MEDIAN_TAPER = 2;
+/** Thickness of the structural slab under the ramp. It used to be a
+ *  zero-thickness ribbon with no side faces, so from below the ramp simply
+ *  had no underside: only the rail posts were visible, hanging in black. */
+const SOFFIT_THICKNESS = 0.45;
+/** Guardrail post spacing along a straight run. */
+const POST_SPACING = 4;
+/** Guardrail post spacing measured in heading change, for curves. */
+const POST_MAX_TURN = (8 * Math.PI) / 180;
 
 /** Spacing between perimeter pillars. Kept local to this file because the
  *  lot's JUNCTION_SPACING (2.6) is far too dense for structural columns and
@@ -110,20 +122,42 @@ function buildRibbon(points: THREE.Vector3[], width: number, yLift: number): THR
   return geo;
 }
 
-/** Build a continuous raised concrete divider following a polyline path. */
+/**
+ * A continuous raised bar (a kerbed median, or a slab with real thickness)
+ * following a polyline.
+ *
+ * Two things this has to get right that the previous version did not:
+ *
+ *  - Every face gets its OWN vertices. Sharing four vertices per station
+ *    between the bottom, the top and both sides and then calling
+ *    computeVertexNormals averages a face normal with the two perpendicular
+ *    ones, which rounds off every edge: a 0.4 by 0.22 concrete kerb shaded
+ *    like a soft grey pipe with no readable top face.
+ *  - `taper` fades the height to nothing over that distance at each end.
+ *    Without it a median stops dead as a square-nosed stub in the middle of
+ *    the carriageway, including one planted at the centre of each ramp mouth
+ *    where cars drive.
+ */
 function buildSolidBarAlongPath(
   points: THREE.Vector3[],
   width: number,
   height: number,
   yBase: number,
+  taper = 0,
 ): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const indices: number[] = [];
+  if (points.length < 2) return new THREE.BufferGeometry();
   const half = width / 2;
   const up = new THREE.Vector3(0, 1, 0);
   const tangent = new THREE.Vector3();
   const side = new THREE.Vector3();
+  const cum = cumulativeLengths(points);
+  const total = cum[cum.length - 1] || 1;
 
+  // Four rails of stations: bottom/top on each side of the path.
+  const bl: THREE.Vector3[] = [];
+  const br: THREE.Vector3[] = [];
+  const tl: THREE.Vector3[] = [];
+  const tr: THREE.Vector3[] = [];
   for (let i = 0; i < points.length; i++) {
     const p = points[i];
     if (i === 0) tangent.subVectors(points[1], points[0]);
@@ -131,27 +165,35 @@ function buildSolidBarAlongPath(
     else tangent.subVectors(points[i + 1], points[i - 1]);
     tangent.setY(0).normalize();
     side.crossVectors(tangent, up).normalize();
+    const fade =
+      taper > 0 ? Math.max(0, Math.min(1, cum[i] / taper, (total - cum[i]) / taper)) : 1;
+    const h = height * fade;
     const y = p.y + yBase;
-    positions.push(
-      p.x - side.x * half, y, p.z - side.z * half,
-      p.x + side.x * half, y, p.z + side.z * half,
-      p.x - side.x * half, y + height, p.z - side.z * half,
-      p.x + side.x * half, y + height, p.z + side.z * half,
-    );
+    bl.push(new THREE.Vector3(p.x - side.x * half, y, p.z - side.z * half));
+    br.push(new THREE.Vector3(p.x + side.x * half, y, p.z + side.z * half));
+    tl.push(new THREE.Vector3(p.x - side.x * half, y + h, p.z - side.z * half));
+    tr.push(new THREE.Vector3(p.x + side.x * half, y + h, p.z + side.z * half));
   }
 
+  const positions: number[] = [];
+  const indices: number[] = [];
+  /** Emit one quad with its own four vertices, so no normal is ever shared
+   *  across an edge and the bar keeps crisp faces. */
+  const quad = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3) => {
+    const i0 = positions.length / 3;
+    for (const v of [a, b, c, d]) positions.push(v.x, v.y, v.z);
+    indices.push(i0, i0 + 1, i0 + 2, i0, i0 + 2, i0 + 3);
+  };
   for (let i = 0; i < points.length - 1; i++) {
-    const a = i * 4;
-    const b = a + 4;
-    indices.push(
-      a, b, a + 1, a + 1, b, b + 1,
-      a + 2, a + 3, b + 2, a + 3, b + 3, b + 2,
-      a, a + 2, b, a + 2, b + 2, b,
-      a + 1, b + 1, a + 3, b + 1, b + 3, a + 3,
-    );
+    quad(tl[i], tr[i], tr[i + 1], tl[i + 1]); // top, normal up
+    quad(bl[i], tl[i], tl[i + 1], bl[i + 1]); // left flank, normal outward
+    quad(br[i], br[i + 1], tr[i + 1], tr[i]); // right flank, normal outward
+    quad(bl[i], bl[i + 1], br[i + 1], br[i]); // underside, normal down
   }
-  const last = (points.length - 1) * 4;
-  indices.push(0, 1, 2, 1, 3, 2, last, last + 2, last + 1, last + 1, last + 2, last + 3);
+  // End caps, only where the bar still has height (a tapered end has none).
+  if (tl[0].y - bl[0].y > 0.01) quad(bl[0], br[0], tr[0], tl[0]);
+  const n = points.length - 1;
+  if (tl[n].y - bl[n].y > 0.01) quad(bl[n], tl[n], tr[n], br[n]);
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
@@ -664,7 +706,11 @@ function buildGeometry(lot: LotData) {
   for (const node of Object.values(nodes)) {
     if (node.type !== "ramp_in") continue;
     const pos = toWorld(node.x, node.y, node.floor);
-    const halfZ = ROAD_WIDTH / 2 + 1; // 5.5 — covers ramp width
+    // Must stay NARROWER than the ramp soffit's half width (ROAD_WIDTH +
+    // 1.2)/2 = 4.1, or the opening is wider than the thing filling it. At
+    // 4.5 it left a 0.42 by 13.2 slot straight through the deck on each
+    // side of every ramp mouth.
+    const halfZ = (ROAD_WIDTH + 1.2) / 2 - 0.1;
     const halfX = 9; // covers the ramp's approach under the widened slab
     const centerX = pos[0] - halfX; // hole right edge = pos[0] = road start (x=0)
     rampHoles.set(node.floor, [centerX, pos[2], halfX, halfZ]);
@@ -858,19 +904,68 @@ const FloorSlab = memo(function FloorSlab({
   );
 });
 
-/** A large painted directional arrow on the road surface (2.5 long, 0.6 wide).
- *  The shaft + chevron head are pre-merged into ARROW_GEO so each arrow is a
- *  single draw call sharing MAT_ARROW. */
-function DirectionArrow({
-  position,
-  rotY = 0,
-}: {
-  position: [number, number, number];
-  rotY?: number;
-}) {
-  // Arrow points along +x by default; rotate around Y to steer it.
-  return <mesh position={position} rotation={[0, rotY, 0]} geometry={ARROW_GEO} material={MAT_ARROW} />;
+/**
+ * Direction arrows down BOTH lanes of a curved carriageway, spaced along it
+ * and merged into a single geometry so a whole turn or ramp costs one draw
+ * call rather than one per arrow.
+ *
+ * Two fixes are baked in here:
+ *  - Spacing. A turn loop had one arrow at its apex and the ramp two near its
+ *    foot, so a driver entering either got no directional mark until well in,
+ *    and the ramp's last 70 units had none at all.
+ *  - Pitch. ARROW_GEO is a flat plate. Laid dead flat on the ramp's 18%
+ *    grade its head sat 0.208 BELOW the tarmac and its tail floated 0.146
+ *    above, so the uphill arrow showed no head at all. Each arrow is now
+ *    tilted to the local slope before being placed.
+ *
+ * Traffic keeps left, so one row runs with the path and the other against it.
+ */
+function buildLaneArrows(points: THREE.Vector3[], spacing: number): THREE.BufferGeometry {
+  if (points.length < 2) return new THREE.BufferGeometry();
+  const cum = cumulativeLengths(points);
+  const total = cum[cum.length - 1];
+  const count = Math.max(1, Math.round(total / spacing));
+  const up = new THREE.Vector3(0, 1, 0);
+  const parts: THREE.BufferGeometry[] = [];
+
+  const place = (
+    pos: THREE.Vector3,
+    rotY: number,
+    pitch: number,
+  ) => {
+    const g = ARROW_GEO.clone();
+    // Pitch in the arrow's own frame, then yaw, then move into place.
+    g.applyMatrix4(new THREE.Matrix4().makeRotationZ(pitch));
+    g.applyMatrix4(new THREE.Matrix4().makeRotationY(rotY));
+    g.applyMatrix4(new THREE.Matrix4().setPosition(pos.x, pos.y, pos.z));
+    parts.push(g);
+  };
+
+  for (let k = 1; k <= count; k++) {
+    const d = (total * (k - 0.5)) / count;
+    const p = pointAtDistance(cum, points, d);
+    const a = pointAtDistance(cum, points, Math.max(0, d - 0.8));
+    const b = pointAtDistance(cum, points, Math.min(total, d + 0.8));
+    const tx = b.x - a.x;
+    const tz = b.z - a.z;
+    const run = Math.hypot(tx, tz) || 1;
+    const rotY = Math.atan2(-tz, tx);
+    const pitch = Math.atan2(b.y - a.y, run);
+    const side = new THREE.Vector3().crossVectors(
+      new THREE.Vector3(tx, 0, tz).normalize(),
+      up,
+    ).normalize();
+    const dx = (side.x * LANE_WIDTH) / 2;
+    const dz = (side.z * LANE_WIDTH) / 2;
+    const y = p.y + ROAD_Y + 0.02;
+    place(new THREE.Vector3(p.x - dx, y, p.z - dz), rotY, pitch);
+    place(new THREE.Vector3(p.x + dx, y, p.z + dz), rotY + Math.PI, -pitch);
+  }
+  return mergeGeometries(parts, false) ?? new THREE.BufferGeometry();
 }
+
+/** How far apart lane arrows sit along a turn or a ramp. */
+const LANE_ARROW_SPACING = 12;
 
 /** A straight two-way aisle. The flat paint (edges, centre line, arrows, bay
  *  outlines) is now baked by <FloorPaint>; this component renders only the
@@ -906,7 +1001,7 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
   );
   // Raised concrete divider on turns (no parking here, cars cannot cross).
   const divider = useMemo(
-    () => buildSolidBarAlongPath(turn.points, DIVIDER_WIDTH, DIVIDER_HEIGHT, ROAD_Y + 0.005),
+    () => buildSolidBarAlongPath(turn.points, DIVIDER_WIDTH, DIVIDER_HEIGHT, ROAD_Y + 0.005, MEDIAN_TAPER),
     [turn.points],
   );
   // Guardrails only cover the curved (semicircle) portion of the turn.
@@ -927,33 +1022,20 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
     [curvePts, edgeOffset],
   );
 
-  // Opposing arrows at the apex, one in each left-driving lane.
-  const arrows = useMemo(() => {
-    const pts = turn.points;
-    const mid = Math.floor(pts.length / 2);
-    const p = pts[mid];
-    const a = pts[Math.max(0, mid - 1)];
-    const b = pts[Math.min(pts.length - 1, mid + 1)];
-    const tx = b.x - a.x;
-    const tz = b.z - a.z;
-    const rotY = Math.atan2(-tz, tx);
-    const tangent = new THREE.Vector3(tx, 0, tz).normalize();
-    const side = new THREE.Vector3().crossVectors(tangent, new THREE.Vector3(0, 1, 0)).normalize();
-    const dx = side.x * LANE_WIDTH / 2;
-    const dz = side.z * LANE_WIDTH / 2;
-    return [
-      { pos: [p.x - dx, p.y + ROAD_Y + 0.02, p.z - dz] as [number, number, number], rotY },
-      { pos: [p.x + dx, p.y + ROAD_Y + 0.02, p.z + dz] as [number, number, number], rotY: rotY + Math.PI },
-    ];
-  }, [turn.points]);
+  // Lane arrows all the way round the loop, merged into one geometry.
+  const arrowGeo = useMemo(
+    () => buildLaneArrows(turn.points, LANE_ARROW_SPACING),
+    [turn.points],
+  );
 
   useEffect(() => {
     return () => {
       ribbon.dispose();
       edges.dispose();
       divider.dispose();
+      arrowGeo.dispose();
     };
-  }, [ribbon, edges, divider]);
+  }, [ribbon, edges, divider, arrowGeo]);
 
   return (
     <group>
@@ -965,9 +1047,7 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
       {/* Guardrails on both outer edges of the turn */}
       <GuardRailAlongPath points={leftRailPts} yBase={ROAD_Y} />
       <GuardRailAlongPath points={rightRailPts} yBase={ROAD_Y} />
-      {arrows.map((arrow, i) => (
-        <DirectionArrow key={i} position={arrow.pos} rotY={arrow.rotY} />
-      ))}
+      <mesh geometry={arrowGeo} material={MAT_ARROW} />
     </group>
   );
 });
@@ -977,7 +1057,7 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
   const edgeOffset = EDGE_LINE_OFFSET;
   // Soffit / support slab under the ramp (wider than the road).
   const soffit = useMemo(
-    () => buildRibbon(ramp.points, ROAD_WIDTH + 1.2, ROAD_Y - 0.1),
+    () => buildSolidBarAlongPath(ramp.points, ROAD_WIDTH + 1.2, SOFFIT_THICKNESS, ROAD_Y - 0.1 - SOFFIT_THICKNESS),
     [ramp.points],
   );
   // Road surface. There used to be a "threshold apron" box at each end,
@@ -1002,7 +1082,7 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
   }, [ramp.points, edgeOffset]);
   // Raised concrete divider on ramps (no parking here, cars cannot cross).
   const divider = useMemo(
-    () => buildSolidBarAlongPath(ramp.points, DIVIDER_WIDTH, DIVIDER_HEIGHT, ROAD_Y),
+    () => buildSolidBarAlongPath(ramp.points, DIVIDER_WIDTH, DIVIDER_HEIGHT, ROAD_Y, MEDIAN_TAPER),
     [ramp.points],
   );
   // Guardrail paths (offset to both edges of the ramp).
@@ -1015,25 +1095,11 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
     [ramp.points, edgeOffset],
   );
 
-  // Opposing arrows near the ramp foot, one in each left-driving lane.
-  const arrows = useMemo(() => {
-    const pts = ramp.points;
-    const i = Math.min(6, Math.floor(pts.length / 4));
-    const p = pts[i];
-    const a = pts[Math.max(0, i - 1)];
-    const b = pts[Math.min(pts.length - 1, i + 1)];
-    const tx = b.x - a.x;
-    const tz = b.z - a.z;
-    const rotY = Math.atan2(-tz, tx);
-    const tangent = new THREE.Vector3(tx, 0, tz).normalize();
-    const side = new THREE.Vector3().crossVectors(tangent, new THREE.Vector3(0, 1, 0)).normalize();
-    const dx = side.x * LANE_WIDTH / 2;
-    const dz = side.z * LANE_WIDTH / 2;
-    return [
-      { pos: [p.x - dx, p.y + ROAD_Y + 0.02, p.z - dz] as [number, number, number], rotY },
-      { pos: [p.x + dx, p.y + ROAD_Y + 0.02, p.z + dz] as [number, number, number], rotY: rotY + Math.PI },
-    ];
-  }, [ramp.points]);
+  // Lane arrows the whole length of the ramp, pitched to the slope.
+  const arrowGeo = useMemo(
+    () => buildLaneArrows(ramp.points, LANE_ARROW_SPACING),
+    [ramp.points],
+  );
 
   useEffect(() => {
     return () => {
@@ -1041,8 +1107,9 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
       road.dispose();
       edges.dispose();
       divider.dispose();
+      arrowGeo.dispose();
     };
-  }, [soffit, road, edges, divider]);
+  }, [soffit, road, edges, divider, arrowGeo]);
 
   return (
     <group>
@@ -1056,9 +1123,7 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
       {/* Guardrails on both sides of the ramp */}
       <GuardRailAlongPath points={leftRailPts} yBase={ROAD_Y} />
       <GuardRailAlongPath points={rightRailPts} yBase={ROAD_Y} />
-      {arrows.map((arrow, i) => (
-        <DirectionArrow key={i} position={arrow.pos} rotY={arrow.rotY} />
-      ))}
+      <mesh geometry={arrowGeo} material={MAT_ARROW} />
     </group>
   );
 });
@@ -1072,14 +1137,24 @@ const Pillars = memo(function Pillars({ floor, bounds }: { floor: number; bounds
     const cy = y0 + PILLAR_HEIGHT / 2;
     const zA = bounds.minZ + 1.5;
     const zB = bounds.maxZ - 1.5;
+    const core = coreFootprint(bounds);
+    // A column inside the stair core is invisible and buys nothing: two of
+    // the twenty instances on each of the lower storeys were built in there.
+    const inCore = (x: number, z: number) =>
+      x >= core.minX && x <= core.maxX && z >= core.minZ && z <= core.maxZ;
     const positions: [number, number, number][] = [];
+    const push = (x: number, z: number) => {
+      if (!inCore(x, z)) positions.push([x, cy, z]);
+    };
     const xStart = Math.ceil(bounds.minX / PILLAR_SPACING) * PILLAR_SPACING;
     for (let x = xStart; x <= bounds.maxX; x += PILLAR_SPACING) {
-      positions.push([x, cy, zA], [x, cy, zB]);
+      push(x, zA);
+      push(x, zB);
     }
     // Corner pillars on the short ends.
     for (const x of [bounds.minX + 1.5, bounds.maxX - 1.5]) {
-      positions.push([x, cy, zA], [x, cy, zB]);
+      push(x, zA);
+      push(x, zB);
     }
     if (positions.length === 0) return null;
     const geo = new THREE.CylinderGeometry(0.35, 0.4, PILLAR_HEIGHT, 12);
@@ -1110,8 +1185,15 @@ const Pillars = memo(function Pillars({ floor, bounds }: { floor: number; bounds
  * Post-and-rail guardrail along a polyline, built as ONE merged geometry
  * (every post + every rail segment) so the whole rail renders as a single
  * draw call sharing MAT_GUARDRAIL.
- * Posts: 0.8 high, 0.08 diameter cylinders every 4 units.
- * Rail: 0.06 diameter horizontal cylinder at 0.7 height.
+ * Posts: 0.8 high, 0.08 diameter cylinders. Rail: 0.06 diameter horizontal
+ * cylinder at 0.7 height, run straight between consecutive posts.
+ *
+ * Posts go in every POST_SPACING of travel OR every POST_MAX_TURN of heading
+ * change, whichever comes first. Spacing alone is curvature-blind, and the
+ * rail is straight between posts, so on tight curves a 4-unit step cut the
+ * corner badly: measured 53 degrees of heading between two posts on the
+ * ramp's inner rail, the rail sagging 0.378 inside the road edge, and only
+ * 7 posts for a whole 180-degree turn loop.
  */
 function GuardRailAlongPath({
   points,
@@ -1122,11 +1204,23 @@ function GuardRailAlongPath({
 }) {
   const geo = useMemo(() => {
     if (points.length < 2) return new THREE.BufferGeometry();
-    const cum = cumulativeLengths(points);
-    const total = cum[cum.length - 1];
-    const postPts: THREE.Vector3[] = [];
-    for (let d = 0; d <= total; d += 4) {
-      postPts.push(pointAtDistance(cum, points, d));
+    const postPts: THREE.Vector3[] = [points[0].clone()];
+    let sinceLast = 0;
+    let turnedSince = 0;
+    let heading = Math.atan2(points[1].z - points[0].z, points[1].x - points[0].x);
+    for (let i = 1; i < points.length; i++) {
+      sinceLast += points[i].distanceTo(points[i - 1]);
+      const h = Math.atan2(points[i].z - points[i - 1].z, points[i].x - points[i - 1].x);
+      let dh = h - heading;
+      while (dh > Math.PI) dh -= Math.PI * 2;
+      while (dh < -Math.PI) dh += Math.PI * 2;
+      turnedSince += Math.abs(dh);
+      heading = h;
+      if (sinceLast >= POST_SPACING || turnedSince >= POST_MAX_TURN) {
+        postPts.push(points[i].clone());
+        sinceLast = 0;
+        turnedSince = 0;
+      }
     }
     // Ensure a post at the very end.
     const last = points[points.length - 1];
@@ -1185,32 +1279,20 @@ const GuardRails = memo(function GuardRails({
   const slabY = floor * FLOOR_HEIGHT;
 
   /** Build guardrail polylines along one long edge, leaving a gap over the
-   *  slot area so the rails only cover the driving/turn portions. */
+   *  slot area so the rails only cover the driving/turn portions, and another
+   *  where the stair core stands. Six units of the north rail on every storey
+   *  used to be built inside the core, invisible and pointless. */
   const segments = useMemo(() => {
     const margin = SLOT_WIDTH / 2 + 1;
+    const core = coreFootprint(bounds);
     const buildSegs = (z: number, edge: SlotEdge | null): THREE.Vector3[][] => {
-      if (!edge) {
-        return [[
-          new THREE.Vector3(bounds.minX, slabY, z),
-          new THREE.Vector3(bounds.maxX, slabY, z),
-        ]];
-      }
-      const slotStart = edge.minX - margin;
-      const slotEnd = edge.maxX + margin;
-      const segs: THREE.Vector3[][] = [];
-      if (bounds.minX < slotStart) {
-        segs.push([
-          new THREE.Vector3(bounds.minX, slabY, z),
-          new THREE.Vector3(slotStart, slabY, z),
-        ]);
-      }
-      if (bounds.maxX > slotEnd) {
-        segs.push([
-          new THREE.Vector3(slotEnd, slabY, z),
-          new THREE.Vector3(bounds.maxX, slabY, z),
-        ]);
-      }
-      return segs;
+      const gaps: Array<[number, number]> = [];
+      if (edge) gaps.push([edge.minX - margin, edge.maxX + margin]);
+      if (z >= core.minZ && z <= core.maxZ) gaps.push([core.minX, core.maxX]);
+      return spansOutside(bounds.minX, bounds.maxX, gaps).map(([x0, x1]) => [
+        new THREE.Vector3(x0, slabY, z),
+        new THREE.Vector3(x1, slabY, z),
+      ]);
     };
     return {
       south: buildSegs(bounds.minZ + 0.6, southSlots),
@@ -1503,7 +1585,7 @@ export const ParkingLot = memo(function ParkingLot({
       {entry && (
         <>
           <ApproachRoad
-            from={[entry.x - 15, entry.y]}
+            from={[Math.max(entry.x - 15, bounds.minX), entry.y]}
             to={[entry.x, entry.y]}
             floor={entry.floor}
           />
@@ -1518,7 +1600,7 @@ export const ParkingLot = memo(function ParkingLot({
         <>
           <ApproachRoad
             from={[exit.x, exit.y]}
-            to={[exit.x - 15, exit.y]}
+            to={[Math.max(exit.x - 15, bounds.minX), exit.y]}
             floor={exit.floor}
           />
           <Gate
