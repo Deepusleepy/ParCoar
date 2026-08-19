@@ -92,7 +92,13 @@ const ARROW_GEOMETRY = new THREE.ShapeGeometry(ARROW_SHAPE);
 const BOARD_BODY_GEO = new THREE.BoxGeometry(BOARD_W, BOARD_H, 0.2);
 const BOARD_RIM_GEO = new THREE.BoxGeometry(BOARD_W + 0.14, BOARD_H + 0.14, 0.16);
 const SCREEN_GEO = new THREE.PlaneGeometry(SCREEN_W, SCREEN_H);
-const ROD_GEO = new THREE.CylinderGeometry(0.06, 0.06, ROD_LENGTH, 8);
+// Rods were r=0.06 in near-black: sub-pixel and invisible, so even on covered
+// floors the board looked unsupported. Thicker, and in the lighter frame tone.
+const ROD_GEO = new THREE.CylinderGeometry(0.12, 0.12, ROD_LENGTH, 8);
+/** Ground-standing posts for the open top deck, where there is no slab. */
+const POST_H = BOARD_CENTER_Y - BOARD_H / 2;
+const POST_CENTER_Y = POST_H / 2;
+const POST_GEO = new THREE.CylinderGeometry(0.15, 0.18, POST_H, 10);
 const BANNER_GEO = new THREE.PlaneGeometry(SCREEN_W - 0.6, 0.7);
 /** Solid block of the car's colour, shown next to its plate. */
 const SWATCH_GEO = new THREE.PlaneGeometry(0.5, 0.5);
@@ -114,6 +120,12 @@ const EDGE_MATERIAL = new THREE.MeshStandardMaterial({
   emissiveIntensity: 0.07,
   metalness: 0.3,
   roughness: 0.5,
+});
+/** Rear skin of the board: brushed dark metal, clearly not a void. */
+const BACK_MATERIAL = new THREE.MeshStandardMaterial({
+  color: "#333b49",
+  metalness: 0.55,
+  roughness: 0.45,
 });
 const ROD_MATERIAL = new THREE.MeshStandardMaterial({
   color: FRAME_COLOR,
@@ -180,7 +192,17 @@ function PermanentSignboardImpl({
     <group position={position} rotation={[0, rotY, 0]}>
       {/* Two suspension rods from ceiling down to board top corners.
           Hidden on the top floor where there's no ceiling slab to hang from. */}
-      {!isTopFloor && (
+      {/* Support. On a covered storey the board hangs from the slab above on
+          two rods. The TOP storey has no slab, and hiding the rods there left
+          an 8 x 3.5 black rectangle floating in mid air with nothing holding
+          it up: this is the "black slabs" Deepu reported. It now stands on
+          two posts from the deck, like a real gantry sign. */}
+      {isTopFloor ? (
+        <>
+          <mesh position={[-BOARD_W / 2 + 0.9, POST_CENTER_Y, 0]} geometry={POST_GEO} material={FRAME_MATERIAL} castShadow />
+          <mesh position={[BOARD_W / 2 - 0.9, POST_CENTER_Y, 0]} geometry={POST_GEO} material={FRAME_MATERIAL} castShadow />
+        </>
+      ) : (
         <>
           <mesh position={[-BOARD_W / 2 + 1, ROD_CENTER_Y, 0]} geometry={ROD_GEO} material={ROD_MATERIAL} />
           <mesh position={[BOARD_W / 2 - 1, ROD_CENTER_Y, 0]} geometry={ROD_GEO} material={ROD_MATERIAL} />
@@ -194,6 +216,10 @@ function PermanentSignboardImpl({
         {/* Lit rim, slightly larger than the body, so the board reads as an
             object from every angle including directly behind it. */}
         <mesh geometry={BOARD_RIM_GEO} material={EDGE_MATERIAL} />
+        {/* Rear skin. The screen is on the +Z face only, so from behind the
+            board was flat FRAME_MATERIAL under 0.15 ambient, which renders as
+            pure black and reads as a hole punched in the world. */}
+        <mesh position={[0, 0, -0.11]} rotation={[0, Math.PI, 0]} geometry={SCREEN_GEO} material={BACK_MATERIAL} />
 
         {/* Emissive screen on the +Z face — true black with dark-blue glow */}
         <mesh position={[0, 0, 0.11]} geometry={SCREEN_GEO} material={SCREEN_MATERIAL} />

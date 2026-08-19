@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { Html, Text } from "@react-three/drei";
+import { Billboard, Text } from "@react-three/drei";
 import type { CarRosterEntry, LotData, LotNode, NodeSign, NodeType, SlotSize } from "../types";
 import {
   AISLE_SPACING,
@@ -1158,21 +1158,25 @@ const Gate = memo(function Gate({
       <mesh geometry={GATE_BOOM_GEO} material={barMat} />
       {/* Lit booth window */}
       <mesh geometry={GATE_SCREEN_GEO} material={MAT_AREA_SCREEN} />
-      <Html position={[0, 3.4, 0.16]} center distanceFactor={80} occlude={false}>
-        <div
-          style={{
-            color: "#fff",
-            fontSize: "13px",
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            textShadow: "0 1px 4px rgba(0,0,0,0.9)",
-            whiteSpace: "nowrap",
-            pointerEvents: "none",
-          }}
+      {/* Billboarded in-world text, not a DOM overlay. As <Html> with
+          occlude={false} the label painted on top of everything, including
+          pillars in front of it and even when the camera was underneath the
+          building, and distanceFactor blew it up absurdly at close range.
+          The floor labels were moved off <Html> for exactly this reason; the
+          gates were missed. */}
+      <Billboard position={[0, 3.4, 0.16]}>
+        <Text
+          fontSize={0.62}
+          color="#ffffff"
+          anchorX="center"
+          anchorY="middle"
+          letterSpacing={0.1}
+          outlineWidth={0.03}
+          outlineColor="#000000"
         >
           {label}
-        </div>
-      </Html>
+        </Text>
+      </Billboard>
     </group>
   );
 });

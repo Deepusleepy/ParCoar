@@ -74,6 +74,26 @@ function directionAt(lot: LotData, route: string[], hop: number): Direction {
   return edge ? edge.dir : "arrived";
 }
 
+/** Is `node` (or the node just beyond it) held by another moving car?
+ *
+ *  Cars are longer than the gap between junctions, so "one car per node" is
+ *  not enough separation; a car occupies its node and overhangs the previous
+ *  one. Checking one node of look-ahead as well gives a real gap. */
+function isNodeBusy(
+  lot: LotData,
+  cars: ActiveCar[],
+  self: ActiveCar,
+  node: string,
+): boolean {
+  const beyond = lot.edges[node]?.find((e) => e.dir === "straight" || e.dir === "up")?.to;
+  for (const other of cars) {
+    if (other === self || other.parked) continue;
+    if (other.fromNode === node || other.toNode === node) return true;
+    if (beyond && (other.fromNode === beyond || other.toNode === beyond)) return true;
+  }
+  return false;
+}
+
 /** Find the destination node for a direction from a given node. */
 function nextNodeForDirection(
   lot: LotData,
@@ -320,6 +340,23 @@ export function useSimulation(): SimulationState {
 
         // Routing: move toward the next node for this direction.
         const next = nextNodeForDirection(lotData, car.fromNode, sign.direction);
+
+        // QUEUE. A node holds one car at a time. Without this, cars advanced
+        // regardless of what was ahead and simply drove through each other:
+        // a movement trace caught pairs closing to 2.8 units apart with 4.5
+        // long bodies. Refusing to enter an occupied node makes them queue
+        // nose to tail down the aisle, which is what a one-way lane does.
+        //
+        // This cannot deadlock: the aisles are one-way, so two cars can never
+        // be each other's next node, and anything blocking eventually parks
+        // (leaving activeCars) or drives on.
+        // A car is 4.5 long but junctions are only 2.6 apart, so a car's body
+        // spans nearly two nodes. Reserving one node still left them
+        // overlapping at 2.78 centre to centre. Reserve the target node AND
+        // the one beyond it, which is the node a car sitting at the target
+        // would have its tail hanging back into.
+        if (next && isNodeBusy(lotData, cars, car, next)) continue;
+
         if (next && next !== car.toNode) {
           car.toNode = next;
           car.status = "routing";

@@ -63,8 +63,12 @@ export const CAR_Y_OFFSET = 0;
  *  giving minX=-9.5, maxX=32.9, minZ=-13, maxZ=64.
  * ------------------------------------------------------------------ */
 
-/** World-space center of the lot footprint along X. */
-export const LOT_CENTER_X = 11.7; // (-9.5 + 32.9) / 2
+/** World-space center of the lot footprint along X.
+ *  Slab spans -13.5 to 68.1 after the rescale to 20 bays per aisle side. This
+ *  was left at 11.7 from the previous footprint, which put every overhead
+ *  light, the shadow frustum and all four camera presets over the west half
+ *  of the building and left the east end unlit and unshadowed. */
+export const LOT_CENTER_X = 27.3; // (-13.5 + 68.1) / 2
 /** World-space center of the lot footprint along Z. */
 export const LOT_CENTER_Z = 25.5; // (-13 + 64) / 2
 /** Padded lot min Z (front edge, where floor labels sit). */

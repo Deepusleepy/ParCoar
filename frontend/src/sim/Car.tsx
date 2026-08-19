@@ -415,20 +415,29 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
 
     const wps = waypointsRef.current;
 
-    // Stationary: sit at the current node, in the driving lane (offset to
-    // the right of the car's heading by LANE_WIDTH/2). Without the lane
-    // offset the car would jump ~2.25 units sideways from its arrival
-    // position (which is in the lane) to the centerline, causing a visible
-    // "ghosting" flicker for one frame.
+    // Stationary: sit at the current node.
+    //
+    // On a ROAD node the car waits in the driving lane, offset from the
+    // centreline, because that is where the travelling path put it; without
+    // the offset it would flick sideways for one frame on arrival.
+    //
+    // On a BAY it must sit exactly on the node. A bay is a destination, not a
+    // lane, and the path into it ends on the node itself. Applying the lane
+    // offset here made every car snap sideways by LANE_WIDTH/2 the instant it
+    // arrived, and then snap back when it handed over to the parked renderer.
+    // A movement trace caught it as a pair of jumps of exactly 1.75 units at
+    // bay coordinates: this is the "cars park weirdly" behaviour.
     if (wps.length < 2) {
       const w = toWorld(fromNode.x, fromNode.y, fromNode.floor);
+      const onBay = fromNode.type === "slot";
       const yaw = g.rotation.y;
-      // Right vector of the heading = (-sin(yaw), 0, -cos(yaw)).
-      // Lane offset = right * LANE_WIDTH/2 (right-hand driving).
+      // Right vector of the heading is (sin(yaw), 0, cos(yaw)); the lane sits
+      // to the left of travel, hence the subtraction.
+      const off = onBay ? 0 : LANE_WIDTH / 2;
       g.position.set(
-        w[0] - Math.sin(yaw) * LANE_WIDTH / 2,
+        w[0] - Math.sin(yaw) * off,
         w[1] + CAR_Y_OFFSET,
-        w[2] - Math.cos(yaw) * LANE_WIDTH / 2,
+        w[2] - Math.cos(yaw) * off,
       );
       return;
     }

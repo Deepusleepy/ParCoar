@@ -60,7 +60,9 @@ function dprForViewport(): number {
  *  x ~63 deep (constants: LOT_MIN_Z=-13, LOT_MAX_Z=64 -> depth 77 with the
  *  padded bounds). The old +/-60 (120x120) massively overshoot; this is
  *  retuned to the current footprint with a small margin. */
-const SHADOW_HALF_X = 32;
+// Half-extents of the shadow frustum, sized to the real slab (81.6 x 77)
+// rather than a guess. Too small and the east end simply has no shadows.
+const SHADOW_HALF_X = 44;
 const SHADOW_HALF_Z = (LOT_MAX_Z - LOT_MIN_Z) / 2 + 2;
 
 /* ------------------------------------------------------------------ *
@@ -331,7 +333,7 @@ export const Scene = memo(function Scene({
               LOT_CENTER_Z + (count === 1 ? 0 : (i === 0 ? -16 : 16)),
             ]}
             intensity={190}
-            distance={58}
+            distance={72}
             decay={2}
             color="#fff2e0"
           />
