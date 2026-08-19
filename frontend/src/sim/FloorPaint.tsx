@@ -5,6 +5,7 @@ import type { LotData } from "../types";
 import {
   AISLE_SPACING,
   FLOOR_HEIGHT,
+  LANE_WIDTH,
   MARKING_WHITE,
   ROAD_WIDTH,
   SLOT_DEPTH,
@@ -140,6 +141,30 @@ export function FloorPaint({
       ctx.stroke();
     };
 
+    // Helper: stroke a dashed world-space line.
+    const dashedLineWorld = (
+      x1: number,
+      z1: number,
+      x2: number,
+      z2: number,
+      widthWorld: number,
+      dashWorld: number,
+      gapWorld: number,
+      color: string,
+    ) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = widthWorld * px;
+      ctx.lineCap = "butt";
+      ctx.setLineDash([dashWorld * px, gapWorld * px]);
+      const [a, b] = w2c(x1, z1);
+      const [c, d] = w2c(x2, z2);
+      ctx.beginPath();
+      ctx.moveTo(a, b);
+      ctx.lineTo(c, d);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
+
     // Helper: fill a world-space axis-aligned rect.
     const rectWorld = (
       x1: number,
@@ -179,14 +204,11 @@ export function FloorPaint({
       lineWorld(a.x0, a.y + half, a.x1, a.y + half, 0.15, MARKING_WHITE);
     }
 
-    // 4. No lane divider at all.
-    //
-    //    An aisle here is ONE one-way carriageway, not two lanes. Painting a
-    //    divider down it, of any kind, invites the question "why do both sides
-    //    point the same way" -- which is exactly what happened, first with a
-    //    double-yellow and then with a broken white line. Removing the divider
-    //    and running a single row of arrows down the centre removes the
-    //    implied second lane entirely.
+    // 4. Broken white centre line. Aisles have parking on both sides, so the
+    //    divider must stay crossable when a car needs a bay across the road.
+    for (const a of aisles) {
+      dashedLineWorld(a.x0, a.y, a.x1, a.y, 0.12, 1.2, 1.2, MARKING_WHITE);
+    }
 
     // 5 + 6. Parking bays: side lines + closed back line in white, and a
     //        crisp colour-coded bar on the aisle-facing edge.
@@ -240,12 +262,9 @@ export function FloorPaint({
     for (const [id, node] of slots) {
       const num = id.replace(/^S\d+_/, "");
       const label = `${floorLetter}${num}`;
-      // Which way does traffic run down this aisle? The garage is one-way
-      // serpentine: even aisles run +x, odd aisles run -x. A bay number has
-      // to read for the driver approaching it, and both sides of an aisle
-      // are approached from the same direction, so the rotation follows the
-      // AISLE, not which side of it the bay sits on. Keying it off the side
-      // (as this did originally) left half of every aisle upside down.
+      // Keep bay numbers facing the original serpentine approach direction.
+      // Both lanes can now reach either side, but changing half the established
+      // label orientation would make the floor harder to scan from above.
       const bayAisleY = Math.round(node.y / AISLE_SPACING) * AISLE_SPACING;
       const baySide = node.y < bayAisleY ? -1 : 1;
       const aisleIndex = Math.round(node.y / AISLE_SPACING);
@@ -275,18 +294,19 @@ export function FloorPaint({
       ctx.restore();
     }
 
-    // 8. ONE row of direction arrows down the centre of the aisle. Even aisle
-    //    index flows +x, odd flows -x. A row per notional lane made it look
-    //    like a two-way road whose halves both pointed the same way.
+    // 8. One arrow row per lane. Traffic keeps left: +x uses the -z lane and
+    //    -x uses the +z lane. The rows are staggered by half the 6-unit pitch.
     for (const a of aisles) {
-      const dir = a.index % 2 === 0 ? 1 : -1;
-      const laneZs = [a.y];
-      for (const laneZ of laneZs) {
-        for (let x = a.x0 + 3; x <= a.x1 - 3; x += 6) {
-          const [tipX, tipY] = w2c(x + 0.7 * dir, laneZ);
-          const [topX, topY] = w2c(x - 0.7 * dir, laneZ - 0.3);
-          const [innX, innY] = w2c(x - 0.2 * dir, laneZ);
-          const [botX, botY] = w2c(x - 0.7 * dir, laneZ + 0.3);
+      const rows = [
+        { z: a.y - LANE_WIDTH / 2, dir: 1, start: a.x0 + 3 },
+        { z: a.y + LANE_WIDTH / 2, dir: -1, start: a.x0 + 6 },
+      ] as const;
+      for (const row of rows) {
+        for (let x = row.start; x <= a.x1 - 3; x += 6) {
+          const [tipX, tipY] = w2c(x + 0.7 * row.dir, row.z);
+          const [topX, topY] = w2c(x - 0.7 * row.dir, row.z - 0.3);
+          const [innX, innY] = w2c(x - 0.2 * row.dir, row.z);
+          const [botX, botY] = w2c(x - 0.7 * row.dir, row.z + 0.3);
           ctx.fillStyle = MARKING_WHITE;
           ctx.beginPath();
           ctx.moveTo(tipX, tipY);

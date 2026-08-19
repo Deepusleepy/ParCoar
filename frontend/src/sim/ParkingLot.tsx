@@ -5,6 +5,7 @@ import { Text } from "@react-three/drei";
 import type { CarRosterEntry, LotData, LotNode, NodeSign, NodeType, SlotSize } from "../types";
 import {
   AISLE_SPACING,
+  DIVIDER_COLOR,
   FLOOR_COLOR,
   FLOOR_HEIGHT,
   GUARDRAIL_COLOR,
@@ -58,7 +59,7 @@ const ROAD_Y = 0.15;
 /** Width of a raised concrete divider (across the road). */
 const DIVIDER_WIDTH = 0.4;
 /** Height of a raised concrete divider (above the road surface). */
-const DIVIDER_HEIGHT = 0.3;
+const DIVIDER_HEIGHT = 0.22;
 
 /** Spacing between perimeter pillars. Kept local to this file because the
  *  lot's JUNCTION_SPACING (2.6) is far too dense for structural columns and
@@ -107,36 +108,54 @@ function buildRibbon(points: THREE.Vector3[], width: number, yLift: number): THR
   return geo;
 }
 
-/** Build a raised solid bar (concrete divider) following a polyline path.
- *  Each segment becomes a box oriented along the segment direction; all
- *  segments are merged into a single geometry for efficient rendering. */
+/** Build a continuous raised concrete divider following a polyline path. */
 function buildSolidBarAlongPath(
   points: THREE.Vector3[],
   width: number,
   height: number,
   yBase: number,
 ): THREE.BufferGeometry {
-  const geos: THREE.BufferGeometry[] = [];
-  const up = new THREE.Vector3(0, 0, 1); // box local +z = length axis
-  for (let i = 0; i < points.length - 1; i++) {
-    const a = points[i];
-    const b = points[i + 1];
-    const dir = b.clone().sub(a);
-    const len = dir.length();
-    if (len < 1e-6) continue;
-    dir.normalize();
-    const mid = a.clone().add(b).multiplyScalar(0.5);
-    const box = new THREE.BoxGeometry(width, height, len);
-    const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
-    const matrix = new THREE.Matrix4().compose(
-      new THREE.Vector3(mid.x, mid.y + yBase + height / 2, mid.z),
-      quat,
-      new THREE.Vector3(1, 1, 1),
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const half = width / 2;
+  const up = new THREE.Vector3(0, 1, 0);
+  const tangent = new THREE.Vector3();
+  const side = new THREE.Vector3();
+
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (i === 0) tangent.subVectors(points[1], points[0]);
+    else if (i === points.length - 1) tangent.subVectors(points[i], points[i - 1]);
+    else tangent.subVectors(points[i + 1], points[i - 1]);
+    tangent.setY(0).normalize();
+    side.crossVectors(tangent, up).normalize();
+    const y = p.y + yBase;
+    positions.push(
+      p.x - side.x * half, y, p.z - side.z * half,
+      p.x + side.x * half, y, p.z + side.z * half,
+      p.x - side.x * half, y + height, p.z - side.z * half,
+      p.x + side.x * half, y + height, p.z + side.z * half,
     );
-    box.applyMatrix4(matrix);
-    geos.push(box);
   }
-  return mergeGeometries(geos, false) ?? new THREE.BufferGeometry();
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = i * 4;
+    const b = a + 4;
+    indices.push(
+      a, b, a + 1, a + 1, b, b + 1,
+      a + 2, a + 3, b + 2, a + 3, b + 3, b + 2,
+      a, a + 2, b, a + 2, b + 2, b,
+      a + 1, b + 1, a + 3, b + 1, b + 3, a + 3,
+    );
+  }
+  const last = (points.length - 1) * 4;
+  indices.push(0, 1, 2, 1, 3, 2, last, last + 2, last + 1, last + 1, last + 2, last + 3);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
 }
 
 /** A BoxGeometry translated to (x, y, z). Used to build merged trim/bar sets. */
@@ -232,6 +251,11 @@ const MAT_EDGE = new THREE.MeshStandardMaterial({
   emissiveIntensity: 0.1,
   side: THREE.DoubleSide,
   envMapIntensity: 0.3,
+});
+const MAT_DIVIDER = new THREE.MeshStandardMaterial({
+  color: DIVIDER_COLOR,
+  roughness: 0.9,
+  envMapIntensity: 0.25,
 });
 const MAT_GUARDRAIL = new THREE.MeshStandardMaterial({
   color: GUARDRAIL_COLOR,
@@ -835,7 +859,7 @@ function DirectionArrow({
   return <mesh position={position} rotation={[0, rotY, 0]} geometry={ARROW_GEO} material={MAT_ARROW} />;
 }
 
-/** A straight one-way aisle. The flat paint (edges, centre line, arrows, bay
+/** A straight two-way aisle. The flat paint (edges, centre line, arrows, bay
  *  outlines) is now baked by <FloorPaint>; this component renders only the
  *  raised asphalt box that gives the road its 3D thickness and shadow. */
 const AisleRoad = memo(function AisleRoad({ aisle }: { aisle: AisleDesc }) {
@@ -851,8 +875,7 @@ const AisleRoad = memo(function AisleRoad({ aisle }: { aisle: AisleDesc }) {
   );
 });
 
-/** A curved 180° turn road with divider, merged edge lines, guardrails, and
- *  one direction arrow. */
+/** A curved two-way turn with a median, edge lines, guardrails, and arrows. */
 const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
   const edgeOffset = ROAD_WIDTH / 2 - 0.08;
   const ribbon = useMemo(
@@ -870,7 +893,7 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
   );
   // Raised concrete divider on turns (no parking here, cars cannot cross).
   const divider = useMemo(
-    () => buildSolidBarAlongPath(turn.points, DIVIDER_WIDTH, DIVIDER_HEIGHT, ROAD_Y + 0.015),
+    () => buildSolidBarAlongPath(turn.points, DIVIDER_WIDTH, DIVIDER_HEIGHT, ROAD_Y + 0.005),
     [turn.points],
   );
   // Guardrails only cover the curved (semicircle) portion of the turn.
@@ -891,8 +914,8 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
     [curvePts, edgeOffset],
   );
 
-  // Direction arrow at the apex of the curve, oriented tangent to it.
-  const arrow = useMemo(() => {
+  // Opposing arrows at the apex, one in each left-driving lane.
+  const arrows = useMemo(() => {
     const pts = turn.points;
     const mid = Math.floor(pts.length / 2);
     const p = pts[mid];
@@ -901,16 +924,14 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
     const tx = b.x - a.x;
     const tz = b.z - a.z;
     const rotY = Math.atan2(-tz, tx);
-    // Offset the arrow into the driving lane (offset -LANE_WIDTH/2 from centre).
-    const up = new THREE.Vector3(0, 1, 0);
     const tangent = new THREE.Vector3(tx, 0, tz).normalize();
-    const side = new THREE.Vector3().crossVectors(tangent, up).normalize();
-    const dz = side.z * LANE_WIDTH / 2;
+    const side = new THREE.Vector3().crossVectors(tangent, new THREE.Vector3(0, 1, 0)).normalize();
     const dx = side.x * LANE_WIDTH / 2;
-    return {
-      pos: [p.x - dx, p.y + ROAD_Y + 0.02, p.z - dz] as [number, number, number],
-      rotY,
-    };
+    const dz = side.z * LANE_WIDTH / 2;
+    return [
+      { pos: [p.x - dx, p.y + ROAD_Y + 0.02, p.z - dz] as [number, number, number], rotY },
+      { pos: [p.x + dx, p.y + ROAD_Y + 0.02, p.z + dz] as [number, number, number], rotY: rotY + Math.PI },
+    ];
   }, [turn.points]);
 
   useEffect(() => {
@@ -927,18 +948,18 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
       <mesh geometry={ribbon} material={MAT_ASPHALT} receiveShadow />
       {/* Edge lines (left + right merged) */}
       <mesh geometry={edges} material={MAT_EDGE} />
-      {/* No raised divider. It rendered as a faceted grey bar floating above
-          the tarmac, and an aisle here is one one-way carriageway anyway. */}
+      <mesh geometry={divider} material={MAT_DIVIDER} receiveShadow />
       {/* Guardrails on both outer edges of the turn */}
       <GuardRailAlongPath points={leftRailPts} yBase={ROAD_Y} />
       <GuardRailAlongPath points={rightRailPts} yBase={ROAD_Y} />
-      {/* Direction arrow at apex */}
-      <DirectionArrow position={arrow.pos} rotY={arrow.rotY} />
+      {arrows.map((arrow, i) => (
+        <DirectionArrow key={i} position={arrow.pos} rotY={arrow.rotY} />
+      ))}
     </group>
   );
 });
 
-/** A spiral ramp between floors with guardrails and a direction arrow. */
+/** A two-way ramp between floors with a median, guardrails, and arrows. */
 const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
   const edgeOffset = ROAD_WIDTH / 2 - 0.08;
   // Soffit / support slab under the ramp (wider than the road).
@@ -981,9 +1002,8 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
     [ramp.points, edgeOffset],
   );
 
-  // Direction arrow near the start of the ramp, oriented up the slope and
-  // offset into the driving lane so the centreline divider doesn't hide it.
-  const arrow = useMemo(() => {
+  // Opposing arrows near the ramp foot, one in each left-driving lane.
+  const arrows = useMemo(() => {
     const pts = ramp.points;
     const i = Math.min(6, Math.floor(pts.length / 4));
     const p = pts[i];
@@ -992,12 +1012,14 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
     const tx = b.x - a.x;
     const tz = b.z - a.z;
     const rotY = Math.atan2(-tz, tx);
-    const up = new THREE.Vector3(0, 1, 0);
     const tangent = new THREE.Vector3(tx, 0, tz).normalize();
-    const side = new THREE.Vector3().crossVectors(tangent, up).normalize();
+    const side = new THREE.Vector3().crossVectors(tangent, new THREE.Vector3(0, 1, 0)).normalize();
     const dx = side.x * LANE_WIDTH / 2;
     const dz = side.z * LANE_WIDTH / 2;
-    return { pos: [p.x - dx, p.y + ROAD_Y + 0.02, p.z - dz] as [number, number, number], rotY };
+    return [
+      { pos: [p.x - dx, p.y + ROAD_Y + 0.02, p.z - dz] as [number, number, number], rotY },
+      { pos: [p.x + dx, p.y + ROAD_Y + 0.02, p.z + dz] as [number, number, number], rotY: rotY + Math.PI },
+    ];
   }, [ramp.points]);
 
   useEffect(() => {
@@ -1017,13 +1039,13 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
       <mesh geometry={road} material={MAT_ASPHALT} receiveShadow />
       {/* Edge lines (left + right merged) */}
       <mesh geometry={edges} material={MAT_EDGE} />
-      {/* No raised divider. It rendered as a faceted grey bar floating above
-          the tarmac, and an aisle here is one one-way carriageway anyway. */}
+      <mesh geometry={divider} material={MAT_DIVIDER} receiveShadow />
       {/* Guardrails on both sides of the ramp */}
       <GuardRailAlongPath points={leftRailPts} yBase={ROAD_Y} />
       <GuardRailAlongPath points={rightRailPts} yBase={ROAD_Y} />
-      {/* Direction arrow pointing up the ramp */}
-      <DirectionArrow position={arrow.pos} rotY={arrow.rotY} />
+      {arrows.map((arrow, i) => (
+        <DirectionArrow key={i} position={arrow.pos} rotY={arrow.rotY} />
+      ))}
     </group>
   );
 });
