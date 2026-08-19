@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { Billboard, Text } from "@react-three/drei";
+import { Text } from "@react-three/drei";
 import type { CarRosterEntry, LotData, LotNode, NodeSign, NodeType, SlotSize } from "../types";
 import {
   AISLE_SPACING,
@@ -327,15 +327,31 @@ const GATE_FRAME_GEO = (() => {
   );
 })();
 
-/** Coloured gate parts: the boom arm + tip + label backplate, merged so the
- *  coloured elements are a single draw call. Shared geometry; the material
- *  (green/red) is picked per gate. */
+/** Coloured gate parts: the raised boom arm and the label panel, merged into
+ *  one draw call. Shared geometry; the material (green/red) is per gate.
+ *
+ *  Three things were wrong here and all three are visible in Deepu's
+ *  screenshots:
+ *   - The boom lay HORIZONTALLY across the road at y=3.0, and cars are 1.35
+ *     to 1.65 tall, so every car drove straight through a closed barrier. It
+ *     now stands vertically in the raised position, hinged at its housing,
+ *     which is what an open barrier looks like and leaves the road clear.
+ *   - The label panel was 1.8 wide in X and 0.12 thin in Z. The road runs
+ *     along X, so a driver saw a 0.12-wide sliver edge-on, and from three
+ *     quarters it sliced the word in half ("EXIT" read as "IT"). It is now
+ *     thin in X and wide in Z, facing the traffic.
+ *   - The boom tip box sat at z = -ROAD_WIDTH/2, exactly inside the south
+ *     leg, permanently interpenetrating it. */
+const GATE_ARM_LEN = ROAD_WIDTH - 0.9;
 const GATE_BOOM_GEO = (() =>
   mergeGeometries(
     [
-      makeBox(0.15, 0.12, ROAD_WIDTH - 0.3, 0, 3.0, 0), // boom arm
-      makeBox(0.35, 0.25, 0.35, 0, 3.0, -ROAD_WIDTH / 2), // boom tip
-      makeBox(1.8, 0.9, 0.12, 0, 3.4, 0.1), // label backplate
+      // Raised arm, standing up from the housing on the north leg.
+      makeBox(0.15, GATE_ARM_LEN, 0.12, 0, 3.5 + GATE_ARM_LEN / 2, ROAD_WIDTH / 2),
+      // Tip, on the free (upper) end of the raised arm.
+      makeBox(0.22, 0.3, 0.22, 0, 3.5 + GATE_ARM_LEN, ROAD_WIDTH / 2),
+      // Label panel: thin across the road, wide along it, above the top bar.
+      makeBox(0.14, 1.05, 3.0, 0, 4.85, 0),
     ],
     false,
   ) ?? new THREE.BufferGeometry())();
@@ -373,6 +389,10 @@ interface AisleDesc {
   y: number;
   x0: number;
   x1: number;
+  /** x extent of the junctions only (where the bays are), excluding the entry
+   *  and ramp nodes that sit outside the parking at x = 0. */
+  bayX0: number;
+  bayX1: number;
   /** Aisle index (0-based) — even aisles flow +x, odd flow -x. */
   index: number;
 }
@@ -443,7 +463,7 @@ function buildGeometry(lot: LotData) {
   const maxFloor = Math.max(...Object.values(nodes).map((n) => n.floor));
 
   // --- Aisles: group junctions by (floor, aisle) ---
-  const aisleMap = new Map<string, { floor: number; y: number; xs: number[]; index: number }>();
+  const aisleMap = new Map<string, { floor: number; y: number; xs: number[]; index: number; bayX0?: number; bayX1?: number; hasConnection?: boolean }>();
   for (const [id, node] of Object.entries(nodes)) {
     if (node.type !== "junction") continue;
     const aisle = aisleOf(id);
@@ -451,6 +471,8 @@ function buildGeometry(lot: LotData) {
     const key = `${node.floor}:${aisle}`;
     const entry = aisleMap.get(key) ?? { floor: node.floor, y: node.y, xs: [], index: aisle };
     entry.xs.push(node.x);
+    entry.bayX0 = Math.min(entry.bayX0 ?? node.x, node.x);
+    entry.bayX1 = Math.max(entry.bayX1 ?? node.x, node.x);
     aisleMap.set(key, entry);
   }
   // Include entry/exit/ramp nodes that sit on an aisle centreline (same floor &
@@ -461,14 +483,26 @@ function buildGeometry(lot: LotData) {
     if (!connectionTypes.has(node.type)) continue;
     const aisle = Math.round(node.y / AISLE_SPACING);
     const entry = aisleMap.get(`${node.floor}:${aisle}`);
-    if (entry) entry.xs.push(node.x);
+    if (entry) {
+      entry.xs.push(node.x);
+      // Remember the junction-only extent separately. The entry and ramp
+      // nodes sit at x = 0, outside the parking, and letting them define the
+      // aisle's start pushed the aisle-entrance signposts to x = -2.5: over
+      // the edge of the building, straddling the ramp opening, standing on
+      // nothing above a 15-unit drop. The road still needs the wider extent.
+      entry.hasConnection = true;
+    }
   }
-  for (const { floor, y, xs, index } of aisleMap.values()) {
+  for (const { floor, y, xs, index, bayX0, bayX1 } of aisleMap.values()) {
     aisles.push({
       floor,
       y,
       x0: Math.min(...xs),
       x1: Math.max(...xs),
+      // Extent of the JUNCTIONS only, i.e. where bays actually are. Signposts
+      // use this so they never end up beyond the building edge.
+      bayX0: bayX0 ?? Math.min(...xs),
+      bayX1: bayX1 ?? Math.max(...xs),
       index,
     });
   }
@@ -507,7 +541,11 @@ function buildGeometry(lot: LotData) {
     const exx = b.x - node.x;
     const exz = b.y - node.y;
     const crossY = apz * exx - apx * exz;
-    const isLeft = crossY < 0;
+    // With +Y up and the approach/exit vectors in the XZ plane, the driver's
+    // left is (up x approach), so dot(exit, left) = apz*exx - apx*exz = crossY,
+    // and crossY > 0 is a LEFT turn. This was inverted, so all nine boards in
+    // the garage named the opposite of the turn the road actually makes.
+    const isLeft = crossY > 0;
     // Face oncoming traffic: board +Z points back toward the incoming node.
     const faceX = a.x - node.x;
     const faceZ = a.y - node.y;
@@ -614,7 +652,7 @@ function buildGeometry(lot: LotData) {
 
     // Even aisles flow +x (entry at low x); odd aisles flow -x (entry at high x).
     const flowsPositive = aisle.index % 2 === 0;
-    const entryX = flowsPositive ? aisle.x0 : aisle.x1;
+    const entryX = flowsPositive ? aisle.bayX0 : aisle.bayX1;
     const arrowDir: 1 | -1 = flowsPositive ? 1 : -1;
     // Sit the post BEFORE the first bay of the aisle. It used to be placed
     // 3 units *into* the aisle at a z of ROAD_WIDTH/2 + 1 = 4.5, but bays now
@@ -898,16 +936,20 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
     () => buildRibbon(ramp.points, ROAD_WIDTH + 1.2, ROAD_Y - 0.1),
     [ramp.points],
   );
-  // Road surface + the two threshold aprons all share MAT_RAMP, so merge them
-  // into a single geometry.
-  const road = useMemo(() => {
-    const ribbon = buildRibbon(ramp.points, ROAD_WIDTH, ROAD_Y);
-    const p0 = ramp.points[0];
-    const pN = ramp.points[ramp.points.length - 1];
-    const apron0 = makeBox(2, 0.65, ROAD_WIDTH, p0.x - 1, p0.y + ROAD_Y - 0.325, p0.z);
-    const apronN = makeBox(2, 0.65, ROAD_WIDTH, pN.x - 1, pN.y + ROAD_Y - 0.325, pN.z);
-    return mergeGeometries([ribbon, apron0, apronN], false) ?? new THREE.BufferGeometry();
-  }, [ramp.points]);
+  // Road surface. There used to be a "threshold apron" box at each end,
+  // meant to bridge ramp to floor. It did the opposite: a FLAT 2-unit box
+  // held at the ramp's FINAL height while the deck beneath it was still
+  // climbing at 18%. Measured, that left a hard 0.362-unit step straight
+  // across the full 7-unit carriageway, plus a coplanar z-fighting sliver
+  // where the two surfaces met. That step is the dark band across the road
+  // at the ramp joint that Deepu photographed repeatedly.
+  //
+  // No apron is needed. rampPoints() starts and ends exactly on the floor
+  // heights, so the ribbon already meets each deck flush at ROAD_Y.
+  const road = useMemo(
+    () => buildRibbon(ramp.points, ROAD_WIDTH, ROAD_Y),
+    [ramp.points],
+  );
   // Both edge ribbons share MAT_EDGE, so merge them into one geometry.
   const edges = useMemo(() => {
     const l = buildRibbon(offsetPoints(ramp.points, edgeOffset), 0.22, ROAD_Y + 0.02);
@@ -961,7 +1003,7 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
     <group>
       {/* Support slab under ramp */}
       <mesh geometry={soffit} material={MAT_SLAB} receiveShadow />
-      {/* Road surface + threshold aprons (merged) */}
+      {/* Road surface */}
       <mesh geometry={road} material={MAT_RAMP} receiveShadow />
       {/* Edge lines (left + right merged) */}
       <mesh geometry={edges} material={MAT_EDGE} />
@@ -1172,19 +1214,26 @@ const Gate = memo(function Gate({
           building, and distanceFactor blew it up absurdly at close range.
           The floor labels were moved off <Html> for exactly this reason; the
           gates were missed. */}
-      <Billboard position={[0, 3.4, 0.16]}>
+      {/* One label on each face of the panel, fixed rather than billboarded.
+          A Billboard rotates freely and sliced itself through the panel from
+          three-quarter angles; two fixed faces read correctly from either
+          approach and can never intersect the geometry they sit on. */}
+      {([1, -1] as const).map((face) => (
         <Text
-          fontSize={0.62}
+          key={face}
+          position={[face * 0.09, 4.85, 0]}
+          rotation={[0, face * (Math.PI / 2), 0]}
+          fontSize={0.66}
           color="#ffffff"
           anchorX="center"
           anchorY="middle"
-          letterSpacing={0.1}
-          outlineWidth={0.03}
+          letterSpacing={0.12}
+          outlineWidth={0.035}
           outlineColor="#000000"
         >
           {label}
         </Text>
-      </Billboard>
+      ))}
     </group>
   );
 });

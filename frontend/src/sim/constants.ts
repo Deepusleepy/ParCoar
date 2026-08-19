@@ -51,10 +51,16 @@ export const PILLAR_HEIGHT = FLOOR_HEIGHT;
 /** World-space scale: 1 lot unit = SCALE three.js units. */
 export const SCALE = 1;
 
-/** How high a car sits above the surface it rests on. The GLTF models put
- *  their tyre contact patch at y=0, so this must be 0 or the cars visibly
- *  hover. Kept as a named constant because several files position cars. */
-export const CAR_Y_OFFSET = 0;
+/** How high a car sits above the raw floor slab.
+ *
+ *  The GLTF models put their tyre contact patch at y=0, so this is purely the
+ *  thickness of what they stand ON. The drivable surface is the road box,
+ *  whose top is at ROAD_Y = 0.15, and the painted markings sit just above
+ *  that. With this at 0 every MOVING car rode 0.15 below the tarmac, sunk
+ *  into the road along its whole route, while parked cars sat below their own
+ *  bay paint. Matching ROAD_Y puts every car level with the surface it is
+ *  driving or parked on. */
+export const CAR_Y_OFFSET = 0.15;
 
 /* ------------------------------------------------------------------ *
  *  World-space lot framing (used by Scene + CameraRig)

@@ -26,9 +26,9 @@ import {
  * `bounds` and every node's (x, y) are lot coordinates, and with SCALE = 1
  * they map directly to three.js world X and world Z (see `toWorld`). So
  * throughout this file: worldX === lot x, worldZ === lot y. The plane is
- * rotated [-PI/2, 0, 0] and CanvasTexture defaults to flipY = true, which
- * together map the canvas as: canvas +X -> world +X, canvas +Y (downward)
- * -> world -Z. The world-to-canvas helper below encodes exactly that.
+ * rotated [-PI/2, 0, 0] and CanvasTexture defaults to flipY = true. See the
+ * w2c helper for what that actually works out to; it is not what you would
+ * guess, and guessing it mirrored every marking in the garage.
  */
 
 /** Parsed junction id "J{floor}_{aisle}_{n}" -> aisle index (same regex as
@@ -66,14 +66,22 @@ export function FloorPaint({
     const ctx = canvas.getContext("2d")!;
 
     // --- World (lot) -> canvas pixel mapping ---------------------------
-    // canvas +X follows world +X; canvas +Y (down) follows world -Z because
-    // the plane is rotated -90deg about X and the CanvasTexture is flipped
-    // vertically (flipY = true). Every draw call below goes through `w2c`,
-    // so this is the only place that knows the mapping.
-    const maxZ = bounds.maxZ;
+    // Every draw call below goes through `w2c`, so this is the only place
+    // that knows the mapping.
+    // The plane is rotated -PI/2 about X, so its local +Y maps to world -Z.
+    // CanvasTexture has flipY = true, which maps v=1 (local +Y, i.e. world
+    // -Z) to canvas row 0. So world minZ is canvas top, NOT world maxZ.
+    //
+    // Getting this backwards mirrored the ENTIRE floor about z = 25.5: every
+    // bay number named a bay on the far side of the garage (a driver sent to
+    // C104 would have parked in C24) and every direction chevron pointed
+    // against the traffic. The road, edge lines and bay outlines hid it,
+    // because the aisles at z = 0, 17, 34, 51 happen to be symmetric about
+    // that centreline.
+    const minZ = bounds.minZ;
     const w2c = (wx: number, wz: number): [number, number] => [
       (wx - bounds.minX) * px,
-      (maxZ - wz) * px,
+      (wz - minZ) * px,
     ];
 
     // 1. Transparent background: the concrete slab shows through where we
@@ -174,8 +182,14 @@ export function FloorPaint({
       const side = node.y < aisleY ? -1 : 1; // -1: bay on -y side, +1: +y side
       const xL = node.x - SLOT_WIDTH / 2;
       const xR = node.x + SLOT_WIDTH / 2;
-      const backZ = node.y - side * (SLOT_DEPTH / 2);
-      const aisleZ = node.y + side * (SLOT_DEPTH / 2);
+      // `side` is +1 when the bay lies on the +y side of its aisle, so the
+      // edge NEAREST the aisle is the one at node.y - side*depth/2. These two
+      // were swapped, which painted the solid "closed back" line across the
+      // bay's entrance and put the coloured size bar against the rear wall.
+      // Two rows of bays back to back then placed their bars a unit apart,
+      // which is the continuous multicoloured band running down the middle.
+      const aisleZ = node.y - side * (SLOT_DEPTH / 2);
+      const backZ = node.y + side * (SLOT_DEPTH / 2);
 
       // Two side lines (full bay depth) + closed back line. Aisle-facing
       // edge is left open.
@@ -214,6 +228,8 @@ export function FloorPaint({
       // are approached from the same direction, so the rotation follows the
       // AISLE, not which side of it the bay sits on. Keying it off the side
       // (as this did originally) left half of every aisle upside down.
+      const bayAisleY = Math.round(node.y / AISLE_SPACING) * AISLE_SPACING;
+      const baySide = node.y < bayAisleY ? -1 : 1;
       const aisleIndex = Math.round(node.y / AISLE_SPACING);
       const rotDeg = aisleIndex % 2 === 0 ? 0 : 180;
 
@@ -226,7 +242,10 @@ export function FloorPaint({
         ctx.font = `bold ${fontWorld * px}px sans-serif`;
       }
 
-      const [cx, cy] = w2c(node.x, node.y);
+      // Nudge the number toward the mouth of the bay. Painted dead centre it
+      // sits under the parked car and only empty bays were ever legible.
+      const labelZ = node.y - baySide * (SLOT_DEPTH / 2 - 0.55);
+      const [cx, cy] = w2c(node.x, labelZ);
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate((rotDeg * Math.PI) / 180);

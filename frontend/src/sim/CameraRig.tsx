@@ -93,17 +93,22 @@ const PRESETS: Record<
     pos: new THREE.Vector3(LOT_CENTER_X + 30, 70, LOT_CENTER_Z + 70),
     look: new THREE.Vector3(LOT_CENTER_X, (3 * FLOOR_HEIGHT) / 2, LOT_CENTER_Z),
   },
+  // Floor vantages look ALONG the aisles from the south-west corner. The old
+  // ones sat at LOT_CENTER_X + 28, which after the rescale put the camera
+  // about seven units from the turn signboard at the east end of the aisle,
+  // so the board filled most of the frame and the floor was invisible behind
+  // it. Turn boards hang near x = 3 and x = 51.6, so this vantage is clear.
   floor0: {
-    pos: new THREE.Vector3(LOT_CENTER_X + 28, 0 * FLOOR_HEIGHT + 6, LOT_CENTER_Z - 28),
-    look: new THREE.Vector3(LOT_CENTER_X, 0 * FLOOR_HEIGHT + 2, LOT_CENTER_Z),
+    pos: new THREE.Vector3(LOT_CENTER_X - 34, 0 * FLOOR_HEIGHT + 7, LOT_CENTER_Z - 34),
+    look: new THREE.Vector3(LOT_CENTER_X + 6, 0 * FLOOR_HEIGHT + 1.5, LOT_CENTER_Z),
   },
   floor1: {
-    pos: new THREE.Vector3(LOT_CENTER_X + 28, 1 * FLOOR_HEIGHT + 6, LOT_CENTER_Z - 28),
-    look: new THREE.Vector3(LOT_CENTER_X, 1 * FLOOR_HEIGHT + 2, LOT_CENTER_Z),
+    pos: new THREE.Vector3(LOT_CENTER_X - 34, 1 * FLOOR_HEIGHT + 7, LOT_CENTER_Z - 34),
+    look: new THREE.Vector3(LOT_CENTER_X + 6, 1 * FLOOR_HEIGHT + 1.5, LOT_CENTER_Z),
   },
   floor2: {
-    pos: new THREE.Vector3(LOT_CENTER_X + 28, 2 * FLOOR_HEIGHT + 6, LOT_CENTER_Z - 28),
-    look: new THREE.Vector3(LOT_CENTER_X, 2 * FLOOR_HEIGHT + 2, LOT_CENTER_Z),
+    pos: new THREE.Vector3(LOT_CENTER_X - 34, 2 * FLOOR_HEIGHT + 7, LOT_CENTER_Z - 34),
+    look: new THREE.Vector3(LOT_CENTER_X + 6, 2 * FLOOR_HEIGHT + 1.5, LOT_CENTER_Z),
   },
 };
 
