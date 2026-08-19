@@ -5,6 +5,8 @@ import { Text } from "@react-three/drei";
 import type { LotData, LotNode, NodeSign, NodeType, SlotSize } from "../types";
 import {
   AISLE_SPACING,
+  EDGE_LINE_OFFSET,
+  EDGE_LINE_WIDTH,
   DIVIDER_COLOR,
   FLOOR_COLOR,
   FLOOR_HEIGHT,
@@ -531,6 +533,21 @@ function buildGeometry(lot: LotData) {
     });
   }
 
+  // Bay-number range per aisle, so a turn board can name where it leads
+  // instead of all nine of them reading the same word.
+  const aisleBayRange = new Map<string, [number, number]>();
+  for (const [id, node] of Object.entries(nodes)) {
+    if (node.type !== "slot") continue;
+    const num = Number(id.replace(/^S\d+_/, ""));
+    if (Number.isNaN(num)) continue;
+    const key = `${node.floor}:${Math.round(node.y / AISLE_SPACING)}`;
+    const cur = aisleBayRange.get(key);
+    aisleBayRange.set(
+      key,
+      cur ? [Math.min(cur[0], num), Math.max(cur[1], num)] : [num, num],
+    );
+  }
+
   // --- Turns. The two junction neighbours are ordered by aisle index, which
   //     preserves the original serpentine traversal for geometry and boards. ---
   for (const [id, node] of Object.entries(nodes)) {
@@ -571,14 +588,28 @@ function buildGeometry(lot: LotData) {
     // Offset the board a few units back toward the incoming direction so it
     // sits just before the turn rather than on top of it.
     const apLen = Math.hypot(apx, apz) || 1;
-    const off = 3;
+    // On covered storeys the board hangs from the slab, so it can sit three
+    // units back down the aisle. On the TOP deck it stands on two posts at
+    // z = +/-4.1, and the bays start at exactly +/-3.5 — so at that offset
+    // both posts landed inside a parking bay and ran straight through the car
+    // in it, on six bays across the open deck. The only x with no bay is past
+    // the last one, between it and the turn, so top-floor boards stand there.
+    const off = node.floor === maxFloor ? 0.7 : 3;
     const sx = node.x - (apx / apLen) * off;
     const sy = node.y - (apz / apLen) * off;
+    // Name the run of bays this turn leads to. Nine identical "U-TURN"
+    // headers told a driver who can see three of them at once nothing.
+    const destAisle = aisleOf(neighbours[1]);
+    const range =
+      destAisle === null ? undefined : aisleBayRange.get(`${node.floor}:${destAisle}`);
+    const floorLetter = String.fromCharCode(65 + node.floor);
     signboards.push({
       nodeId: id,
       position: toWorld(sx, sy, node.floor),
       rotY,
-      label: "U-TURN",
+      label: range
+        ? `U-TURN → ${floorLetter}${range[0]} - ${floorLetter}${range[1]}`
+        : "U-TURN",
       isTopFloor: node.floor === maxFloor,
       floor: node.floor,
     });
@@ -675,7 +706,9 @@ function buildGeometry(lot: LotData) {
     // 3 units *into* the aisle at a z of ROAD_WIDTH/2 + 1 = 4.5, but bays now
     // start only 3.5 from the aisle centreline, so the post was landing inside
     // a bay and running straight through whatever car was parked there.
-    const signX = entryX - arrowDir * 2.5;
+    // 2.5 left only 2cm between the post and the 15-unit ramp opening on
+    // the upper floors, and hung 7cm of panel over the hole.
+    const signX = entryX - arrowDir * 2.2;
     // Face oncoming traffic: toward the entry end (opposite of travel dir).
     const faceX = -arrowDir;
     const rotY = Math.atan2(faceX, 0);
@@ -857,7 +890,7 @@ const AisleRoad = memo(function AisleRoad({ aisle }: { aisle: AisleDesc }) {
 
 /** A curved two-way turn with a median, edge lines, guardrails, and arrows. */
 const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
-  const edgeOffset = ROAD_WIDTH / 2 - 0.08;
+  const edgeOffset = EDGE_LINE_OFFSET;
   const ribbon = useMemo(
     () => buildRibbon(turn.points, ROAD_WIDTH, ROAD_Y + 0.005),
     [turn.points],
@@ -865,8 +898,8 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
   // Both edge ribbons share MAT_EDGE, so merge them into one geometry.
   const edges = useMemo(
     () => {
-      const l = buildRibbon(offsetPoints(turn.points, edgeOffset), 0.22, ROAD_Y + 0.02);
-      const r = buildRibbon(offsetPoints(turn.points, -edgeOffset), 0.22, ROAD_Y + 0.02);
+      const l = buildRibbon(offsetPoints(turn.points, edgeOffset), EDGE_LINE_WIDTH, ROAD_Y + 0.02);
+      const r = buildRibbon(offsetPoints(turn.points, -edgeOffset), EDGE_LINE_WIDTH, ROAD_Y + 0.02);
       return mergeGeometries([l, r], false) ?? new THREE.BufferGeometry();
     },
     [turn.points, edgeOffset],
@@ -941,7 +974,7 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
 
 /** A two-way ramp between floors with a median, guardrails, and arrows. */
 const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
-  const edgeOffset = ROAD_WIDTH / 2 - 0.08;
+  const edgeOffset = EDGE_LINE_OFFSET;
   // Soffit / support slab under the ramp (wider than the road).
   const soffit = useMemo(
     () => buildRibbon(ramp.points, ROAD_WIDTH + 1.2, ROAD_Y - 0.1),
@@ -963,8 +996,8 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
   );
   // Both edge ribbons share MAT_EDGE, so merge them into one geometry.
   const edges = useMemo(() => {
-    const l = buildRibbon(offsetPoints(ramp.points, edgeOffset), 0.22, ROAD_Y + 0.02);
-    const r = buildRibbon(offsetPoints(ramp.points, -edgeOffset), 0.22, ROAD_Y + 0.02);
+    const l = buildRibbon(offsetPoints(ramp.points, edgeOffset), EDGE_LINE_WIDTH, ROAD_Y + 0.02);
+    const r = buildRibbon(offsetPoints(ramp.points, -edgeOffset), EDGE_LINE_WIDTH, ROAD_Y + 0.02);
     return mergeGeometries([l, r], false) ?? new THREE.BufferGeometry();
   }, [ramp.points, edgeOffset]);
   // Raised concrete divider on ramps (no parking here, cars cannot cross).

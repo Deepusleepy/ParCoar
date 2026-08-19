@@ -36,9 +36,10 @@ const RECONNECT_DELAY_MS = 2000;
  *  the ground floor can still spend about a minute and a half reaching the top
  *  exit. */
 const MIN_STAY_MS = 30_000;
-/** How many cars one signboard lists. Four is the most that stays legible
- *  from the far end of an aisle, and MAX_ACTIVE_CARS is 4 anyway. */
-const BOARD_ROWS = 4;
+/** How many cars one signboard lists: one in the hero block plus two queued.
+ *  Sampled over four minutes, a board had one car 80% of the time, two 19%,
+ *  three 0.7% and four never, so a fourth row was only ever wasted height. */
+const BOARD_ROWS = 3;
 
 /* How full each storey starts, from its own entrance to its far end.
  *
@@ -556,9 +557,27 @@ export function useSimulation(): SimulationState {
         const sign = map.get(car.id);
         if (!sign) continue;
         const route = sign.path ?? [sign.node];
-        let travelled = 0;
-        for (let hop = 0; hop < route.length; hop++) {
-          if (hop > 0) travelled += nodeGap(lotData, route[hop - 1], route[hop]);
+        // The backend's route BEGINS at the node the car is standing on, or
+        // has just left. Counting that node as an upcoming board was the bug
+        // behind "cars are passing but the board isn't working": a car that
+        // had already driven under a turn board and was going round the loop
+        // still had that board as hop 0 at distance 0, so the board kept it in
+        // the big hero block, reading NOW, for the whole 4.5-second traversal
+        // — while the car actually approaching was demoted to a small grey
+        // row. Measured, every single "NOW" on a board was a car that had
+        // already gone past it.
+        //
+        // So once a car is driving away from route[0], that node is behind it
+        // and the first board it can still reach is route[1] onward.
+        const movingOff = route.length > 1 && car.fromNode === route[0] && car.toNode === route[1];
+        const startHop = movingOff ? 1 : 0;
+        // How much of that first leg is left, so the distance shown counts
+        // from where the car actually is rather than from the node behind it.
+        let travelled = movingOff
+          ? (1 - car.progress) * nodeGap(lotData, route[0], route[1])
+          : 0;
+        for (let hop = startHop; hop < route.length; hop++) {
+          if (hop > startHop) travelled += nodeGap(lotData, route[hop - 1], route[hop]);
           const node = lotData.nodes[route[hop]];
           if (!node || (node.type !== "turn" && node.type !== "ramp_up")) continue;
           const queue = queues.get(route[hop]) ?? [];

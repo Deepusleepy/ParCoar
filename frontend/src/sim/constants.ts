@@ -20,9 +20,13 @@ export const SLOT_OFFSET = 6;
  *  Geometry constants for the 3D structure
  * ------------------------------------------------------------------ */
 
-/** Parking bay opening width (along the aisle). Matches JUNCTION_SPACING so
- *  bays sit edge to edge down the row, as in a real garage. */
-export const SLOT_WIDTH = 2.5;
+/** Parking bay opening width (along the aisle). This MUST equal
+ *  JUNCTION_SPACING so bays sit edge to edge and neighbouring bays share one
+ *  painted separator. At 2.5 against a 2.6 pitch the two lines fell 0.1
+ *  apart and, being 0.15 wide each, merged into a single 0.25 band with no
+ *  asphalt showing between them: every separator in the garage was 67% over
+ *  width. */
+export const SLOT_WIDTH = JUNCTION_SPACING;
 
 /** Parking bay depth (perpendicular to the aisle). */
 export const SLOT_DEPTH = 5;
@@ -32,6 +36,17 @@ export const LANE_WIDTH = 3.5;
 
 /** Full road width across both lanes of an aisle. */
 export const ROAD_WIDTH = LANE_WIDTH * 2;
+
+/** Road edge line width, and the offset of its CENTRE from the aisle
+ *  centreline, so its outer edge lands exactly on the road edge.
+ *
+ *  Both numbers live here because two different renderers draw this same
+ *  line: FloorPaint bakes it along the straight aisles and TurnRoad/RampRoad
+ *  extrude it around the curves. They had drifted to 0.15 wide at 3.5 and
+ *  0.22 wide at 3.42, so at every one of the 22 joints per storey the line
+ *  changed width and jumped 0.19 into the carriageway. */
+export const EDGE_LINE_WIDTH = 0.15;
+export const EDGE_LINE_OFFSET = ROAD_WIDTH / 2 - EDGE_LINE_WIDTH / 2;
 
 /** How far west of the building the inter-floor ramp runs, in lot units.
  *  Must exceed |slab minX| + ROAD_WIDTH/2 or the ramp's inner edge buries
@@ -85,19 +100,6 @@ export const LOT_MAX_Z = 64;
 /* ------------------------------------------------------------------ *
  *  Slot / car dimensions
  * ------------------------------------------------------------------ */
-
-/** Slot bay dimensions in lot units, by size.
- *
- *  Geometry is uniform across sizes on purpose: bays are laid out at a fixed
- *  JUNCTION_SPACING pitch, so a wider "large" bay would overlap its neighbour
- *  and a shallower "small" bay would leave a gap against the road edge. The
- *  car-size rule the backend enforces is shown by SLOT_OUTLINE_HEX on the
- *  aisle-facing edge instead, which stays legible from any camera angle. */
-export const SLOT_SIZE: Record<SlotSize, { w: number; l: number }> = {
-  small: { w: SLOT_WIDTH, l: SLOT_DEPTH },
-  medium: { w: SLOT_WIDTH, l: SLOT_DEPTH },
-  large: { w: SLOT_WIDTH, l: SLOT_DEPTH },
-};
 
 /** Car body dimensions by car size (length along travel axis, width across). */
 /** Car body dimensions by size. Scale is uniform, so `length` also sets the

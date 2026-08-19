@@ -107,15 +107,22 @@ const ROD_CENTER_Y = (FLOOR_HEIGHT + BOARD_TOP_Y) / 2;
 const LABEL_Y = SCREEN_HALF_H - 0.24;
 /** Hero block: the car at the front of the queue. */
 const HERO_TOP = SCREEN_HALF_H - 0.5;
-const HERO_H = 1.45;
+const HERO_H = 1.7;
 const HERO_CENTER_Y = HERO_TOP - HERO_H / 2;
-const HERO_LINE1_Y = HERO_CENTER_Y + 0.36;
-const HERO_LINE2_Y = HERO_CENTER_Y - 0.36;
-/** Queue block: everyone else, nearest first. */
+const HERO_LINE1_Y = HERO_CENTER_Y + 0.42;
+const HERO_LINE2_Y = HERO_CENTER_Y - 0.42;
+/** Queue block: everyone else, nearest first.
+ *
+ *  Two rows, not three. Sampled over four minutes of traffic, a board had
+ *  one car queued 80% of the time, two 19%, three 0.7% and four never — so
+ *  the third row only ever cost height. That height went into the two rows
+ *  that do get used, which were the SMALLEST type on the board and are read
+ *  by the furthest-away driver: at 48 metres a 0.34 row is about six pixels
+ *  of cap height, which is a smear. */
 const RULE_Y = HERO_TOP - HERO_H - 0.1;
-const QUEUE_TOP_Y = RULE_Y - 0.42;
-const QUEUE_PITCH = 0.6;
-const QUEUE_ROWS = 3;
+const QUEUE_TOP_Y = RULE_Y - 0.5;
+const QUEUE_PITCH = 0.8;
+const QUEUE_ROWS = 2;
 
 /* --- Shared geometry: one of each, reused across all eleven boards. --- */
 const ARROW_SHAPE = (() => {
@@ -151,7 +158,11 @@ const HERO_BAND_GEO = new THREE.PlaneGeometry(SCREEN_W - 0.1, HERO_H);
  *  which is unreadable at the distance this board is actually read from. The
  *  bar carries the colour identity at full strength instead. */
 const HERO_BAR_GEO = new THREE.PlaneGeometry(0.34, HERO_H - 0.12);
-const QUEUE_SWATCH_GEO = new THREE.PlaneGeometry(0.3, 0.3);
+/** Dark keyline behind the colour bar. Without it a white or silver car's bar
+ *  and the white chevron beside it read as one continuous white shape and the
+ *  colour identity — the whole point of the bar — is lost. */
+const HERO_BAR_KEYLINE_GEO = new THREE.PlaneGeometry(0.46, HERO_H - 0.02);
+const QUEUE_SWATCH_GEO = new THREE.PlaneGeometry(0.4, 0.4);
 const RULE_GEO = new THREE.PlaneGeometry(SCREEN_W - 0.1, 0.03);
 
 /* --- Shared materials: eleven boards share these. --- */
@@ -217,12 +228,15 @@ function HeroCar({ car }: { car: BoardCar }) {
       <mesh position={[0, HERO_CENTER_Y, -0.01]} geometry={HERO_BAND_GEO}>
         <meshStandardMaterial color="#0d1422" emissive={hex} emissiveIntensity={0.09} roughness={0.5} />
       </mesh>
+      <mesh position={[-SCREEN_HALF_W + 0.22, HERO_CENTER_Y, 0.005]} geometry={HERO_BAR_KEYLINE_GEO}>
+        <meshStandardMaterial color="#05070c" roughness={0.9} />
+      </mesh>
       <mesh position={[-SCREEN_HALF_W + 0.22, HERO_CENTER_Y, 0.01]} geometry={HERO_BAR_GEO}>
         <meshStandardMaterial color={hex} emissive={hex} emissiveIntensity={0.95} roughness={0.4} />
       </mesh>
       <Text
         position={[-SCREEN_HALF_W + 0.62, HERO_LINE1_Y, 0.02]}
-        fontSize={0.6}
+        fontSize={0.66}
         color={BODY_TEXT}
         anchorX="left"
         anchorY="middle"
@@ -233,7 +247,7 @@ function HeroCar({ car }: { car: BoardCar }) {
       </Text>
       <Text
         position={[SCREEN_HALF_W - 0.15, HERO_LINE1_Y, 0.02]}
-        fontSize={0.46}
+        fontSize={0.5}
         color={BODY_TEXT}
         anchorX="right"
         anchorY="middle"
@@ -251,7 +265,7 @@ function HeroCar({ car }: { car: BoardCar }) {
       />
       <Text
         position={[-SCREEN_HALF_W + 1.25, HERO_LINE2_Y, 0.02]}
-        fontSize={0.72}
+        fontSize={0.8}
         color={BODY_TEXT}
         anchorX="left"
         anchorY="middle"
@@ -262,7 +276,7 @@ function HeroCar({ car }: { car: BoardCar }) {
       </Text>
       <Text
         position={[SCREEN_HALF_W - 0.15, HERO_LINE2_Y, 0.02]}
-        fontSize={0.62}
+        fontSize={0.68}
         color={BODY_TEXT}
         anchorX="right"
         anchorY="middle"
@@ -286,8 +300,8 @@ function QueuedCar({ car, index }: { car: BoardCar; index: number }) {
         <meshStandardMaterial color={hex} emissive={hex} emissiveIntensity={0.5} roughness={0.45} />
       </mesh>
       <Text
-        position={[-SCREEN_HALF_W + 0.65, 0, 0.02]}
-        fontSize={0.34}
+        position={[-SCREEN_HALF_W + 0.8, 0, 0.02]}
+        fontSize={0.46}
         color={DIM_TEXT}
         anchorX="left"
         anchorY="middle"
@@ -298,14 +312,14 @@ function QueuedCar({ car, index }: { car: BoardCar; index: number }) {
       </Text>
       <mesh
         position={[-1.5, 0, 0.02]}
-        scale={[0.3, 0.3, 0.3]}
+        scale={[0.4, 0.4, 0.4]}
         rotation={[0, 0, directionToRotation(car.direction)]}
         geometry={ARROW_GEOMETRY}
         material={ARROW_DIM_MATERIAL}
       />
       <Text
         position={[-1.25, 0, 0.02]}
-        fontSize={0.34}
+        fontSize={0.46}
         color={DIM_TEXT}
         anchorX="left"
         anchorY="middle"
@@ -316,7 +330,7 @@ function QueuedCar({ car, index }: { car: BoardCar; index: number }) {
       </Text>
       <Text
         position={[1.1, 0, 0.02]}
-        fontSize={0.34}
+        fontSize={0.46}
         color={DIM_TEXT}
         anchorX="left"
         anchorY="middle"
@@ -327,7 +341,7 @@ function QueuedCar({ car, index }: { car: BoardCar; index: number }) {
       </Text>
       <Text
         position={[SCREEN_HALF_W - 0.15, 0, 0.02]}
-        fontSize={0.3}
+        fontSize={0.4}
         color={DIM_TEXT}
         anchorX="right"
         anchorY="middle"
@@ -385,22 +399,20 @@ function PermanentSignboardImpl({
         <mesh position={[0, 0, 0.11]} geometry={SCREEN_GEO} material={SCREEN_MATERIAL} />
 
         <group position={[0, 0, 0.13]}>
-          {/* What this junction is. Always present, so the board still works
-              as a permanent sign when no car is routed through it. */}
-          <Text
-            position={[-SCREEN_HALF_W + 0.15, LABEL_Y, 0]}
-            fontSize={0.34}
-            color={ACCENT}
-            anchorX="left"
-            anchorY="middle"
-            outlineWidth={0.02}
-            outlineColor="#000000"
-          >
-            {label}
-          </Text>
-
           {hero ? (
             <>
+              {/* What this junction is, small, above the live queue. */}
+              <Text
+                position={[-SCREEN_HALF_W + 0.15, LABEL_Y, 0]}
+                fontSize={0.46}
+                color={ACCENT}
+                anchorX="left"
+                anchorY="middle"
+                outlineWidth={0.02}
+                outlineColor="#000000"
+              >
+                {label}
+              </Text>
               <HeroCar car={hero} />
               <mesh position={[0, RULE_Y, 0]} geometry={RULE_GEO} material={RULE_MATERIAL} />
               {waiting.map((car, i) => (
@@ -408,16 +420,25 @@ function PermanentSignboardImpl({
               ))}
             </>
           ) : (
+            /* No traffic routed here. A real sign falls back to its permanent
+               message, so this one shows where the junction leads, large.
+               It used to print "NO CARS ROUTED", which is a statement about
+               the simulator rather than anything a driver can use — and the
+               upper-floor boards are idle most of the time, so that is what
+               most of them said most of the time. */
             <Text
-              position={[0, -0.1, 0]}
-              fontSize={0.5}
+              position={[0, 0.1, 0]}
+              fontSize={0.72}
               color={DIM_TEXT}
               anchorX="center"
               anchorY="middle"
-              outlineWidth={0.02}
+              maxWidth={SCREEN_W - 0.8}
+              textAlign="center"
+              lineHeight={1.25}
+              outlineWidth={0.03}
               outlineColor="#000000"
             >
-              NO CARS ROUTED
+              {label}
             </Text>
           )}
         </group>

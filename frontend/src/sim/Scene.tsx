@@ -62,8 +62,14 @@ function dprForViewport(): number {
  *  retuned to the current footprint with a small margin. */
 // Half-extents of the shadow frustum, sized to the real slab (81.6 x 77)
 // rather than a guess. Too small and the east end simply has no shadows.
-const SHADOW_HALF_X = 44;
-const SHADOW_HALF_Z = (LOT_MAX_Z - LOT_MIN_Z) / 2 + 2;
+// These are half-extents of the LIGHT's orthographic camera, not of the lot.
+// The sun sits off to one side, so the lot's footprint rotates and shears in
+// light space and needs more room than its world size suggests: measured, the
+// corners of the top deck and the whole ramp landed at up to 1.33 in NDC,
+// i.e. outside the map. 56 covers the padded footprint plus the ramp at
+// x = -22.5 and the full 30 units of height.
+const SHADOW_HALF_X = 56;
+const SHADOW_HALF_Z = 56;
 
 /* ------------------------------------------------------------------ *
  *  Ceiling strip fixtures (emissive, instanced — free shading cost)
@@ -347,7 +353,11 @@ export const Scene = memo(function Scene({
             position={[
               LOT_CENTER_X,
               ceilY,
-              LOT_CENTER_Z + (count === 1 ? 0 : (i === 0 ? -16 : 16)),
+              // Sit each light directly under a strip fixture (aisles at
+              // z = 0, 17, 34, 51). At +/-16 they sat at z 9.5 and 41.5, 8.5
+              // from the nearest fitting, so the brightest patch of ceiling
+              // was always somewhere no lamp existed.
+              LOT_CENTER_Z + (count === 1 ? 0 : (i === 0 ? -8.5 : 8.5)),
             ]}
             intensity={190}
             distance={72}
@@ -373,7 +383,9 @@ export const Scene = memo(function Scene({
         receiveShadow
       >
         <planeGeometry args={[400, 220]} />
-        <meshStandardMaterial color="#08090c" roughness={1} metalness={0} side={THREE.DoubleSide} />
+        {/* FrontSide, not DoubleSide: from below, a double-sided ground plane
+            is an opaque black lid and the whole building vanishes. */}
+        <meshStandardMaterial color="#08090c" roughness={1} metalness={0} />
       </mesh>
 
       {/* The parking garage environment. */}

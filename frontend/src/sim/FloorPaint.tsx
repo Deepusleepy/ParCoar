@@ -4,10 +4,11 @@ import type { JSX } from "react";
 import type { LotData } from "../types";
 import {
   AISLE_SPACING,
+  EDGE_LINE_OFFSET,
+  EDGE_LINE_WIDTH,
   FLOOR_HEIGHT,
   LANE_WIDTH,
   MARKING_WHITE,
-  ROAD_WIDTH,
   SLOT_DEPTH,
   SLOT_OUTLINE_HEX,
   SLOT_WIDTH,
@@ -55,8 +56,11 @@ export function FloorPaint({
     const w = bounds.maxX - bounds.minX;
     const h = bounds.maxZ - bounds.minZ;
 
-    // Target ~40 px per world unit, clamped so neither side exceeds 4096.
-    const px = Math.min(40, 4096 / w, 4096 / h);
+    // Texels per world unit, clamped so neither side exceeds 4096. The cap
+    // used to be 40, which was the binding term rather than the budget: at
+    // 81.6 x 77 the texture could carry 50 and still fit in one 4096 map, so
+    // every bay number was rendering 25% softer than it needed to.
+    const px = Math.min(50, 4096 / w, 4096 / h);
     const canvasW = Math.max(1, Math.ceil(w * px));
     const canvasH = Math.max(1, Math.ceil(h * px));
 
@@ -118,8 +122,6 @@ export function FloorPaint({
         bayX1: Math.max(...bayXs),
       }))
       .sort((a, b) => a.index - b.index);
-
-    const half = ROAD_WIDTH / 2;
 
     // Helper: stroke a world-space line of a given world width.
     const lineWorld = (
@@ -200,8 +202,9 @@ export function FloorPaint({
     //    running the full length of the tarmac including the approach to the
     //    entry / exit / ramp node.
     for (const a of aisles) {
-      lineWorld(a.x0, a.y - half, a.x1, a.y - half, 0.15, MARKING_WHITE);
-      lineWorld(a.x0, a.y + half, a.x1, a.y + half, 0.15, MARKING_WHITE);
+      const off = EDGE_LINE_OFFSET;
+      lineWorld(a.x0, a.y - off, a.x1, a.y - off, EDGE_LINE_WIDTH, MARKING_WHITE);
+      lineWorld(a.x0, a.y + off, a.x1, a.y + off, EDGE_LINE_WIDTH, MARKING_WHITE);
     }
 
     // 4. Broken white centre line. Aisles have parking on both sides, so the
@@ -237,14 +240,23 @@ export function FloorPaint({
       lineWorld(xR, backZ, xR, aisleZ, 0.15, MARKING_WHITE);
       lineWorld(xL, backZ, xR, backZ, 0.15, MARKING_WHITE);
 
-      // Colour-coded bar on the aisle-facing edge: the outer 0.2 of the bay
-      // (just inside the opening), so it reads as the bay-size cue.
-      const barInner = aisleZ - side * 0.2;
+      // Colour-coded bar on the aisle-facing edge: the outer 0.2 of the bay,
+      // INSIDE the opening, so it reads as the bay-size cue.
+      //
+      // The sign here was inverted. `side` is +1 when the bay lies on the +z
+      // side of its aisle, so "into the bay" is +side, and subtracting put
+      // every bar in the 0.2 strip of tarmac immediately OUTSIDE the bay --
+      // painted on the road, on top of the white edge line, which is drawn
+      // first and loses. That cost two things at once: every edge line in the
+      // garage was left at half width, and the two rows facing each other
+      // across an aisle laid their bars along both kerbs as one continuous
+      // multicoloured band. That band is what Deepu photographed.
+      const barInner = aisleZ + side * 0.2;
       rectWorld(
         xL,
-        barInner,
-        xR,
         aisleZ,
+        xR,
+        barInner,
         SLOT_OUTLINE_HEX[size],
       );
     }
