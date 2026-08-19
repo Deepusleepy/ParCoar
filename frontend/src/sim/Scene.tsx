@@ -2,7 +2,7 @@ import { memo, Suspense, useEffect, useLayoutEffect, useMemo, useRef, type React
 import { Canvas } from "@react-three/fiber";
 import { Billboard, Environment, Html, Text } from "@react-three/drei";
 import * as THREE from "three";
-import type { CarRosterEntry, NodeSign } from "../types";
+import type { NodeSign } from "../types";
 import {
   FLOOR_HEIGHT,
   LOT_CENTER_X,
@@ -238,7 +238,6 @@ export const Scene = memo(function Scene({
   followCarId = null,
   carGroupsRef,
   nodeSigns,
-  carRoster,
 }: {
   children: ReactNode;
   controlsRef?: React.Ref<OrbitControlsHandle>;
@@ -246,7 +245,6 @@ export const Scene = memo(function Scene({
   followCarId?: string | null;
   carGroupsRef?: React.MutableRefObject<Map<string, THREE.Group>>;
   nodeSigns?: NodeSign[];
-  carRoster?: CarRosterEntry[];
 }) {
   // Camera framing: the lot spans roughly x[0,45], z[-16,88], y[0,45].
   // We start high and to the front-left for a 3/4 aerial view; the free-fly
@@ -379,7 +377,7 @@ export const Scene = memo(function Scene({
       </mesh>
 
       {/* The parking garage environment. */}
-      <ParkingLot nodeSigns={nodeSigns} carRoster={carRoster} />
+      <ParkingLot nodeSigns={nodeSigns} />
 
       {/* Floor labels, standing at the front edge of each storey.
           These were drei <Html> with distanceFactor, which is DOM scaled by

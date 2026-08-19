@@ -138,21 +138,6 @@ export interface ActiveCar {
   leaving: boolean;
 }
 
-/** One entry in the roster of active auto-running cars, shown on every
- *  permanent signboard. Computed from the latest backend instructions on
- *  every WS message. */
-export interface CarRosterEntry {
-  carId: string;
-  color: CarColor;
-  plate: string;
-  slot: string;
-  slotFloor: number;
-  /** Car's current floor, used to filter the roster per-board so each
-   *  signboard only shows cars on its own floor. */
-  currentFloor: number;
-  status: CarStatus;
-}
-
 /** One active car's current route, for the 2D route panel. This is the same
  *  data the signboards use, surfaced so the panel can draw the search result
  *  the Python backend produced. */
@@ -168,21 +153,32 @@ export interface CarRoute {
   floor: number;
 }
 
-/** A dynamic sign at a junction node, showing info about the car waiting
- *  there. Computed from the latest backend instructions on every WS message
- *  — only present while a car is actually stopped at the node. */
+/** One car queued for a signboard: a single row on the screen.
+ *
+ *  A car appears on exactly ONE board — the next one on its route — because
+ *  that is the board it can actually see from the lane it is in. Listing it
+ *  on every board along its whole route lit up signs two floors ahead for a
+ *  car that would not arrive for a minute. */
+export interface BoardCar {
+  carId: string;
+  color: CarColor;
+  plate: string;
+  /** What this car must do AT this board. */
+  direction: Direction;
+  /** Bay it is heading for, e.g. "S2_5". Empty while a car is leaving. */
+  slot: string;
+  /** True when the car is on its way out rather than to a bay. */
+  leaving: boolean;
+  /** Road distance from the car to this board, in world units. */
+  distance: number;
+}
+
+/** Everything one permanent signboard displays: the queue of cars heading
+ *  for its node, nearest first. The nearest is the one being instructed
+ *  right now; the rest are told what is coming so a driver three cars back
+ *  already knows their turn. */
 export interface NodeSign {
   nodeId: string;
-  carColor: CarColor;
-  carPlate: string;
-  direction: InstructionSign["direction"];
-  slot: string;
-  slotFloor: number;
   floor: number;
-  nodeX: number;
-  nodeY: number;
-  /** How many graph hops the car still is from this board. 0 means the car is
-   *  here now. Boards use it to show a distance and to dim far-off cars, and
-   *  to decide which car wins when two are routed through the same board. */
-  hopsAway: number;
+  cars: BoardCar[];
 }

@@ -134,7 +134,6 @@ export function App() {
         followCarId={followCarId}
         carGroupsRef={carGroupsRef}
         nodeSigns={sim.nodeSigns}
-        carRoster={sim.carRoster}
       >
         <Suspense fallback={<SceneLoadingFallback />}>
           {/* All parked cars (pre-parked decoration + newly parked) rendered

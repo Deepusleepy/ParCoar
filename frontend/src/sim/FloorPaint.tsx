@@ -262,13 +262,22 @@ export function FloorPaint({
     for (const [id, node] of slots) {
       const num = id.replace(/^S\d+_/, "");
       const label = `${floorLetter}${num}`;
-      // Keep bay numbers facing the original serpentine approach direction.
-      // Both lanes can now reach either side, but changing half the established
-      // label orientation would make the floor harder to scan from above.
+      // A bay number is read side-on, by a driver in the aisle looking across
+      // at the bay, so the top of the lettering has to point AWAY from the
+      // aisle and into the bay. That depends on which SIDE of the aisle the
+      // bay is on, not on which way the aisle runs.
+      //
+      // Rotation was keyed off the aisle index instead, which gave both rows
+      // of an aisle the same rotation — so on every single aisle in the
+      // garage one of the two rows was printed upside down to the only people
+      // who ever read it.
+      //
+      // Canvas +y maps to world +z here (see w2c), and canvas text stands
+      // with its top toward -y, so an unrotated label points its top at -z.
+      // That is correct for the row on the -z side; the +z row needs 180.
       const bayAisleY = Math.round(node.y / AISLE_SPACING) * AISLE_SPACING;
       const baySide = node.y < bayAisleY ? -1 : 1;
-      const aisleIndex = Math.round(node.y / AISLE_SPACING);
-      const rotDeg = aisleIndex % 2 === 0 ? 0 : 180;
+      const rotDeg = baySide < 0 ? 0 : 180;
 
       // Fit font to the bay width.
       let fontWorld = 1.4;

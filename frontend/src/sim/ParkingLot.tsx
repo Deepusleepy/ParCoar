@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { Text } from "@react-three/drei";
-import type { CarRosterEntry, LotData, LotNode, NodeSign, NodeType, SlotSize } from "../types";
+import type { LotData, LotNode, NodeSign, NodeType, SlotSize } from "../types";
 import {
   AISLE_SPACING,
   DIVIDER_COLOR,
@@ -452,7 +452,6 @@ interface SignboardDesc {
   position: [number, number, number];
   rotY: number;
   label: string;
-  arrowRotation: number;
   isTopFloor: boolean;
   /** Floor the board sits on, used to filter the roster to cars on that floor. */
   floor: number;
@@ -555,18 +554,16 @@ function buildGeometry(lot: LotData) {
     ];
     turns.push({ floor: node.floor, points });
 
-    // Permanent signboard at this turn: classify LEFT/RIGHT from the cross
-    // product of the approach and exit directions (in the world X-Z plane).
+    // Permanent signboard at this turn.
+    //
+    // The board used to carry a fixed "LEFT" or "RIGHT", classified from the
+    // cross product of the approach and exit directions. Now that the road is
+    // two-way that is wrong half the time: the same 180-degree loop is a left
+    // for traffic going one way and a right for traffic going the other. The
+    // header names the junction, and each car's own row on the board carries
+    // its own hand, taken from the edge it is actually about to traverse.
     const apx = node.x - a.x;
     const apz = node.y - a.y;
-    const exx = b.x - node.x;
-    const exz = b.y - node.y;
-    const crossY = apz * exx - apx * exz;
-    // With +Y up and the approach/exit vectors in the XZ plane, the driver's
-    // left is (up x approach), so dot(exit, left) = apz*exx - apx*exz = crossY,
-    // and crossY > 0 is a LEFT turn. This was inverted, so all nine boards in
-    // the garage named the opposite of the turn the road actually makes.
-    const isLeft = crossY > 0;
     // Face oncoming traffic: board +Z points back toward the incoming node.
     const faceX = a.x - node.x;
     const faceZ = a.y - node.y;
@@ -581,8 +578,7 @@ function buildGeometry(lot: LotData) {
       nodeId: id,
       position: toWorld(sx, sy, node.floor),
       rotY,
-      label: isLeft ? "LEFT" : "RIGHT",
-      arrowRotation: isLeft ? Math.PI / 2 : -Math.PI / 2,
+      label: "U-TURN",
       isTopFloor: node.floor === maxFloor,
       floor: node.floor,
     });
@@ -622,7 +618,6 @@ function buildGeometry(lot: LotData) {
         position: toWorld(sx, sy, from.floor),
         rotY: Math.atan2(incomingJ.x - from.x, incomingJ.y - from.y),
         label: `RAMP UP → ${destFloorLetter}`,
-        arrowRotation: -Math.PI / 4, // angled upward
         isTopFloor: from.floor === maxFloor,
         floor: from.floor,
       });
@@ -1352,10 +1347,8 @@ const AreaSignboard = memo(function AreaSignboard({ sign }: { sign: AreaSignDesc
 
 export const ParkingLot = memo(function ParkingLot({
   nodeSigns,
-  carRoster,
 }: {
   nodeSigns?: NodeSign[];
-  carRoster?: CarRosterEntry[];
 }) {
   const lot = useLot();
 
@@ -1460,11 +1453,9 @@ export const ParkingLot = memo(function ParkingLot({
           position={s.position}
           rotY={s.rotY}
           label={s.label}
-          arrowRotation={s.arrowRotation}
           isTopFloor={s.isTopFloor}
           floor={s.floor}
           dynamic={signByNodeId.get(s.nodeId)}
-          roster={carRoster}
         />
       ))}
 

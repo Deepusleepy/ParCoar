@@ -3,7 +3,7 @@ import type {
   ActiveCar,
   Direction,
   CarColor,
-  CarRosterEntry,
+  BoardCar,
   CarRoute,
   InstructionSign,
   InstructionsMessage,
@@ -36,6 +36,9 @@ const RECONNECT_DELAY_MS = 2000;
  *  the ground floor can still spend about a minute and a half reaching the top
  *  exit. */
 const MIN_STAY_MS = 30_000;
+/** How many cars one signboard lists. Four is the most that stays legible
+ *  from the far end of an aisle, and MAX_ACTIVE_CARS is 4 anyway. */
+const BOARD_ROWS = 4;
 /** How many cars may be driving to the exit at once. */
 const MAX_LEAVING_CARS = 2;
 const MAX_STAY_MS = 90_000;
@@ -63,7 +66,6 @@ export interface SimulationState {
   parked: ParkedCarData[];
   lotFull: boolean;
   nodeSigns: NodeSign[];
-  carRoster: CarRosterEntry[];
   carRoutes: CarRoute[];
   onArrive: (carId: string, node: string) => void;
 }
@@ -246,7 +248,6 @@ export function useSimulation(): SimulationState {
   const [parked, setParked] = useState<ParkedCarData[]>([]);
   const [lotFull, setLotFull] = useState(false);
   const [nodeSigns, setNodeSigns] = useState<NodeSign[]>([]);
-  const [carRoster, setCarRoster] = useState<CarRosterEntry[]>([]);
   const [carRoutes, setCarRoutes] = useState<CarRoute[]>([]);
 
   // Refs for values needed inside stable callbacks / intervals.
@@ -260,9 +261,8 @@ export function useSimulation(): SimulationState {
   // Signature of the last nodeSigns array we committed to state, so we
   // only call setNodeSigns when the set of active signs actually changes.
   const lastSignSigRef = useRef("");
-  // Signature of the last carRoster array we committed to state, so we
-  // only call setCarRoster when the set of active cars actually changes.
-  const lastRosterSigRef = useRef("");
+  /** Latest board queues, for the DEV-only inspection handle below. */
+  const nodeSignsRef = useRef<NodeSign[]>([]);
   const lastRouteSigRef = useRef("");
   // Pending no_slot removal timers; cleared on unmount so a teardown
   // mid-grace-period doesn't fire setActiveCars after the hook is gone.
@@ -472,74 +472,70 @@ export function useSimulation(): SimulationState {
         if (!activeIds.has(key)) latestInstructionsRef.current.delete(key);
       }
 
-      // --- Compute dynamic node signs ---
-      // A permanent board exists at every turn and every ramp. Previously a
-      // board only lit up when the car was already stopped at its node, which
-      // at this bay spacing meant it lit roughly a third of a second before
-      // the car was on top of it: useless as guidance, and the thing Deepu
-      // described as "so delayed, not showing things on time at all".
+      // --- Compute what each permanent signboard shows ---
       //
-      // The backend now sends each car's whole remaining route, so we light
-      // every board ALONG that route and tell it how many hops away the car
-      // is. A driver sees the turn board from the moment they enter the aisle.
-      // When two cars route through the same board, the closer one wins.
-      const bestByNode = new Map<string, NodeSign>();
+      // A board exists at every turn and at the foot of every ramp. It shows
+      // a QUEUE, not a single car: a driver three cars back needs to know
+      // their own instruction, not watch the board talk to somebody else.
+      // The nearest car is the one being instructed now; the rest are told
+      // what is coming. As the leader passes the node it drops off its route
+      // and the next car becomes the leader on its own.
+      //
+      // Each car appears on exactly ONE board: the FIRST one on its route.
+      // That is the board it can actually see from the lane it is in, and it
+      // lights the moment the car enters that lane rather than when it
+      // arrives. Listing a car on every board along its whole route lit up
+      // signs two floors ahead for a car a minute away.
+      const queues = new Map<string, BoardCar[]>();
       for (const car of cars) {
         if (car.parked || car.status === "no_slot") continue;
         const sign = map.get(car.id);
         if (!sign) continue;
         const route = sign.path ?? [sign.node];
+        let travelled = 0;
         for (let hop = 0; hop < route.length; hop++) {
-          const nodeId = route[hop];
-          const node = lotData.nodes[nodeId];
-          // Boards only exist at turns and at the foot of ramps.
+          if (hop > 0) travelled += nodeGap(lotData, route[hop - 1], route[hop]);
+          const node = lotData.nodes[route[hop]];
           if (!node || (node.type !== "turn" && node.type !== "ramp_up")) continue;
-          const existing = bestByNode.get(nodeId);
-          if (existing && existing.hopsAway <= hop) continue;
-          bestByNode.set(nodeId, {
-            nodeId,
-            carColor: sign.color,
-            carPlate: sign.plate,
-            // The direction to take AT that board, not the car's current one.
+          const queue = queues.get(route[hop]) ?? [];
+          queue.push({
+            carId: car.id,
+            color: sign.color,
+            plate: sign.plate,
+            // The move to make AT that board, not the car's current one.
             direction: directionAt(lotData, route, hop),
-            slot: sign.slot,
-            slotFloor: sign.slot_floor,
-            floor: node.floor,
-            nodeX: node.x,
-            nodeY: node.y,
-            hopsAway: hop,
+            slot: sign.slot ?? "",
+            leaving: !!car.leaving,
+            distance: travelled,
           });
+          queues.set(route[hop], queue);
+          break;
         }
       }
-      const nodeSignList = [...bestByNode.values()];
+      const nodeSignList: NodeSign[] = [...queues].map(([nodeId, queue]) => ({
+        nodeId,
+        floor: lotData.nodes[nodeId]?.floor ?? 0,
+        cars: queue.sort((a, b) => a.distance - b.distance).slice(0, BOARD_ROWS),
+      }));
 
       // Only push to React state when what the boards actually display has
       // changed, so a 5 Hz tick does not re-render 11 signboards every time.
+      // Distance is quantised because it changes continuously and would
+      // otherwise defeat the comparison entirely.
       const sig = nodeSignList
-        .map((n) => `${n.nodeId}:${n.carPlate}:${n.direction}:${n.slot}:${n.hopsAway}`)
+        .map(
+          (n) =>
+            n.nodeId +
+            ":" +
+            n.cars
+              .map((c) => `${c.plate}|${c.direction}|${c.slot}|${Math.round(c.distance)}`)
+              .join(","),
+        )
         .join("|");
+      nodeSignsRef.current = nodeSignList;
       if (sig !== lastSignSigRef.current) {
         lastSignSigRef.current = sig;
         setNodeSigns(nodeSignList);
-      }
-      // --- Compute the roster of all active auto-running cars ---
-      // Every permanent signboard shows this roster (colour swatch, plate,
-      // assigned slot) so drivers can see the full set of cars currently
-      // moving through the lot, not just the one at their node.
-      const roster: CarRosterEntry[] = [];
-      for (const car of cars) {
-        if (car.parked) continue;
-        const sign = map.get(car.id);
-        if (!sign) continue;
-        roster.push({
-          carId: car.id,
-          color: sign.color,
-          plate: sign.plate,
-          slot: sign.slot,
-          slotFloor: sign.slot_floor,
-          currentFloor: lotData.nodes[sign.node]?.floor ?? 0,
-          status: car.status,
-        });
       }
       // --- Routes for the 2D route panel ---
       // Same instruction data the boards use, surfaced so the panel can draw
@@ -568,13 +564,6 @@ export function useSimulation(): SimulationState {
         setCarRoutes(routes);
       }
 
-      const rosterSig = roster
-        .map((r) => `${r.carId}:${r.plate}:${r.slot}:${r.status}`)
-        .join("|");
-      if (rosterSig !== lastRosterSigRef.current) {
-        lastRosterSigRef.current = rosterSig;
-        setCarRoster(roster);
-      }
     },
     [],
   );
@@ -601,7 +590,9 @@ export function useSimulation(): SimulationState {
           slot: v.slot,
           status: v.status,
           hops: v.path?.length ?? 0,
+          path: v.path ?? [],
         })),
+        boards: nodeSignsRef.current,
         parked: parkedRef.current.length,
       };
     }, 500);
@@ -767,7 +758,6 @@ export function useSimulation(): SimulationState {
     parked,
     lotFull,
     nodeSigns,
-    carRoster,
     carRoutes,
     onArrive,
   };
