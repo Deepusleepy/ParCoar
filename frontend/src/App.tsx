@@ -7,6 +7,11 @@ import { DrivableCar, buildRoadSegments, type ParkedCarPos, type PlayerSpeedRef 
 import { AISLE_SPACING, CAR_Y_OFFSET, COLOR_HEX, toWorld } from "./sim/constants";
 import type { CameraMode } from "./sim/CameraRig";
 import { RoutePanel, type RoutePanelCar } from "./ui/RoutePanel";
+import { ControlPanel, ControlPanelTab, DEFAULT_OVERLAYS, type Overlays } from "./ui/ControlPanel";
+
+/** Stable empty array, so switching board guidance off does not hand the
+ *  scene a fresh reference on every render. */
+const EMPTY_SIGNS: import("./types").NodeSign[] = [];
 
 export function App() {
   const sim = useSimulation();
@@ -23,6 +28,14 @@ export function App() {
   // Live car transforms (id -> THREE.Group), populated by ActiveCarMesh each
   // frame and read by CameraRig for follow/POV modes.
   const carGroupsRef = useRef<Map<string, THREE.Group>>(new Map());
+
+  // The controls drawer, and what it lets you draw over the 3D view. Closed
+  // and mostly off by default: the garage should be the only thing on screen
+  // until you ask for something else.
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [overlays, setOverlays] = useState<Overlays>(DEFAULT_OVERLAYS);
+  const patchOverlays = (patch: Partial<Overlays>) =>
+    setOverlays((prev) => ({ ...prev, ...patch }));
 
   // Player car live speed (written by DrivableCar each frame, polled for HUD).
   const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0 });
@@ -57,6 +70,22 @@ export function App() {
     const id = setInterval(() => setPlayerSpeed(playerSpeedRef.current.speed), 100);
     return () => clearInterval(id);
   }, [cameraMode]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = document.activeElement;
+      if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement) return;
+      // While the mouse is captured for free-fly, letters steer the camera.
+      if (document.pointerLockElement) return;
+      const k = e.key.toLowerCase();
+      if (k === "c") setPanelOpen((v) => !v);
+      else if (k === "m") patchOverlays({ routeMap: !overlays.routeMap });
+      else if (k === "p") sim.updateSettings({ speed: sim.settings.speed === 0 ? 1 : 0 });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [overlays.routeMap, sim]);
 
   const lot = sim.lot;
 
@@ -133,7 +162,7 @@ export function App() {
         cameraMode={cameraMode}
         followCarId={followCarId}
         carGroupsRef={carGroupsRef}
-        nodeSigns={sim.nodeSigns}
+        nodeSigns={overlays.boardGuidance ? sim.nodeSigns : EMPTY_SIGNS}
       >
         <Suspense fallback={<SceneLoadingFallback />}>
           {/* All parked cars (pre-parked decoration + newly parked) rendered
@@ -174,7 +203,12 @@ export function App() {
             </div>
           </div>
 
-          <div className="flex flex-col items-end gap-1 rounded-lg border border-neutral-800 bg-black/60 px-3 py-2 text-[11px] backdrop-blur-sm">
+          <div
+            className={
+              "flex flex-col items-end gap-1 rounded-lg border border-neutral-800 bg-black/60 px-3 py-2 text-[11px] backdrop-blur-sm " +
+              (overlays.status ? "" : "hidden")
+            }
+          >
             <StatusRow
               label="Backend"
               value={sim.connected ? "connected" : "disconnected"}
@@ -203,7 +237,12 @@ export function App() {
                 </div>
               </div>
             ) : (
-              <div className="flex items-center gap-3 text-[11px] text-neutral-400">
+              <div
+                className={
+                  "flex items-center gap-3 text-[11px] text-neutral-400 " +
+                  (overlays.helpText ? "" : "hidden")
+                }
+              >
                 <span>
                   <span className="text-neutral-200">Click</span> to capture mouse
                 </span>
@@ -240,7 +279,7 @@ export function App() {
       {/* Live route panel: the graph the Python backend searched, with the
           selected car's path lit up. Hidden in the driving modes, where the
           bottom-left corner belongs to the driving HUD. */}
-      {cameraMode !== "pov" && cameraMode !== "drive" && lot && (
+      {overlays.routeMap && cameraMode !== "pov" && cameraMode !== "drive" && lot && (
         <RoutePanel
           lot={lot}
           cars={routePanelCars}
@@ -248,6 +287,21 @@ export function App() {
           onSelectCar={setRouteCarId}
         />
       )}
+
+      <ControlPanelTab open={panelOpen} onOpen={() => setPanelOpen(true)} />
+      <ControlPanel
+        open={panelOpen}
+        onClose={() => setPanelOpen(false)}
+        settings={sim.settings}
+        onSettings={sim.updateSettings}
+        overlays={overlays}
+        onOverlays={patchOverlays}
+        onSpawn={sim.spawnNow}
+        onClearRoad={sim.clearRoad}
+        onReset={sim.resetGarage}
+        activeCount={activeCount}
+        parkedCount={parkedCount}
+      />
 
       {/* Camera mode controls (bottom-center). */}
       <CameraControls

@@ -14,11 +14,11 @@ import type {
   StateMessage,
 } from "../types";
 import { resolvePath } from "../sim/paths";
+import { setSpeedScale } from "../sim/simSpeed";
 import {
   AISLE_SPACING,
   CAR_LENGTH,
   FLOOR_HEIGHT,
-  MAX_ACTIVE_CARS,
   nextCarId,
   randomColor,
   randomPlate,
@@ -63,15 +63,30 @@ const BOARD_ROWS = 3;
  * above starts fuller than it ends, so a car still has to drive its length.
  * None of this touches the search, which stays a plain outward sweep to the
  * nearest free bay: that is the part Deepu has to explain. */
-const FLOOR_FILL: Record<number, [start: number, end: number]> = {
-  0: [0.995, 0.93],
-  1: [0.98, 0.30],
-  2: [0.75, 0.05],
+export type GarageFill = "quiet" | "normal" | "busy";
+
+/** How full each storey starts, from its own entrance to its far end, per
+ *  preset. "normal" is the shipping default. Emptier presets mean cars find a
+ *  bay sooner and drive less; fuller ones push them upstairs. */
+const FILL_PRESETS: Record<GarageFill, Record<number, [number, number]>> = {
+  quiet: {
+    0: [0.7, 0.3],
+    1: [0.5, 0.08],
+    2: [0.3, 0.02],
+  },
+  normal: {
+    0: [0.995, 0.93],
+    1: [0.98, 0.3],
+    2: [0.75, 0.05],
+  },
+  busy: {
+    0: [0.999, 0.985],
+    1: [0.995, 0.82],
+    2: [0.95, 0.4],
+  },
 };
-/** Fallback for any storey not listed above. */
+/** Fallback for any storey a preset does not list. */
 const DEFAULT_FILL: [number, number] = [0.8, 0.1];
-/** How many cars may be driving to the exit at once. */
-const MAX_LEAVING_CARS = 2;
 const MAX_STAY_MS = 90_000;
 
 export interface ParkedCarData {
@@ -88,6 +103,28 @@ export interface ParkedCarData {
   stayMs?: number;
 }
 
+/** Everything the on-screen controls can change while it runs. */
+export interface SimSettings {
+  /** How many arriving cars to keep on the road. */
+  targetCars: number;
+  /** Seconds between spawns while below target. */
+  spawnEverySec: number;
+  /** How many parked cars may be driving to the exit at once. */
+  maxLeaving: number;
+  /** Time scale. 0 pauses everything. */
+  speed: number;
+  /** How full the garage is when it is reset. */
+  fill: GarageFill;
+}
+
+export const DEFAULT_SETTINGS: SimSettings = {
+  targetCars: TARGET_ACTIVE_CARS,
+  spawnEverySec: SPAWN_INTERVAL_MS / 1000,
+  maxLeaving: 2,
+  speed: 1,
+  fill: "normal",
+};
+
 export interface SimulationState {
   lot: LotData | null;
   loading: boolean;
@@ -99,6 +136,14 @@ export interface SimulationState {
   nodeSigns: NodeSign[];
   carRoutes: CarRoute[];
   onArrive: (carId: string, node: string) => void;
+  settings: SimSettings;
+  updateSettings: (patch: Partial<SimSettings>) => void;
+  /** Put one more car on the road right now, ignoring the target. */
+  spawnNow: () => void;
+  /** Take every moving car off the road, leaving parked cars alone. */
+  clearRoad: () => void;
+  /** Clear the road and re-fill the bays at the current fill level. */
+  resetGarage: () => void;
 }
 
 /** The direction label on the edge the route takes out of `route[hop]`.
@@ -274,7 +319,7 @@ function nextNodeForDirection(
  *  occupied positions is stable across reloads. Colors and plates are
  *  random for visual variety. When the backend assigns a slot to an active
  *  car, we remove any pre-parked car from that slot to avoid overlap. */
-function generatePreParked(lot: LotData): ParkedCarData[] {
+function generatePreParked(lot: LotData, fillLevel: GarageFill = "normal"): ParkedCarData[] {
   // Order every bay the way a driver actually meets it: floor by floor, aisle
   // by aisle along the spine, and along each aisle in its travel direction.
   // Position in this list is how deep into the garage a bay is.
@@ -305,7 +350,7 @@ function generatePreParked(lot: LotData): ParkedCarData[] {
     const [id, node] = slots[i];
     const total = floorTotals.get(node.floor) ?? 1;
     const depth = total > 1 ? (rankInFloor.get(id) ?? 0) / (total - 1) : 0;
-    const [start, end] = FLOOR_FILL[node.floor] ?? DEFAULT_FILL;
+    const [start, end] = FILL_PRESETS[fillLevel][node.floor] ?? DEFAULT_FILL;
     const fill = start + (end - start) * depth;
     // Deterministic hash on the bay's rank, so the same bays are taken on
     // every reload and the garage does not reshuffle itself mid-demo.
@@ -369,6 +414,9 @@ export function useSimulation(): SimulationState {
   const [preParked, setPreParked] = useState<ParkedCarData[]>([]);
   const [parked, setParked] = useState<ParkedCarData[]>([]);
   const [lotFull, setLotFull] = useState(false);
+  const [settings, setSettings] = useState<SimSettings>(DEFAULT_SETTINGS);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const [nodeSigns, setNodeSigns] = useState<NodeSign[]>([]);
   const [carRoutes, setCarRoutes] = useState<CarRoute[]>([]);
 
@@ -828,7 +876,13 @@ export function useSimulation(): SimulationState {
     [sendState],
   );
 
-  // --- Spawning: maintain 4-6 active cars ---
+  // Push the time scale down to the cars. See sim/simSpeed.ts for why this is
+  // a module value rather than a prop.
+  useEffect(() => {
+    setSpeedScale(settings.speed);
+  }, [settings.speed]);
+
+  // --- Spawning: keep the road at the target number of arriving cars ---
   useEffect(() => {
     if (!lot) return;
     const id = setInterval(() => {
@@ -841,12 +895,12 @@ export function useSimulation(): SimulationState {
       const entryBlocked = activeCarsRef.current.some(
         (c) => c.fromNode === ENTRY_NODE && c.toNode === ENTRY_NODE,
       );
-      if (count < TARGET_ACTIVE_CARS && !entryBlocked && now - lastSpawnRef.current > SPAWN_INTERVAL_MS) {
+      const { targetCars, spawnEverySec, speed } = settingsRef.current;
+      if (speed === 0) return;
+      if (count < targetCars && !entryBlocked && now - lastSpawnRef.current > spawnEverySec * 1000) {
         const car = spawnCar();
         setActiveCars((prev) =>
-          prev.filter((c) => !c.leaving).length >= MAX_ACTIVE_CARS
-            ? prev
-            : [...prev, car],
+          prev.filter((c) => !c.leaving).length >= targetCars ? prev : [...prev, car],
         );
         lastSpawnRef.current = now;
       }
@@ -865,8 +919,9 @@ export function useSimulation(): SimulationState {
       // and a half of road time. Without a cap on how many do that at once, they
       // accumulate: a soak run peaked at 34 cars on the road against an
       // arrivals cap of 6.
+      if (settingsRef.current.speed === 0) return;
       const leaving = activeCarsRef.current.filter((c) => c.leaving).length;
-      if (leaving >= MAX_LEAVING_CARS) return;
+      if (leaving >= settingsRef.current.maxLeaving) return;
 
       const now = Date.now();
       const due = parkedRef.current.find(
@@ -889,6 +944,36 @@ export function useSimulation(): SimulationState {
     lastSpawnRef.current = Date.now();
   }, [lot, activeCars.length]);
 
+  const updateSettings = useCallback((patch: Partial<SimSettings>) => {
+    setSettings((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  const spawnNow = useCallback(() => {
+    // Refuse only when a car is still standing on the entry node, or the new
+    // one would materialise inside it.
+    if (activeCarsRef.current.some((c) => c.fromNode === ENTRY_NODE && c.toNode === ENTRY_NODE)) {
+      return;
+    }
+    setActiveCars((prev) => [...prev, spawnCar()]);
+    lastSpawnRef.current = Date.now();
+  }, []);
+
+  const clearRoad = useCallback(() => {
+    // Parked cars stay where they are; only the moving ones go. Their claimed
+    // bays are released by the next state tick, which sends the backend the
+    // occupied set rather than a diff.
+    setActiveCars([]);
+  }, []);
+
+  const resetGarage = useCallback(() => {
+    const current = lotRef.current;
+    if (!current) return;
+    setActiveCars([]);
+    setParked([]);
+    setPreParked(generatePreParked(current, settingsRef.current.fill));
+    lastSpawnRef.current = Date.now();
+  }, []);
+
   return {
     lot,
     loading,
@@ -900,5 +985,10 @@ export function useSimulation(): SimulationState {
     nodeSigns,
     carRoutes,
     onArrive,
+    settings,
+    updateSettings,
+    spawnNow,
+    clearRoad,
+    resetGarage,
   };
 }

@@ -5,6 +5,7 @@ import * as THREE from "three";
 import type { ActiveCar, CarColor, CarSize, LotData, LotNode } from "../types";
 import { AISLE_SPACING, CAR_DIMS, CAR_Y_OFFSET, CAR_SPEED, COLOR_HEX, LANE_WIDTH, toWorld } from "./constants";
 import { resolvePath } from "./paths";
+import { getSpeedScale } from "./simSpeed";
 /* ------------------------------------------------------------------ */
 /*  GLTF model config                                                  */
 /* ------------------------------------------------------------------ */
@@ -475,7 +476,9 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
     const a = wps[i];
     const b = wps[i + 1];
     const segLen = a.distanceTo(b);
-    const step = (CAR_SPEED * dt) / Math.max(segLen, 0.001);
+    // Speed scale is the settings panel's speed slider; 0 pauses everything.
+    const speed = CAR_SPEED * getSpeedScale();
+    const step = (speed * dt) / Math.max(segLen, 0.001);
     segProgressRef.current += step;
 
     while (segProgressRef.current >= 1) {
@@ -578,7 +581,7 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
     // Angular velocity = v / r. GLB wheel radius is 0.28 in model space,
     // scaled by MODEL_SCALE[size] to world units.
     const wheelRadius = 0.28 * MODEL_SCALE[car.size];
-    const wheelSpin = (CAR_SPEED / wheelRadius) * dt;
+    const wheelSpin = ((CAR_SPEED * getSpeedScale()) / wheelRadius) * dt;
     for (const wheel of wheelMeshesRef.current) {
       wheel.rotation.x += wheelSpin;
     }
