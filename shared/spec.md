@@ -14,8 +14,12 @@ this exactly.
 
 Both sides load `shared/lot.json` (or `public/lot.json` in the frontend).
 The lot is a 3-floor parking garage with a serpentine layout: 4 aisles per
-floor, 8 junctions per aisle, 2 slots per junction = 64 slots per floor,
-192 slots total. 180° curved turns connect aisles. Spiral ramps connect floors.
+floor, 20 bays per aisle side, 2 sides per aisle = 160 slots per floor,
+480 slots total. 180° curved turns connect aisles. An L-shaped ramp running
+along the outside of the west face connects each floor to the next.
+
+A parking bay has one outgoing edge, back to its own aisle junction, so a
+parked car can leave. The backend never routes *through* a bay, only to one.
 
 Top-level fields in lot.json:
 ```json
@@ -145,7 +149,8 @@ Sent in response to each state update:
       "slot_floor": 0,
       "status": "routing",
       "next_node": "S0_1",
-      "next_direction": "arrived"
+      "next_direction": "arrived",
+      "path": ["J0_0_1", "S0_1"]
     }
   ]
 }
@@ -163,6 +168,12 @@ Sent in response to each state update:
   from its slot or already parked.
 - `next_direction`: the direction to take at `next_node`. null when
   `next_node` is null.
+- `path`: the car's whole remaining route as a list of node ids, current node
+  first, assigned slot last. The frontend lights up the permanent signboard at
+  every turn and ramp along this route, so a driver sees the board from the
+  moment they enter an aisle rather than when they are already underneath it.
+  Each board shows the direction to take *at that board*, and how many hops
+  away the car still is.
 - `status`: "routing" | "parked" | "no_slot"
 
 If `status` is "parked", `direction` is "arrived" — the frontend should

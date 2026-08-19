@@ -110,34 +110,19 @@ def assign_slot(car):
     occupied.add(slot)
 
 
-def next_direction(car):
-    """Compute the direction label for the car's next move via BFS from its node to its slot."""
-    if car["node"] == car["slot"]:
-        return "arrived"
-    path = bfs(car["node"], car["slot"])
-    if not path or len(path) < 2:
-        return "arrived"
-    for e in edges.get(path[0], []):
-        if e["to"] == path[1]:
+def direction_along(path, step):
+    """Direction label for hop `step` of a path, e.g. "left" or "straight".
+
+    A path is a list of node ids. The direction of a hop is the label on the
+    edge joining two consecutive nodes, which is exactly what a signboard
+    needs to display.
+    """
+    if not path or len(path) < step + 2:
+        return None
+    for e in edges.get(path[step], []):
+        if e["to"] == path[step + 1]:
             return e["dir"]
-    return "arrived"
-
-
-def next_node_and_direction(car):
-    """Compute the next node id and the direction at that node, so the
-    frontend can light up the signboard at the next junction BEFORE the car
-    arrives (the car is still en route to the next node). Returns
-    (next_node, next_direction) or (None, None) if there is no next node."""
-    if car["node"] == car["slot"]:
-        return None, None
-    path = bfs(car["node"], car["slot"])
-    if not path or len(path) < 3:
-        return None, None
-    next_node = path[1]
-    for e in edges.get(path[1], []):
-        if e["to"] == path[2]:
-            return next_node, e["dir"]
-    return next_node, "arrived"
+    return None
 
 
 def handle_message(msg):
@@ -191,16 +176,26 @@ def handle_message(msg):
         # Car reached its slot: mark parked.
         if car["node"] == car["slot"]:
             car["status"] = "parked"
+            path = [car["slot"]]
             direction = "arrived"
             next_node = None
             next_dir = None
         else:
-            direction = next_direction(car)
-            next_node, next_dir = next_node_and_direction(car)
+            # ONE search per car per tick. Everything the frontend needs is
+            # derived from this single route rather than searching again for
+            # each field.
+            path = bfs(car["node"], car["slot"]) or [car["node"]]
+            direction = direction_along(path, 0) or "arrived"
+            next_node = path[1] if len(path) > 2 else None
+            next_dir = direction_along(path, 1)
         signs.append({"car_id": cid, "color": car["color"], "plate": car["plate"],
                       "node": car["node"], "direction": direction, "slot": car["slot"],
                       "slot_floor": nodes[car["slot"]]["floor"], "status": car["status"],
-                      "next_node": next_node, "next_direction": next_dir})
+                      "next_node": next_node, "next_direction": next_dir,
+                      # The full remaining route. Signboards along it light up
+                      # as soon as the car is heading their way, instead of
+                      # only when it has already arrived underneath them.
+                      "path": path})
 
     # Prune stale cars: those we track that didn't appear in this message.
     for cid in list(cars.keys()):

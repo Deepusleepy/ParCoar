@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ActiveCar,
+  Direction,
   CarColor,
   CarRosterEntry,
   InstructionSign,
@@ -45,6 +46,15 @@ export interface SimulationState {
   nodeSigns: NodeSign[];
   carRoster: CarRosterEntry[];
   onArrive: (carId: string, node: string) => void;
+}
+
+/** The direction label on the edge the route takes out of `route[hop]`.
+ *  Mirrors the backend's direction_along: a board shows the turn a driver
+ *  must make when they get there, not where the car happens to be now. */
+function directionAt(lot: LotData, route: string[], hop: number): Direction {
+  if (hop + 1 >= route.length) return "arrived";
+  const edge = lot.edges[route[hop]]?.find((e) => e.to === route[hop + 1]);
+  return edge ? edge.dir : "arrived";
 }
 
 /** Find the destination node for a direction from a given node. */
@@ -309,65 +319,55 @@ export function useSimulation(): SimulationState {
       }
 
       // --- Compute dynamic node signs ---
-      // A sign appears at a junction node only while a car is stopped there
-      // waiting for (or just receiving) its next instruction. This reconnects
-      // the signboards to the backend: they show the approaching car's colour,
-      // plate, direction, and assigned slot in real time.
-      const nodeSignList: NodeSign[] = [];
+      // A permanent board exists at every turn and every ramp. Previously a
+      // board only lit up when the car was already stopped at its node, which
+      // at this bay spacing meant it lit roughly a third of a second before
+      // the car was on top of it: useless as guidance, and the thing Deepu
+      // described as "so delayed, not showing things on time at all".
+      //
+      // The backend now sends each car's whole remaining route, so we light
+      // every board ALONG that route and tell it how many hops away the car
+      // is. A driver sees the turn board from the moment they enter the aisle.
+      // When two cars route through the same board, the closer one wins.
+      const bestByNode = new Map<string, NodeSign>();
       for (const car of cars) {
         if (car.parked || car.status === "no_slot") continue;
         const sign = map.get(car.id);
         if (!sign) continue;
-        const node = lotData.nodes[sign.node];
-        if (!node) continue;
-        // Show the sign as soon as the car starts heading toward this node
-        // (toNode === sign.node) and keep it lit while the car is at the node
-        // (fromNode === sign.node). The sign disappears once the car moves on
-        // to the next node, so the driver sees the direction BEFORE the turn.
-        if (car.toNode === sign.node || car.fromNode === sign.node) {
-          nodeSignList.push({
-            nodeId: sign.node,
+        const route = sign.path ?? [sign.node];
+        for (let hop = 0; hop < route.length; hop++) {
+          const nodeId = route[hop];
+          const node = lotData.nodes[nodeId];
+          // Boards only exist at turns and at the foot of ramps.
+          if (!node || (node.type !== "turn" && node.type !== "ramp_up")) continue;
+          const existing = bestByNode.get(nodeId);
+          if (existing && existing.hopsAway <= hop) continue;
+          bestByNode.set(nodeId, {
+            nodeId,
             carColor: sign.color,
             carPlate: sign.plate,
-            direction: sign.direction,
+            // The direction to take AT that board, not the car's current one.
+            direction: directionAt(lotData, route, hop),
             slot: sign.slot,
             slotFloor: sign.slot_floor,
             floor: node.floor,
             nodeX: node.x,
             nodeY: node.y,
+            hopsAway: hop,
           });
         }
-        // Look-ahead: if the backend provided a next_node, light up the
-        // signboard at that node while the car is heading toward it. This
-        // shows the direction at the next junction BEFORE the car arrives,
-        // so the driver isn't already underneath the board when it lights.
-        if (sign.next_node && sign.next_direction && car.toNode === sign.next_node) {
-          const nextNodeObj = lotData.nodes[sign.next_node];
-          if (nextNodeObj) {
-            nodeSignList.push({
-              nodeId: sign.next_node,
-              carColor: sign.color,
-              carPlate: sign.plate,
-              direction: sign.next_direction,
-              slot: sign.slot,
-              slotFloor: sign.slot_floor,
-              floor: nextNodeObj.floor,
-              nodeX: nextNodeObj.x,
-              nodeY: nextNodeObj.y,
-            });
-          }
-        }
       }
-      // Only update state when the set of active signs actually changes,
-      // to avoid re-render storms on every 200ms WS tick.
+      const nodeSignList = [...bestByNode.values()];
+
+      // Only push to React state when what the boards actually display has
+      // changed, so a 5 Hz tick does not re-render 11 signboards every time.
       const sig = nodeSignList
-        .map((s) => `${s.nodeId}:${s.carPlate}:${s.direction}:${s.slot}`)
+        .map((n) => `${n.nodeId}:${n.carPlate}:${n.direction}:${n.slot}:${n.hopsAway}`)
         .join("|");
       if (sig !== lastSignSigRef.current) {
         lastSignSigRef.current = sig;
         setNodeSigns(nodeSignList);
       }
-
       // --- Compute the roster of all active auto-running cars ---
       // Every permanent signboard shows this roster (colour swatch, plate,
       // assigned slot) so drivers can see the full set of cars currently

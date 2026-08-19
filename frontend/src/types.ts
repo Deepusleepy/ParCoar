@@ -91,6 +91,10 @@ export interface InstructionSign {
   next_node?: string | null;
   /** Direction to take at `next_node`. null when `next_node` is null. */
   next_direction?: Direction | null;
+  /** The car's whole remaining route, current node first, slot last.
+   *  Signboards anywhere along this route light up as soon as the car is
+   *  heading their way, rather than only once it has arrived underneath. */
+  path?: string[];
 }
 
 export interface InstructionsMessage {
@@ -152,4 +156,8 @@ export interface NodeSign {
   floor: number;
   nodeX: number;
   nodeY: number;
+  /** How many graph hops the car still is from this board. 0 means the car is
+   *  here now. Boards use it to show a distance and to dim far-off cars, and
+   *  to decide which car wins when two are routed through the same board. */
+  hopsAway: number;
 }
