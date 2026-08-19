@@ -14,6 +14,7 @@ import type {
   StateMessage,
 } from "../types";
 import {
+  AISLE_SPACING,
   CAR_LENGTH,
   FLOOR_HEIGHT,
   MAX_ACTIVE_CARS,
@@ -31,9 +32,9 @@ const ENTRY_NODE = "E0";
 const RECONNECT_DELAY_MS = 2000;
 
 /** How long a car that drove in stays parked before heading for the exit.
- *  Randomised per car so departures do not arrive in lockstep. The garage is
- *  one-way, so a car leaving the ground floor drives the whole spiral to the
- *  top exit, which takes about a minute and a half. */
+ *  Randomised per car so departures do not arrive in lockstep. A car leaving
+ *  the ground floor can still spend about a minute and a half reaching the top
+ *  exit. */
 const MIN_STAY_MS = 30_000;
 /** How many cars may be driving to the exit at once. */
 const MAX_LEAVING_CARS = 2;
@@ -84,42 +85,76 @@ function nodeGap(lot: LotData, a: string, b: string): number {
   return Math.hypot(A.x - B.x, A.y - B.y, (A.floor - B.floor) * FLOOR_HEIGHT);
 }
 
-/** Is `node` held by another moving car, or too tightly followed by one?
+/** Which way this road leg runs relative to the original serpentine spine. */
+function roadDirection(lot: LotData, fromId: string, toId: string): 1 | -1 | null {
+  const from = lot.nodes[fromId];
+  const to = lot.nodes[toId];
+  if (!from || !to || fromId === toId || from.type === "slot" || to.type === "slot") return null;
+
+  const turn = from.type === "turn" ? from : to.type === "turn" ? to : null;
+  if (turn) {
+    const other = from.type === "turn" ? to : from;
+    const fromIsTurn = from.type === "turn";
+    const otherIsNear = Math.abs(other.y - turn.y) < 0.01;
+    return fromIsTurn === otherIsNear ? -1 : 1;
+  }
+
+  if (from.type === "ramp_up" && to.type === "ramp_in") return 1;
+  if (from.type === "ramp_in" && to.type === "ramp_up") return -1;
+  if (from.type === "ramp_up" || to.type === "ramp_up") return to.type === "ramp_up" ? 1 : -1;
+  if (from.type === "ramp_in" || to.type === "ramp_in") return from.type === "ramp_in" ? 1 : -1;
+
+  const dx = to.x - from.x;
+  if (Math.abs(dx) > 0.01) {
+    const aisle = Math.round(((from.y + to.y) / 2) / AISLE_SPACING);
+    const originalX = aisle % 2 === 0 ? 1 : -1;
+    return dx * originalX > 0 ? 1 : -1;
+  }
+  return to.floor > from.floor ? 1 : -1;
+}
+
+/** Direction of a moving car, or its next instructed leg while it waits. */
+function carRoadDirection(
+  lot: LotData,
+  car: ActiveCar,
+  instructions: Map<string, InstructionSign>,
+): 1 | -1 | null {
+  let target = car.toNode;
+  if (target === car.fromNode) {
+    const sign = instructions.get(car.id);
+    target = sign?.node === car.fromNode ? sign.path?.[1] ?? target : target;
+  }
+  return roadDirection(lot, car.fromNode, target);
+}
+
+/** Is a road node held by same-direction traffic, or followed too closely?
  *
- *  A car is 4.5 long but junctions are only 2.6 apart, so one node of
- *  reservation is not enough separation down an aisle: a car occupies its own
- *  node and overhangs the previous one. So we also refuse to enter a node
- *  whose immediate successor is occupied.
- *
- *  That look-ahead must be conditional, which the first version got wrong in
- *  two ways that between them jammed the whole garage:
- *
- *   - The successor of a BAY is the junction the car is currently standing on,
- *     so any car merely approaching that junction stopped this one from
- *     parking. Bays are dead ends; nothing follows them. Skip the check.
- *   - Legs are not all the same length. The ramp is 53 units end to end, so a
- *     car at the foot of it was being blocked by a car a whole floor above, at
- *     a node it would not reach for eleven seconds. That is what left cars
- *     stuck at the joint between the ramp and the floor. Only look ahead when
- *     the next two nodes are genuinely within a car length of each other. */
+ * Cars in opposing lanes share graph nodes but are 3.5 units apart in the
+ * scene, so they must not reserve against each other. Same-direction cars do
+ * share a physical lane and still reserve the target plus one short node of
+ * look-ahead. Bay nodes remain exclusive because there is only one bay. */
 function isNodeBusy(
   lot: LotData,
   cars: ActiveCar[],
   self: ActiveCar,
   node: string,
+  beyond: string | undefined,
+  instructions: Map<string, InstructionSign>,
 ): boolean {
-  for (const other of cars) {
-    if (other === self || other.parked) continue;
-    if (other.fromNode === node || other.toNode === node) return true;
+  const direction = roadDirection(lot, self.fromNode, node);
+  const blocks = (other: ActiveCar, target: string) => {
+    if (other === self || other.parked) return false;
+    if (other.fromNode !== target && other.toNode !== target) return false;
+    if (lot.nodes[target]?.type === "slot") return true;
+    const otherDirection = carRoadDirection(lot, other, instructions);
+    return direction === null || otherDirection === null || direction === otherDirection;
+  };
+
+  if (cars.some((other) => blocks(other, node))) return true;
+  if (!beyond || lot.nodes[node]?.type === "slot" || nodeGap(lot, node, beyond) > CAR_LENGTH) {
+    return false;
   }
-  if (lot.nodes[node]?.type === "slot") return false;
-  const beyond = lot.edges[node]?.find((e) => e.dir === "straight" || e.dir === "up")?.to;
-  if (!beyond || nodeGap(lot, node, beyond) > CAR_LENGTH) return false;
-  for (const other of cars) {
-    if (other === self || other.parked) continue;
-    if (other.fromNode === beyond || other.toNode === beyond) return true;
-  }
-  return false;
+  return cars.some((other) => blocks(other, beyond));
 }
 
 /** Find the destination node for a direction from a given node. */
@@ -367,24 +402,16 @@ export function useSimulation(): SimulationState {
           continue;
         }
 
-        // Routing: move toward the next node for this direction.
-        const next = nextNodeForDirection(lotData, car.fromNode, sign.direction);
+        // The direction label is no longer unique on a two-way road: both
+        // neighbours are "straight". Use the explicit BFS route, with the old
+        // direction lookup only as a fallback for older backend messages.
+        const routeIsCurrent = sign.path?.[0] === car.fromNode;
+        const next = routeIsCurrent
+          ? sign.path?.[1] ?? null
+          : nextNodeForDirection(lotData, car.fromNode, sign.direction);
+        const beyond = routeIsCurrent && sign.path?.[1] === next ? sign.path?.[2] : undefined;
 
-        // QUEUE. A node holds one car at a time. Without this, cars advanced
-        // regardless of what was ahead and simply drove through each other:
-        // a movement trace caught pairs closing to 2.8 units apart with 4.5
-        // long bodies. Refusing to enter an occupied node makes them queue
-        // nose to tail down the aisle, which is what a one-way lane does.
-        //
-        // This cannot deadlock: the aisles are one-way, so two cars can never
-        // be each other's next node, and anything blocking eventually parks
-        // (leaving activeCars) or drives on.
-        // A car is 4.5 long but junctions are only 2.6 apart, so a car's body
-        // spans nearly two nodes. Reserving one node still left them
-        // overlapping at 2.78 centre to centre. Reserve the target node AND
-        // the one beyond it, which is the node a car sitting at the target
-        // would have its tail hanging back into.
-        if (next && isNodeBusy(lotData, cars, car, next)) continue;
+        if (next && isNodeBusy(lotData, cars, car, next, beyond, map)) continue;
 
         if (next && next !== car.toNode) {
           car.toNode = next;
@@ -703,9 +730,8 @@ export function useSimulation(): SimulationState {
   useEffect(() => {
     if (!lot) return;
     const id = setInterval(() => {
-      // The garage is one-way, so leaving a ground-floor bay means driving the
-      // whole spiral to the top exit: about 250 hops, a minute and a half of
-      // road time. Without a cap on how many are doing that at once, they
+      // Leaving a ground-floor bay can still mean about 250 hops and a minute
+      // and a half of road time. Without a cap on how many do that at once, they
       // accumulate: a soak run peaked at 34 cars on the road against an
       // arrivals cap of 6.
       const leaving = activeCarsRef.current.filter((c) => c.leaving).length;

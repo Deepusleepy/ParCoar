@@ -537,22 +537,18 @@ function buildGeometry(lot: LotData) {
     });
   }
 
-  // --- Turns: for each turn node, find incoming & outgoing junctions ---
-  const incomingOf = new Map<string, string>();
-  for (const [fromId, edgeList] of Object.entries(lot.edges)) {
-    for (const edge of edgeList) {
-      const target = nodes[edge.to];
-      if (target?.type === "turn") incomingOf.set(edge.to, fromId);
-    }
-  }
+  // --- Turns. The two junction neighbours are ordered by aisle index, which
+  //     preserves the original serpentine traversal for geometry and boards. ---
   for (const [id, node] of Object.entries(nodes)) {
     if (node.type !== "turn") continue;
-    const inId = incomingOf.get(id);
-    const outId = lot.edges[id]?.[0]?.to;
-    const a = inId ? nodes[inId] : undefined;
-    const b = outId ? nodes[outId] : undefined;
+    const neighbours = (lot.edges[id] ?? [])
+      .map((edge) => edge.to)
+      .filter((target, index, all) => nodes[target]?.type === "junction" && all.indexOf(target) === index)
+      .sort((a, b) => (aisleOf(a) ?? 0) - (aisleOf(b) ?? 0));
+    const a = nodes[neighbours[0]];
+    const b = nodes[neighbours[1]];
     if (!a || !b) continue;
-    const bulgeDir = node.x >= a.x ? 1 : -1;
+    const bulgeDir = Math.sign(node.x - a.x) || 1;
     const fy = node.floor * FLOOR_HEIGHT;
     const semi = semicirclePoints(node.x, a.y, b.y, bulgeDir, node.floor);
     const points: THREE.Vector3[] = [
@@ -601,8 +597,9 @@ function buildGeometry(lot: LotData) {
   for (const [fromId, edgeList] of Object.entries(lot.edges)) {
     const from = nodes[fromId];
     if (from?.type !== "ramp_up") continue;
-    const to = nodes[edgeList[0]?.to];
-    if (to?.type !== "ramp_in") continue;
+    const rampEdge = edgeList.find((edge) => nodes[edge.to]?.type === "ramp_in");
+    const to = rampEdge ? nodes[rampEdge.to] : undefined;
+    if (!to) continue;
     ramps.push({
       floor: from.floor,
       points: rampPoints(toWorld(from.x, from.y, from.floor), toWorld(to.x, to.y, to.floor)),
@@ -611,8 +608,8 @@ function buildGeometry(lot: LotData) {
     // Permanent "RAMP UP" signboard at the base of the ramp, facing the
     // traffic approaching the ramp_up node from its incoming junction.
     let incomingJ: LotNode | null = null;
-    for (const [srcId, edgeList] of Object.entries(lot.edges)) {
-      if (edgeList.some((edge) => edge.to === fromId)) {
+    for (const [srcId, incomingEdges] of Object.entries(lot.edges)) {
+      if (nodes[srcId]?.type === "junction" && incomingEdges.some((edge) => edge.to === fromId)) {
         incomingJ = nodes[srcId];
         break;
       }

@@ -9,9 +9,9 @@ import { rampPoints, semicirclePoints } from "./geometry";
  * The lot graph stores node coordinates on the aisle *centreline* (the
  * divider between the two lanes). A car must drive in one lane, so every
  * resolved waypoint is offset perpendicular to its tangent by -LANE_WIDTH/2
- * (the right-hand driving lane relative to the travel direction). For
- * straight aisles this puts +x traffic at z = y - 2.25 and -x traffic at
- * z = y + 2.25, so the two directions never overlap. For curves the offset
+ * (the left-hand driving lane relative to the travel direction). For straight
+ * aisles this puts +x traffic at z = y - 1.75 and -x traffic at z = y + 1.75,
+ * so the two directions never overlap. For curves the offset
  * produces a parallel curve, and for ramps only the horizontal (X-Z) lane
  * offset is applied — the vertical climb comes from the curve itself.
  *
@@ -20,7 +20,7 @@ import { rampPoints, semicirclePoints } from "./geometry";
  * mesh is built from.
  */
 
-/** Lane shift: shift to the right of the travel direction (lot units). */
+/** Lane shift: shift to the driver's left (lot units). */
 const LANE_SHIFT = -LANE_WIDTH / 2;
 
 /* ------------------------------------------------------------------ *
@@ -76,14 +76,18 @@ function nodeIdOf(lot: LotData, node: LotNode): string | null {
   return null;
 }
 
-/** Find the incoming junction id for a turn node (the edge pointing TO it). */
-function incomingJunctionId(lot: LotData, turnId: string): string | null {
-  for (const [fromId, edgeList] of Object.entries(lot.edges)) {
-    for (const edge of edgeList) {
-      if (edge.to === turnId) return fromId;
-    }
-  }
-  return null;
+/** The two junctions connected to a turn, ordered by aisle position. */
+function turnJunctions(lot: LotData, turnId: string): LotNode[] {
+  const seen = new Set<string>();
+  return (lot.edges[turnId] ?? [])
+    .map((edge) => edge.to)
+    .filter((id) => {
+      if (seen.has(id) || lot.nodes[id]?.type !== "junction") return false;
+      seen.add(id);
+      return true;
+    })
+    .map((id) => lot.nodes[id])
+    .sort((a, b) => a.y - b.y);
 }
 
 /** World-space position of a lot node. */
@@ -106,28 +110,41 @@ export function resolvePath(
   toNode: LotNode,
   lot: LotData,
 ): THREE.Vector3[] {
-  // --- Ramp leg: ramp_up -> ramp_in (spiral curve between floors) ---
-  if (fromNode.type === "ramp_up" && toNode.type === "ramp_in") {
-    const from = toWorld(fromNode.x, fromNode.y, fromNode.floor);
-    const to = toWorld(toNode.x, toNode.y, toNode.floor);
-    const pts = rampPoints(from, to);
-    return offsetPerp(pts, LANE_SHIFT);
+  // --- Ramp leg in either direction (same curve, reversed downhill) ---
+  if (
+    (fromNode.type === "ramp_up" && toNode.type === "ramp_in") ||
+    (fromNode.type === "ramp_in" && toNode.type === "ramp_up")
+  ) {
+    const lower = fromNode.type === "ramp_up" ? fromNode : toNode;
+    const upper = fromNode.type === "ramp_in" ? fromNode : toNode;
+    const pts = rampPoints(
+      toWorld(lower.x, lower.y, lower.floor),
+      toWorld(upper.x, upper.y, upper.floor),
+    );
+    return offsetPerp(fromNode.type === "ramp_up" ? pts : [...pts].reverse(), LANE_SHIFT);
   }
 
-  // --- Turn leg: turn -> outgoing junction (180° semicircle) ---
-  if (fromNode.type === "turn") {
-    const turnId = nodeIdOf(lot, fromNode);
-    const inId = turnId ? incomingJunctionId(lot, turnId) : null;
-    const a = inId ? lot.nodes[inId] : null;
-    if (a) {
-      const bulgeDir = fromNode.x >= a.x ? 1 : -1;
-      const semi = semicirclePoints(fromNode.x, a.y, toNode.y, bulgeDir, fromNode.floor);
-      // turnNode sits at the semicircle's first point; skip it to avoid a
-      // zero-length opening segment, then exit to the outgoing junction.
-      const path = [worldOf(fromNode), ...semi.slice(1), worldOf(toNode)];
+  // --- Turn legs. The turn node sits at the end of the lower-numbered
+  //     aisle. Travelling the other way reverses the same curve. ---
+  if (fromNode.type === "turn" || toNode.type === "turn") {
+    const turn = fromNode.type === "turn" ? fromNode : toNode;
+    const turnId = nodeIdOf(lot, turn);
+    const junctions = turnId ? turnJunctions(lot, turnId) : [];
+    if (junctions.length === 2) {
+      const near = junctions.find((node) => Math.abs(node.y - turn.y) < 0.01) ?? junctions[0];
+      const far = junctions.find((node) => node !== near)!;
+      const bulgeDir = Math.sign(turn.x - near.x) || 1;
+      const semi = semicirclePoints(turn.x, near.y, far.y, bulgeDir, turn.floor);
+      const curve = [worldOf(turn), ...semi.slice(1), worldOf(far)];
+      let path: THREE.Vector3[];
+      if (fromNode.type === "turn") {
+        path = toNode === near ? [worldOf(turn), worldOf(near)] : curve;
+      } else {
+        path = fromNode === near ? [worldOf(near), worldOf(turn)] : [...curve].reverse();
+      }
       return offsetPerp(path, LANE_SHIFT);
     }
-    // No incoming junction found: fall through to a straight line.
+    // Malformed turn: fall through to a straight line.
   }
 
   // --- Straight leg: aisle, junction->turn approach, entry->junction,
