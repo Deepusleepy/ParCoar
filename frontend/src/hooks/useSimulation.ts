@@ -27,12 +27,25 @@ const WS_URL = "ws://127.0.0.1:8765";
 const ENTRY_NODE = "E0";
 const RECONNECT_DELAY_MS = 2000;
 
+/** How long a car that drove in stays parked before heading for the exit.
+ *  Randomised per car so departures do not arrive in lockstep. The garage is
+ *  one-way, so a car leaving the ground floor drives the whole spiral to the
+ *  top exit, which takes about a minute and a half. */
+const MIN_STAY_MS = 30_000;
+const MAX_STAY_MS = 90_000;
+
 export interface ParkedCarData {
   key: string;
   slotNode: string;
   color: CarColor;
   plate: string;
   size: "small" | "medium" | "large";
+  /** When this car parked (ms). Cars that drove in leave again after a while
+   *  so the garage reaches a steady state instead of filling up and jamming.
+   *  Undefined for the pre-parked decoration, which never leaves. */
+  parkedAt?: number;
+  /** How long this car stays, in ms. Randomised so departures are staggered. */
+  stayMs?: number;
 }
 
 export interface SimulationState {
@@ -111,6 +124,26 @@ function spawnCar(): ActiveCar {
     slot: null,
     status: "routing",
     parked: false,
+    leaving: false,
+  };
+}
+
+/** Put a parked car back on the road, heading for the exit.
+ *  It gets a fresh id so the backend treats it as a new arrival with a new
+ *  destination, rather than a parked car that mysteriously started moving. */
+function departCar(p: ParkedCarData, size: ActiveCar["size"]): ActiveCar {
+  return {
+    id: nextCarId(),
+    color: p.color,
+    plate: p.plate,
+    size,
+    fromNode: p.slotNode,
+    toNode: p.slotNode,
+    progress: 0,
+    slot: null,
+    status: "routing",
+    parked: false,
+    leaving: true,
   };
 }
 
@@ -188,6 +221,7 @@ export function useSimulation(): SimulationState {
         plate: c.plate,
         size: c.size,
         node: c.fromNode,
+        leaving: c.leaving,
       }));
     // Tell the backend which slots already have a car so it never
     // assigns an occupied slot to an active car. This covers pre-parked
@@ -199,7 +233,7 @@ export function useSimulation(): SimulationState {
     for (const p of parkedRef.current) occupiedSlots.add(p.slotNode);
     // Also include slots that active routing cars are heading toward.
     for (const c of activeCarsRef.current) {
-      if (c.slot) occupiedSlots.add(c.slot);
+      if (c.slot && !c.leaving) occupiedSlots.add(c.slot);
     }
     const msg: StateMessage = {
       type: "state",
@@ -229,6 +263,7 @@ export function useSimulation(): SimulationState {
       let changed = false;
       const cars = activeCarsRef.current;
       const parkedThisCall: ActiveCar[] = [];
+      const departedThisCall: string[] = [];
       for (const car of cars) {
         if (car.parked) continue;
         const sign = map.get(car.id);
@@ -249,6 +284,14 @@ export function useSimulation(): SimulationState {
             });
           }, 3000);
           noSlotTimersRef.current.add(t);
+          changed = true;
+          continue;
+        }
+
+        if (sign.status === "left") {
+          // Reached the exit. Drop it from the simulation entirely.
+          car.status = "left";
+          departedThisCall.push(car.id);
           changed = true;
           continue;
         }
@@ -289,12 +332,15 @@ export function useSimulation(): SimulationState {
 
         // Migrate parked cars into the static parked list, then drop them
         // from the active set. Both setStates are top-level (no nesting).
+        const now = Date.now();
         const newlyParked = parkedThisCall.map((c) => ({
           key: `parked-${c.id}`,
           slotNode: c.slot || c.fromNode,
           color: c.color,
           plate: c.plate,
           size: c.size,
+          parkedAt: now,
+          stayMs: MIN_STAY_MS + Math.random() * (MAX_STAY_MS - MIN_STAY_MS),
         }));
         if (newlyParked.length > 0) {
           // Replace any existing entries at the same slot (cleans up stale
@@ -307,8 +353,11 @@ export function useSimulation(): SimulationState {
             return [...bySlot.values()];
           });
         }
+        const gone = new Set(departedThisCall);
         setActiveCars((prev) =>
-          prev.some((c) => c.parked) ? prev.filter((c) => !c.parked) : prev,
+          prev.some((c) => c.parked || gone.has(c.id))
+            ? prev.filter((c) => !c.parked && !gone.has(c.id))
+            : prev,
         );
       }
 
@@ -492,7 +541,10 @@ export function useSimulation(): SimulationState {
     if (!lot) return;
     const id = setInterval(() => {
       const now = Date.now();
-      const count = activeCarsRef.current.length;
+      // Count arrivals only. A departing car occupies the road for a good 90
+      // seconds on its way to the top exit, and if it counted toward the cap
+      // a busy garage would stop admitting anyone.
+      const count = activeCarsRef.current.filter((c) => !c.leaving).length;
       // Don't spawn if a car is still sitting at the entry node (fromNode === toNode === E0).
       const entryBlocked = activeCarsRef.current.some(
         (c) => c.fromNode === ENTRY_NODE && c.toNode === ENTRY_NODE,
@@ -500,11 +552,32 @@ export function useSimulation(): SimulationState {
       if (count < TARGET_ACTIVE_CARS && !entryBlocked && now - lastSpawnRef.current > SPAWN_INTERVAL_MS) {
         const car = spawnCar();
         setActiveCars((prev) =>
-          prev.length >= MAX_ACTIVE_CARS ? prev : [...prev, car],
+          prev.filter((c) => !c.leaving).length >= MAX_ACTIVE_CARS
+            ? prev
+            : [...prev, car],
         );
         lastSpawnRef.current = now;
       }
     }, 400);
+    return () => clearInterval(id);
+  }, [lot]);
+
+  // --- Departures: parked cars leave again after their stay ---
+  // Only cars that actually drove in are eligible; the pre-parked decoration
+  // has no parkedAt and stays put. Without this the garage fills to capacity
+  // and then sits on LOT FULL forever, which is what it used to do.
+  useEffect(() => {
+    if (!lot) return;
+    const id = setInterval(() => {
+      const now = Date.now();
+      const due = parkedRef.current.find(
+        (p) => p.parkedAt !== undefined && now - p.parkedAt > p.stayMs!,
+      );
+      if (!due) return;
+      const size = lotRef.current?.nodes[due.slotNode]?.size ?? "medium";
+      setParked((prev) => prev.filter((p) => p.key !== due.key));
+      setActiveCars((prev) => [...prev, departCar(due, size)]);
+    }, 2000);
     return () => clearInterval(id);
   }, [lot]);
 

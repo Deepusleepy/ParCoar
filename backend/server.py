@@ -15,6 +15,9 @@ SIZE_RANK = {"small": 0, "medium": 1, "large": 2}
 # All slot node ids in the lot.
 all_slots = [n for n, d in nodes.items() if d["type"] == "slot"]
 
+# The one exit node. Cars that have finished parking are routed here.
+EXIT_NODE = next(n for n, d in nodes.items() if d["type"] == "exit")
+
 # Slots that already have a car. Synced from the frontend on every state
 # message (pre-parked + parked cars), plus slots we assign to routing cars.
 occupied = set()
@@ -143,7 +146,7 @@ def handle_message(msg):
     # stale parked car that vanished from the frontend's message doesn't
     # free its slot until the prune step below removes it from `cars`.
     for c in cars.values():
-        if c["slot"]:
+        if c["slot"] and not c.get("leaving"):
             occupied.add(c["slot"])
 
     # Track which car ids appear in this message so we can prune stale cars
@@ -154,29 +157,37 @@ def handle_message(msg):
     signs = []
     for c in msg.get("cars", []):
         cid = c["id"]
-        # New car: record it and assign a slot.
+        # A car is either looking for a bay, or on its way back out.
+        leaving = bool(c.get("leaving"))
+        # New car: record it and assign a bay.
         if cid not in cars:
             cars[cid] = {"color": c["color"], "plate": c["plate"], "size": c["size"],
-                         "node": c["node"], "slot": None, "status": "routing"}
-            assign_slot(cars[cid])
+                         "node": c["node"], "slot": None, "status": "routing",
+                         "leaving": leaving}
+            if not leaving:
+                assign_slot(cars[cid])
         else:
             # Existing car: just update where it is now.
             cars[cid]["node"] = c["node"]
+            cars[cid]["leaving"] = leaving
             # If a previously-parked car reappears at a different node
             # (e.g. page reload reuses the same car ID), re-route it.
             if cars[cid]["status"] == "parked" and cars[cid]["node"] != cars[cid].get("slot"):
                 cars[cid]["status"] = "routing"
         car = cars[cid]
+        # A leaving car heads for the exit instead of a bay. Same search, a
+        # different destination, so nothing else in here has to change.
+        target = EXIT_NODE if car["leaving"] else car["slot"]
         # No suitable slot anywhere: report lot full.
         if car["status"] == "no_slot":
             signs.append({"car_id": cid, "color": car["color"], "plate": car["plate"],
                           "node": car["node"], "direction": "arrived", "slot": None,
                           "slot_floor": None, "status": "no_slot"})
             continue
-        # Car reached its slot: mark parked.
-        if car["node"] == car["slot"]:
-            car["status"] = "parked"
-            path = [car["slot"]]
+        # Car reached where it was going: parked in its bay, or out of the lot.
+        if car["node"] == target:
+            car["status"] = "left" if car["leaving"] else "parked"
+            path = [target]
             direction = "arrived"
             next_node = None
             next_dir = None
@@ -184,13 +195,13 @@ def handle_message(msg):
             # ONE search per car per tick. Everything the frontend needs is
             # derived from this single route rather than searching again for
             # each field.
-            path = bfs(car["node"], car["slot"]) or [car["node"]]
+            path = bfs(car["node"], target) or [car["node"]]
             direction = direction_along(path, 0) or "arrived"
             next_node = path[1] if len(path) > 2 else None
             next_dir = direction_along(path, 1)
         signs.append({"car_id": cid, "color": car["color"], "plate": car["plate"],
-                      "node": car["node"], "direction": direction, "slot": car["slot"],
-                      "slot_floor": nodes[car["slot"]]["floor"], "status": car["status"],
+                      "node": car["node"], "direction": direction, "slot": target,
+                      "slot_floor": nodes[target]["floor"], "status": car["status"],
                       "next_node": next_node, "next_direction": next_dir,
                       # The full remaining route. Signboards along it light up
                       # as soon as the car is heading their way, instead of

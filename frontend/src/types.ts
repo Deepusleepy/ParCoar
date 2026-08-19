@@ -14,7 +14,7 @@ export type SlotSize = "small" | "medium" | "large";
 
 export type Direction = "left" | "right" | "straight" | "up" | "arrived";
 
-export type CarStatus = "routing" | "parked" | "no_slot";
+export type CarStatus = "routing" | "parked" | "no_slot" | "left";
 
 export type CarColor =
   | "red"
@@ -126,6 +126,10 @@ export interface ActiveCar {
   status: CarStatus;
   /** True once the car has settled into its slot and should stop updating. */
   parked: boolean;
+  /** True when this car has finished its stay and is driving to the exit.
+   *  Leaving cars are routed to the exit node instead of to a bay, and are
+   *  removed from the simulation once they get there. */
+  leaving: boolean;
 }
 
 /** One entry in the roster of active auto-running cars, shown on every
