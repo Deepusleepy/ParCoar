@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo } from "react";
 import { Text } from "@react-three/drei";
 import * as THREE from "three";
 import type { CarRosterEntry, Direction, NodeSign } from "../types";
@@ -66,21 +66,75 @@ const DIM_TEXT = "#64748b";
 /** Red for no-slot status. */
 const RED = "#e5484d";
 
-/** Build a large chevron arrow shape (~1.5 units tall) for the sign screen. */
-function useArrowShape() {
-  return useMemo(() => {
-    const s = new THREE.Shape();
-    s.moveTo(0, 0.75); // tip
-    s.lineTo(-0.5, 0); // bottom left
-    s.lineTo(-0.2, 0); // notch left
-    s.lineTo(-0.2, -0.75); // tail left
-    s.lineTo(0.2, -0.75); // tail right
-    s.lineTo(0.2, 0); // notch right
-    s.lineTo(0.5, 0); // bottom right
-    s.closePath();
-    return s;
-  }, []);
-}
+/* --- Board dimensions, derived from the road so screen + frame cannot drift. */
+const BOARD_W = ROAD_WIDTH + 1; // 8 over a 7-wide road (0.5 overhang/side)
+const BOARD_H = 3.5;
+/** Screen fills the board width; 0.25 frame margin top & bottom. */
+const SCREEN_W = BOARD_W; // 8
+const SCREEN_H = BOARD_H - 0.5; // 3.0
+const BOARD_CENTER_Y = 5;
+const BOARD_TOP_Y = BOARD_CENTER_Y + BOARD_H / 2; // 6.75
+const ROD_LENGTH = FLOOR_HEIGHT - BOARD_TOP_Y; // 8.25
+const ROD_CENTER_Y = (FLOOR_HEIGHT + BOARD_TOP_Y) / 2;
+
+/* --- Shared geometry: one of each per board type, reused across all 11 boards. */
+const ARROW_SHAPE = (() => {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0.75); // tip
+  s.lineTo(-0.5, 0); // bottom left
+  s.lineTo(-0.2, 0); // notch left
+  s.lineTo(-0.2, -0.75); // tail left
+  s.lineTo(0.2, -0.75); // tail right
+  s.lineTo(0.2, 0); // notch right
+  s.lineTo(0.5, 0); // bottom right
+  s.closePath();
+  return s;
+})();
+const ARROW_GEOMETRY = new THREE.ShapeGeometry(ARROW_SHAPE);
+const BOARD_BODY_GEO = new THREE.BoxGeometry(BOARD_W, BOARD_H, 0.2);
+const SCREEN_GEO = new THREE.PlaneGeometry(SCREEN_W, SCREEN_H);
+const ROD_GEO = new THREE.CylinderGeometry(0.06, 0.06, ROD_LENGTH, 8);
+const BANNER_GEO = new THREE.PlaneGeometry(SCREEN_W - 0.6, 0.7);
+
+/* --- Shared materials: 11 boards share these instead of one set each. */
+const FRAME_MATERIAL = new THREE.MeshStandardMaterial({
+  color: FRAME_COLOR,
+  metalness: 0.4,
+  roughness: 0.6,
+});
+const ROD_MATERIAL = new THREE.MeshStandardMaterial({
+  color: FRAME_COLOR,
+  metalness: 0.6,
+  roughness: 0.4,
+});
+const SCREEN_MATERIAL = new THREE.MeshStandardMaterial({
+  color: SCREEN_COLOR,
+  emissive: SCREEN_EMISSIVE,
+  emissiveIntensity: 0.4,
+  roughness: 0.5,
+  metalness: 0.1,
+});
+const BANNER_MATERIAL = new THREE.MeshStandardMaterial({
+  color: "#0c2740",
+  emissive: ACCENT,
+  emissiveIntensity: 0.35,
+  roughness: 0.5,
+});
+/** Bright arrow shown only in driver mode (a live signal is active). */
+const ARROW_BRIGHT_MATERIAL = new THREE.MeshStandardMaterial({
+  color: ACCENT,
+  emissive: ACCENT,
+  emissiveIntensity: 0.8,
+  roughness: 0.4,
+});
+/** Dim arrow for idle/static modes — low contrast so it reads as a permanent
+ *  sign, not a live signal. Same accent hue, ~1/7 the emissive intensity. */
+const ARROW_DIM_MATERIAL = new THREE.MeshStandardMaterial({
+  color: ACCENT,
+  emissive: ACCENT,
+  emissiveIntensity: 0.12,
+  roughness: 0.6,
+});
 
 /**
  * A large permanent ceiling-hung direction board at a turn or ramp.
@@ -88,37 +142,32 @@ function useArrowShape() {
  * Dark LED highway-sign aesthetic: matte-black frame, true-black screen with
  * a subtle dark-blue glow, sky-blue accent arrows/labels, off-white body text.
  *
- * The board has three display modes:
+ * The board has three display modes — and none of them is ever blank:
  *  - Driver mode: a car is approaching or waiting at this node (`dynamic`
- *    present). Shows a highlighted plate banner, a big direction arrow, the
- *    slot label, and a dimmed floor-filtered roster (excluding the active car).
- *  - Idle mode: no car at this node, but the floor has active cars. Shows a
- *    dim ramp label (ramp boards only) and a dimmed floor-filtered roster.
- *    No direction arrow — the bright static arrow was confusing drivers.
- *  - Static mode: no car and no roster. Shows a dim ramp label only (no arrow).
+ *    present). Shows a highlighted plate banner, a big bright direction arrow
+ *    (from the car's actual direction), the slot label, and a dimmed
+ *    floor-filtered roster (excluding the active car).
+ *  - Idle mode: no car at this node, but the floor has active cars. Shows the
+ *    static `label` text and a dim chevron oriented by `arrowRotation`, plus a
+ *    dimmed floor-filtered roster below. The arrow is dim/low-contrast so it
+ *    reads as a permanent sign, not a live signal.
+ *  - Static mode: no car and no roster. Shows the static `label` text and a
+ *    dim chevron oriented by `arrowRotation`. Same dim treatment as idle.
+ *
+ * Memoised with a value comparator (see `propsEqual`) so the 11 boards do not
+ * re-render on every car-movement tick unless the values they actually display
+ * have changed.
  */
-export function PermanentSignboard({
+function PermanentSignboardImpl({
   position,
   rotY,
   label,
+  arrowRotation,
   isTopFloor = false,
   floor,
   dynamic,
   roster,
 }: PermanentSignboardProps) {
-  const arrowShape = useArrowShape();
-
-  // Bigger board: 10 wide × 3.5 tall (was 10 × 2.5).
-  const boardW = ROAD_WIDTH + 1; // 10
-  const boardH = 3.5;
-  const screenW = 10;
-  const screenH = 3.0;
-  // Board center raised to 5 (was 4) for better visibility.
-  const boardCenterY = 5;
-  const boardTopY = boardCenterY + boardH / 2; // 6.75
-  const rodLength = FLOOR_HEIGHT - boardTopY; // 8.25
-  const rodCenterY = (FLOOR_HEIGHT + boardTopY) / 2;
-
   // Filter the roster to cars on THIS floor only.
   const floorRoster = roster?.filter((r) => r.currentFloor === floor) ?? [];
 
@@ -143,54 +192,28 @@ export function PermanentSignboard({
           Hidden on the top floor where there's no ceiling slab to hang from. */}
       {!isTopFloor && (
         <>
-          <mesh position={[-boardW / 2 + 1, rodCenterY, 0]}>
-            <cylinderGeometry args={[0.06, 0.06, rodLength, 8]} />
-            <meshStandardMaterial color={FRAME_COLOR} metalness={0.6} roughness={0.4} />
-          </mesh>
-          <mesh position={[boardW / 2 - 1, rodCenterY, 0]}>
-            <cylinderGeometry args={[0.06, 0.06, rodLength, 8]} />
-            <meshStandardMaterial color={FRAME_COLOR} metalness={0.6} roughness={0.4} />
-          </mesh>
+          <mesh position={[-BOARD_W / 2 + 1, ROD_CENTER_Y, 0]} geometry={ROD_GEO} material={ROD_MATERIAL} />
+          <mesh position={[BOARD_W / 2 - 1, ROD_CENTER_Y, 0]} geometry={ROD_GEO} material={ROD_MATERIAL} />
         </>
       )}
 
       {/* Tilted board group: rotated around X so the face points down at the road */}
-      <group position={[0, boardCenterY, 0]} rotation={[0.3, 0, 0]}>
+      <group position={[0, BOARD_CENTER_Y, 0]} rotation={[0.3, 0, 0]}>
         {/* Board body — matte black metal frame */}
-        <mesh castShadow>
-          <boxGeometry args={[boardW, boardH, 0.2]} />
-          <meshStandardMaterial color={FRAME_COLOR} metalness={0.4} roughness={0.6} />
-        </mesh>
+        <mesh castShadow geometry={BOARD_BODY_GEO} material={FRAME_MATERIAL} />
 
         {/* Emissive screen on the +Z face — true black with dark-blue glow */}
-        <mesh position={[0, 0, 0.11]}>
-          <planeGeometry args={[screenW, screenH]} />
-          <meshStandardMaterial
-            color={SCREEN_COLOR}
-            emissive={SCREEN_EMISSIVE}
-            emissiveIntensity={0.4}
-            roughness={0.5}
-            metalness={0.1}
-          />
-        </mesh>
+        <mesh position={[0, 0, 0.11]} geometry={SCREEN_GEO} material={SCREEN_MATERIAL} />
 
         {/* Screen content — sits just in front of the screen plane.
-            All text/mesh Y positions are kept within ±1.4 (screen half-height
-            is 1.5) so nothing leaks past the screen edges. */}
+            All text/mesh Y positions are kept within ±SCREEN_HALF_H (1.5) so
+            nothing leaks past the screen edges. */}
         <group position={[0, 0, 0.13]}>
           {hasDynamic ? (
-            /* ---- Driver mode: highlighted banner + big arrow + slot + roster ---- */
+            /* ---- Driver mode: highlighted banner + bright arrow + slot + roster ---- */
             <>
               {/* Top: highlighted plate banner (blue background panel + plate text) */}
-              <mesh position={[0, 1.0, -0.01]}>
-                <planeGeometry args={[screenW - 0.6, 0.7]} />
-                <meshStandardMaterial
-                  color="#0c2740"
-                  emissive={ACCENT}
-                  emissiveIntensity={0.35}
-                  roughness={0.5}
-                />
-              </mesh>
+              <mesh position={[0, 1.0, -0.01]} geometry={BANNER_GEO} material={BANNER_MATERIAL} />
               <Text
                 position={[0, 1.0, 0]}
                 fontSize={0.6}
@@ -203,18 +226,16 @@ export function PermanentSignboard({
                 {dynamic!.carPlate}
               </Text>
 
-              {/* Middle: BIG direction arrow from the car's actual direction.
-                  Scaled down (0.8) and lowered to y=-0.1 so it never overlaps
-                  the plate banner above (banner bottom at y=0.65). */}
-              <mesh position={[0, -0.1, 0]} scale={[0.8, 0.8, 0.8]} rotation={[0, 0, directionToRotation(dynamic!.direction)]}>
-                <shapeGeometry args={[arrowShape]} />
-                <meshStandardMaterial
-                  color={ACCENT}
-                  emissive={ACCENT}
-                  emissiveIntensity={0.8}
-                  roughness={0.4}
-                />
-              </mesh>
+              {/* Middle: BIG bright direction arrow from the car's actual direction.
+                  Scaled 0.8 and lowered to y=-0.1 so it never overlaps the plate
+                  banner above (banner bottom at y=0.65). Spans -0.7..0.5. */}
+              <mesh
+                position={[0, -0.1, 0]}
+                scale={[0.8, 0.8, 0.8]}
+                rotation={[0, 0, directionToRotation(dynamic!.direction)]}
+                geometry={ARROW_GEOMETRY}
+                material={ARROW_BRIGHT_MATERIAL}
+              />
 
               {/* Bottom: slot label "→ C12" */}
               <Text
@@ -240,57 +261,130 @@ export function PermanentSignboard({
                   Max 2 rows (1 for ramp boards, which share space with the
                   "↑ RAMP" label). Spacing 0.2, fits within -1.5. */}
               {rosterRows.slice(0, isRamp ? 1 : 2).map((entry, i) => (
-                <RosterRow key={entry.carId} entry={entry} x={-screenW / 2 + 0.4} y={-(isRamp ? 1.3 : 1.1) - i * 0.2} width={screenW - 0.8} />
+                <RosterRow key={entry.carId} entry={entry} x={-SCREEN_W / 2 + 0.4} y={-(isRamp ? 1.3 : 1.1) - i * 0.2} width={SCREEN_W - 0.8} />
               ))}
             </>
           ) : hasRoster ? (
-            /* ---- Idle mode: dim ramp label + roster (no arrow — the
-                bright static arrow was confusing drivers into thinking a
-                direction signal was active when no car was approaching). ---- */
+            /* ---- Idle mode: dim static label + dim chevron + roster.
+                The chevron is dim (ARROW_DIM_MATERIAL) so it reads as a
+                permanent sign, not a live direction signal. ---- */
             <>
-              {/* Ramp label — only ramp boards show text. */}
-              {isRamp && (
-                <Text
-                  position={[0, 0.7, 0]}
-                  fontSize={0.8}
-                  color={ACCENT}
-                  anchorX="center"
-                  anchorY="middle"
-                  outlineWidth={0.03}
-                  outlineColor="#000000"
-                >
-                  {"\u2191 RAMP"}
-                </Text>
-              )}
+              {/* Static label text (e.g. "LEFT", "RIGHT", "RAMP UP -> B"). */}
+              <Text
+                position={[0, 0.85, 0]}
+                fontSize={0.6}
+                color={DIM_TEXT}
+                anchorX="center"
+                anchorY="middle"
+                outlineWidth={0.02}
+                outlineColor="#000000"
+              >
+                {label}
+              </Text>
+
+              {/* Dim static chevron oriented by the board's arrowRotation.
+                  Scale 0.6 at y=0.0 spans -0.45..0.45. */}
+              <mesh
+                position={[0, 0.0, 0]}
+                scale={[0.6, 0.6, 0.6]}
+                rotation={[0, 0, arrowRotation]}
+                geometry={ARROW_GEOMETRY}
+                material={ARROW_DIM_MATERIAL}
+              />
 
               {/* Dimmed floor-filtered roster below.
-                  Max 4 rows at 0.22 spacing starting at y=-0.7 → fits within -1.4. */}
+                  Max 4 rows at 0.22 spacing starting at y=-0.75 → -0.75..-1.41,
+                  within ±SCREEN_HALF_H (1.5). */}
               {rosterRows.map((entry, i) => (
-                <RosterRow key={entry.carId} entry={entry} x={-screenW / 2 + 0.4} y={-0.7 - i * 0.22} width={screenW - 0.8} />
+                <RosterRow key={entry.carId} entry={entry} x={-SCREEN_W / 2 + 0.4} y={-0.75 - i * 0.22} width={SCREEN_W - 0.8} />
               ))}
             </>
           ) : (
-            /* ---- Static mode: dim ramp label only (no arrow). ---- */
+            /* ---- Static mode: dim static label + dim chevron, centered.
+                No roster to show, so the label + arrow take the full screen. ---- */
             <>
-              {isRamp && (
-                <Text
-                  position={[0, 0.4, 0]}
-                  fontSize={0.9}
-                  color={ACCENT}
-                  anchorX="center"
-                  anchorY="middle"
-                  outlineWidth={0.03}
-                  outlineColor="#000000"
-                >
-                  {"\u2191 RAMP"}
-                </Text>
-              )}
+              <Text
+                position={[0, 0.3, 0]}
+                fontSize={0.8}
+                color={DIM_TEXT}
+                anchorX="center"
+                anchorY="middle"
+                outlineWidth={0.02}
+                outlineColor="#000000"
+              >
+                {label}
+              </Text>
+
+              {/* Dim static chevron oriented by arrowRotation.
+                  Scale 0.8 at y=-0.5 spans -1.1..0.1. */}
+              <mesh
+                position={[0, -0.5, 0]}
+                scale={[0.8, 0.8, 0.8]}
+                rotation={[0, 0, arrowRotation]}
+                geometry={ARROW_GEOMETRY}
+                material={ARROW_DIM_MATERIAL}
+              />
             </>
           )}
         </group>
       </group>
     </group>
   );
+}
+
+export const PermanentSignboard = memo(PermanentSignboardImpl, propsEqual);
+
+/* --- Memo comparator: skip re-renders whose displayed values are unchanged.
+ *     The parent passes fresh `dynamic`/`roster` objects every car-movement
+ *     tick; without this every board re-layouts its troika <Text> several times
+ *     a second. We compare only the fields that reach the screen. --- */
+
+/** Signature of the dynamic sign fields the component actually renders. */
+function dynamicKey(d: NodeSign | undefined): string {
+  return d ? `${d.carPlate}|${d.direction}|${d.slot}|${d.slotFloor}` : "";
+}
+
+/** Signature of the roster rows this board will actually display: floor-filtered,
+ *  active-car-excluded, capped at 4, keyed by the fields RosterRow renders
+ *  (carId as React key, plate, slot, slotFloor, status). currentFloor drives the
+ *  filter so a car changing floor invalidates the right boards. */
+function rosterKey(
+  roster: CarRosterEntry[] | undefined,
+  floor: number,
+  activePlate: string | undefined,
+): string {
+  if (!roster || roster.length === 0) return "";
+  const rows: string[] = [];
+  for (const r of roster) {
+    if (r.currentFloor !== floor) continue;
+    if (activePlate && r.plate === activePlate) continue;
+    rows.push(`${r.carId}:${r.plate}:${r.slot}:${r.slotFloor}:${r.status}`);
+    if (rows.length >= 4) break;
+  }
+  return rows.join("|");
+}
+
+function propsEqual(prev: PermanentSignboardProps, next: PermanentSignboardProps): boolean {
+  // Static-per-board props (come from geo.signboards, stable, but compare by
+  // value in case the caller ever rebuilds them).
+  if (prev.label !== next.label) return false;
+  if (prev.arrowRotation !== next.arrowRotation) return false;
+  if (prev.rotY !== next.rotY) return false;
+  if (prev.floor !== next.floor) return false;
+  if (prev.isTopFloor !== next.isTopFloor) return false;
+  const pp = prev.position;
+  const np = next.position;
+  if (pp[0] !== np[0] || pp[1] !== np[1] || pp[2] !== np[2]) return false;
+
+  // Dynamic + roster: the only props that change tick-to-tick.
+  if (dynamicKey(prev.dynamic) !== dynamicKey(next.dynamic)) return false;
+  if (
+    rosterKey(prev.roster, prev.floor, prev.dynamic?.carPlate) !==
+    rosterKey(next.roster, next.floor, next.dynamic?.carPlate)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /** A single dimmed roster row: plate (left) + slot label (right).

@@ -5,7 +5,7 @@ Produces shared/lot.json — a 3-floor parking garage with a serpentine layout:
 each floor has 4 aisles running back and forth, with 180° curved turns at the
 ends. Slots line both sides of every aisle. Spiral ramps connect floors.
 
-Layout per floor (top view), 4 aisles x 8 junctions x 2 slots = 64 slots:
+Layout per floor (top view), 4 aisles x 20 bays x 2 sides = 160 slots:
 
     Aisle 1 (→):  J1 → J2 → J3 → J4 → J5 → J6 → J7 → J8 → [Turn1]
                                                                    ↓
@@ -17,7 +17,7 @@ Layout per floor (top view), 4 aisles x 8 junctions x 2 slots = 64 slots:
                     ↓
                 [Ramp up to next floor]
 
-3 floors x 64 slots = 192 total slots.
+3 floors x 160 slots = 480 total slots.
 
 Run:  python backend/generate_lot.py
 Output: shared/lot.json
@@ -29,7 +29,7 @@ import random
 
 FLOORS = 3
 AISLES_PER_FLOOR = 4
-JUNCTIONS_PER_AISLE = 8
+JUNCTIONS_PER_AISLE = 20
 SLOTS_PER_JUNCTION = 2  # left + right
 JUNCTION_SPACING = 2.6  # x-distance between junctions = one parking bay pitch
 AISLE_SPACING = 17      # y-distance between aisle centrelines (road + a bay each side)
@@ -170,10 +170,22 @@ def main():
     edges[exit_id].append({"dir": "straight", "to": "EXIT_ROAD"})
     edges["EXIT_ROAD"] = []
 
-    # --- Slot nodes are terminal (no outgoing edges) ---
+    # --- Slots lead back to their own junction, so a parked car can leave ---
+    # A slot sits directly beside one junction (same x, offset in y), so the
+    # only way out of a bay is to reverse into that junction. The server's
+    # search refuses to pass *through* a slot, so these edges are only ever
+    # used by a car that starts parked in one.
+    junctions_by_pos = {
+        (n["floor"], n["x"], n["y"]): nid
+        for nid, n in nodes.items()
+        if n["type"] == "junction"
+    }
     for nid, node in nodes.items():
-        if node["type"] == "slot" and nid not in edges:
-            edges[nid] = []
+        if node["type"] != "slot":
+            continue
+        aisle_y = round(node["y"] / AISLE_SPACING) * AISLE_SPACING
+        jid = junctions_by_pos.get((node["floor"], node["x"], aisle_y))
+        edges[nid] = [{"dir": "straight", "to": jid}] if jid else []
 
     lot = {
         "floors": FLOORS,

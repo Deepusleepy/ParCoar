@@ -156,6 +156,138 @@ export const StaticCar = ({ color, size, position, rotationY }: StaticCarProps) 
   </group>
 );
 
+/* ------------------------------------------------------------------ */
+/*  ParkedCarField — instanced renderer for all static parked cars     */
+/* ------------------------------------------------------------------ */
+
+/** A single parked car's placement, precomputed in world space. */
+export interface ParkedCarInstance {
+  slotNode: string;
+  color: CarColor;
+  size: CarSize;
+  position: [number, number, number];
+  rotationY: number;
+}
+
+/** Instanced renderer for every parked car (pre-parked + newly parked).
+ *  Walks each of the three GLTF models once and builds one InstancedMesh per
+ *  mesh in the model, so ~96 cars draw in ~18 calls instead of ~400 (each
+ *  cloned scene previously made two fresh materials + a shader setup).
+ *  Body paint uses per-instance colour via setColorAt; trim (windows, lights,
+ *  tires) shares one material per mesh with no per-instance colour. */
+export function ParkedCarField({ cars }: { cars: ParkedCarInstance[] }) {
+  const bySize = useMemo(() => {
+    const groups: Record<CarSize, ParkedCarInstance[]> = { small: [], medium: [], large: [] };
+    for (const c of cars) groups[c.size].push(c);
+    return groups;
+  }, [cars]);
+  return (
+    <>
+      <ParkedCarSizeGroup size="small" cars={bySize.small} />
+      <ParkedCarSizeGroup size="medium" cars={bySize.medium} />
+      <ParkedCarSizeGroup size="large" cars={bySize.large} />
+    </>
+  );
+}
+
+function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInstance[] }) {
+  const { scene } = useGLTF(MODEL_PATHS[size]);
+
+  const built = useMemo(() => {
+    if (cars.length === 0) return null;
+    // Refresh world matrices so each mesh's model-space transform is current.
+    // The GLTF scene root has identity transform, so mesh.matrixWorld is the
+    // mesh's transform relative to the model origin (what we want to bake in).
+    scene.updateMatrixWorld(true);
+    const scale = MODEL_SCALE[size];
+    const scaleMat = new THREE.Matrix4().makeScale(scale, scale, scale);
+    const forwardMat = new THREE.Matrix4().makeRotationY(FORWARD_ROT);
+
+    // One shared body material. White base so instanceColor multiplies through
+    // to the actual car colour. Matches the parked-car MeshStandardMaterial.
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      metalness: 0.5,
+      roughness: 0.4,
+    });
+    // One shared glass material for Windows (matches parked-car look: dark,
+    // opaque). Other NON_BODY trim keeps its original GLTF material.
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color("#1a1d24"),
+      metalness: 0.3,
+      roughness: 0.1,
+      transparent: false,
+      opacity: 1,
+    });
+
+    const meshes: THREE.InstancedMesh[] = [];
+    const tmpMat = new THREE.Matrix4();
+    const ryMat = new THREE.Matrix4();
+    const tmpColor = new THREE.Color();
+
+    scene.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      const srcMat = mats[0] as THREE.Material | undefined;
+      if (!srcMat) return;
+      const isBody = !NON_BODY.has(srcMat.name);
+      // Body -> shared white standard mat (per-instance colour below).
+      // Windows -> shared dark glass mat. Other trim -> original GLTF mat
+      // (shared with the GLTF cache, so we must NOT dispose it).
+      const material = isBody ? bodyMat : srcMat.name === "Windows" ? glassMat : srcMat;
+
+      const im = new THREE.InstancedMesh(obj.geometry, material, cars.length);
+      im.castShadow = true;
+      im.receiveShadow = true;
+
+      // Base transform baked into every instance: the model's forward rotation
+      // (GLTF faces +Z, sim expects +X), uniform model scale, and this mesh's
+      // own local transform within the GLTF scene.
+      const base = new THREE.Matrix4().copy(forwardMat).multiply(scaleMat).multiply(obj.matrixWorld);
+
+      for (let i = 0; i < cars.length; i++) {
+        const car = cars[i];
+        tmpMat.makeTranslation(car.position[0], car.position[1], car.position[2]);
+        ryMat.makeRotationY(car.rotationY);
+        tmpMat.multiply(ryMat).multiply(base);
+        im.setMatrixAt(i, tmpMat);
+        if (isBody) {
+          tmpColor.set(COLOR_HEX[car.color]);
+          im.setColorAt(i, tmpColor);
+        }
+      }
+      im.instanceMatrix.needsUpdate = true;
+      if (im.instanceColor) im.instanceColor.needsUpdate = true;
+      im.computeBoundingSphere();
+      meshes.push(im);
+    });
+
+    const dispose = () => {
+      // Dispose instance buffers and the materials we own. Do NOT dispose the
+      // geometries (shared with the GLTF cache / active cars) or the original
+      // GLTF trim materials (shared with the cache).
+      for (const im of meshes) im.dispose();
+      bodyMat.dispose();
+      glassMat.dispose();
+    };
+    return { meshes, dispose };
+  }, [scene, cars, size]);
+
+  useEffect(() => {
+    if (!built) return;
+    return () => built.dispose();
+  }, [built]);
+
+  if (!built) return null;
+  return (
+    <group>
+      {built.meshes.map((im, i) => (
+        <primitive key={i} object={im} />
+      ))}
+    </group>
+  );
+}
+
 interface ActiveCarProps {
   car: ActiveCar;
   lot: LotData;
@@ -367,7 +499,10 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
     // Spin wheels (GLTF wheel meshes rotate about their local axle axis).
     // The axle direction varies by model; most GLTF cars use X or Z.
     // We rotate about X which is the most common axle for car wheels.
-    const wheelSpin = CAR_SPEED * dt * 2.5;
+    // Angular velocity = v / r. GLB wheel radius is 0.28 in model space,
+    // scaled by MODEL_SCALE[size] to world units.
+    const wheelRadius = 0.28 * MODEL_SCALE[car.size];
+    const wheelSpin = (CAR_SPEED / wheelRadius) * dt;
     for (const wheel of wheelMeshesRef.current) {
       wheel.rotation.x += wheelSpin;
     }
@@ -376,13 +511,6 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
   return (
     <group ref={group}>
       <CarModel color={car.color} size={car.size} highQuality onLoad={handleModelLoad} />
-      {/* Blob shadow under car, sitting on the road surface (ROAD_Y=0.15).
-          Car group is at floor*FLOOR_HEIGHT + CAR_Y_OFFSET, so local Y for
-          the shadow = ROAD_Y - CAR_Y_OFFSET + 0.01 = -0.04. */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.15 - CAR_Y_OFFSET + 0.01, 0]}>
-        <circleGeometry args={[1.2, 16]} />
-        <meshBasicMaterial color="#000000" transparent opacity={0.35} depthWrite={false} />
-      </mesh>
     </group>
   );
 });

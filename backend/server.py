@@ -23,7 +23,13 @@ occupied = set()
 cars = {}
 
 def bfs(start, goal):
-    """Find the shortest path (list of node ids) from start to goal using BFS. Returns None if unreachable."""
+    """Shortest path (list of node ids) from start to goal, or None.
+
+    Breadth-first search, so the first route that reaches the goal is the one
+    with the fewest hops. Parking bays are dead ends on purpose: a bay has an
+    edge back to its aisle so a parked car can leave, but we never let a route
+    pass *through* a bay, or cars would cut across the parking to save a hop.
+    """
     if start == goal:
         return [start]
     seen = {start}
@@ -37,36 +43,59 @@ def bfs(start, goal):
             if nxt == goal:
                 return path + [nxt]
             seen.add(nxt)
+            # A bay is only ever a destination, never a shortcut.
+            if nodes[nxt]["type"] == "slot":
+                continue
             queue.append(path + [nxt])
     return None
 
 
+# How many candidate bays to keep looking for after finding the first one.
+# Only needed so the load-spreading rule below has an alternative to offer.
+CANDIDATES = 12
+
+
 def nearest_free_slot(car_node, car_size):
-    """Find the nearest free slot the car fits in, spreading load away from crowded floors."""
-    # Collect every free slot this car fits in, with its BFS hop count from the car.
-    scored = []
-    for s in all_slots:
-        if s in occupied or SIZE_RANK[car_size] > SIZE_RANK[nodes[s]["size"]]:
-            continue
-        p = bfs(car_node, s)
-        if p:
-            scored.append((len(p), s))
-    scored.sort()
-    if not scored:
+    """Nearest free bay the car fits in, spreading load away from busy floors.
+
+    One breadth-first sweep outward from the car. Because BFS visits nodes in
+    order of distance, the bays land in `found` nearest-first, so we can stop
+    as soon as we have a handful of candidates instead of searching the whole
+    garage. (The previous version ran a separate search to every single bay,
+    which is hundreds of searches per car.)
+    """
+    found = []
+    seen = {car_node}
+    queue = deque([car_node])
+    while queue and len(found) < CANDIDATES:
+        for e in edges.get(queue.popleft(), []):
+            nxt = e["to"]
+            if nxt in seen:
+                continue
+            seen.add(nxt)
+            if nodes[nxt]["type"] == "slot":
+                # Bays are destinations, not through-routes, so never enqueue
+                # one. Keep it only if it is free and big enough for this car.
+                if nxt not in occupied and SIZE_RANK[car_size] <= SIZE_RANK[nodes[nxt]["size"]]:
+                    found.append(nxt)
+            else:
+                queue.append(nxt)
+    if not found:
         return None
-    # Count how many routing cars are already heading to each floor.
+    # Count how many cars are already heading to each floor.
     floor_count = {}
     for c in cars.values():
         if c["status"] == "routing" and c["slot"]:
             fl = nodes[c["slot"]]["floor"]
             floor_count[fl] = floor_count.get(fl, 0) + 1
-    # Load spread: if the nearest slot's floor has 3+ routing cars, prefer a slot on another floor.
-    best_floor = nodes[scored[0][1]]["floor"]
+    # Load spread: if the nearest bay's floor already has 3 cars heading to it,
+    # send this one to the next-nearest bay on a different floor instead.
+    best_floor = nodes[found[0]]["floor"]
     if floor_count.get(best_floor, 0) >= 3:
-        for _, s in scored[1:]:
+        for s in found[1:]:
             if nodes[s]["floor"] != best_floor:
                 return s
-    return scored[0][1]
+    return found[0]
 
 
 def assign_slot(car):

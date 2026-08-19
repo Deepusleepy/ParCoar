@@ -1,50 +1,11 @@
-import { Suspense, memo, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { useSimulation } from "./hooks/useSimulation";
 import { Scene, SceneLoadingFallback, type OrbitControlsHandle } from "./sim/Scene";
-import { ActiveCarMesh, StaticCar } from "./sim/Car";
+import { ActiveCarMesh, ParkedCarField, type ParkedCarInstance } from "./sim/Car";
 import { DrivableCar, buildRoadSegments, type ParkedCarPos, type PlayerSpeedRef } from "./sim/DrivableCar";
 import { AISLE_SPACING, CAR_Y_OFFSET, COLOR_HEX, toWorld } from "./sim/constants";
 import type { CameraMode } from "./sim/CameraRig";
-import type { ParkedCarData } from "./hooks/useSimulation";
-import type { LotData } from "./types";
-
-/**
- * Renders a parked car at its assigned slot. The car drives nose-in,
- * facing perpendicular to the aisle (±y in lot coords / ±Z in world).
- */
-const ParkedCarMesh = memo(function ParkedCarMesh({
-  car,
-  lot,
-}: {
-  car: ParkedCarData;
-  lot: LotData;
-}) {
-  const node = lot.nodes[car.slotNode];
-  if (!node) return null;
-  const [x, y, z] = toWorld(node.x, node.y, node.floor);
-  // A car drives nose-in to its slot, so it faces the slot interior (same as
-  // approach direction). Slots are offset from the aisle in y (world Z), so
-  // the car points along ±y, not ±x.
-  // Car front is +x at rotation 0: +π/2 → -Z (-y), -π/2 → +Z (+y).
-  const aisleY = Math.round(node.y / AISLE_SPACING) * AISLE_SPACING;
-  const rotationY = node.y < aisleY ? Math.PI / 2 : -Math.PI / 2;
-  return (
-    <>
-      <StaticCar
-        color={car.color}
-        size={car.size}
-        position={[x, y + CAR_Y_OFFSET, z]}
-        rotationY={rotationY}
-      />
-      {/* Blob shadow under car */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[x, y + 0.01, z]}>
-        <circleGeometry args={[1.2, 16]} />
-        <meshBasicMaterial color="#000000" transparent opacity={0.35} depthWrite={false} />
-      </mesh>
-    </>
-  );
-});
 
 export function App() {
   const sim = useSimulation();
@@ -108,6 +69,28 @@ export function App() {
     return out;
   }, [sim.preParked, sim.parked, lot]);
 
+  // Instanced parked-car placements (pre-parked + newly parked). Computes the
+  // nose-in rotation (±π/2) per slot so ParkedCarField can bake it into each
+  // instance matrix. Fed to a single <ParkedCarField> for ~18 draw calls total
+  // instead of one cloned GLTF per car.
+  const parkedCars = useMemo<ParkedCarInstance[]>(() => {
+    if (!lot) return [];
+    const out: ParkedCarInstance[] = [];
+    const push = (c: { slotNode: string; color: import("./types").CarColor; size: import("./types").CarSize }) => {
+      const node = lot.nodes[c.slotNode];
+      if (!node) return;
+      const [x, y, z] = toWorld(node.x, node.y, node.floor);
+      // Nose-in: car faces the slot interior. Car front is +x at rotation 0,
+      // so +π/2 → -Z (-y), -π/2 → +Z (+y).
+      const aisleY = Math.round(node.y / AISLE_SPACING) * AISLE_SPACING;
+      const rotationY = node.y < aisleY ? Math.PI / 2 : -Math.PI / 2;
+      out.push({ slotNode: c.slotNode, color: c.color, size: c.size, position: [x, y + CAR_Y_OFFSET, z], rotationY });
+    };
+    for (const c of sim.preParked) push(c);
+    for (const c of sim.parked) push(c);
+    return out;
+  }, [sim.preParked, sim.parked, lot]);
+
   // Road centerline segments for DrivableCar road-edge clamping.
   const roadSegments = useMemo(() => (lot ? buildRoadSegments(lot) : []), [lot]);
 
@@ -135,14 +118,9 @@ export function App() {
         carRoster={sim.carRoster}
       >
         <Suspense fallback={<SceneLoadingFallback />}>
-          {/* Pre-parked cars (static decoration) */}
-          {sim.preParked.map((c) => (
-            <ParkedCarMesh key={c.key} car={c} lot={lot!} />
-          ))}
-          {/* Newly parked cars (active cars that reached their slots) */}
-          {sim.parked.map((c) => (
-            <ParkedCarMesh key={c.key} car={c} lot={lot!} />
-          ))}
+          {/* All parked cars (pre-parked decoration + newly parked) rendered
+              as one instanced field — ~18 draw calls instead of ~400. */}
+          <ParkedCarField cars={parkedCars} />
           {/* Active cars (moving through the lot) */}
           {sim.activeCars.map((c) => (
             <ActiveCarMesh

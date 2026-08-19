@@ -4,12 +4,12 @@ import { Text, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import type { LotData, LotEdge, NodeType } from "../types";
 import { useKeyboard } from "../hooks/useKeyboard";
+import { rampPoints, semicirclePoints } from "./geometry";
 import {
   AISLE_SPACING,
   CAR_Y_OFFSET,
   FLOOR_HEIGHT,
   LANE_WIDTH,
-  RAMP_LENGTH,
   ROAD_WIDTH,
   SLOT_DEPTH,
   SLOT_WIDTH,
@@ -117,25 +117,6 @@ function closestPointOnSegment2D(
   return [ax + t * dx, az + t * dz];
 }
 
-/** Control points for a sweeping spiral ramp between two floors.
- *  Mirrors rampPoints in ParkingLot.tsx / paths.ts exactly. */
-function rampPoints(from: [number, number, number], to: [number, number, number]): THREE.Vector3[] {
-  const [x0, y0, z0] = from;
-  const [x1, y1, z1] = to;
-  const midY = (y0 + y1) / 2;
-  const midZ = (z0 + z1) / 2;
-  const sweep = -RAMP_LENGTH;
-  const ctrl = [
-    new THREE.Vector3(x0, y0, z0),
-    new THREE.Vector3(x0 + sweep * 0.7, y0, z0),
-    new THREE.Vector3(x0 + sweep, midY, midZ),
-    new THREE.Vector3(x0 + sweep * 0.7, y1, z1),
-    new THREE.Vector3(x1, y1, z1),
-  ];
-  const curve = new THREE.CatmullRomCurve3(ctrl, false, "catmullrom", 0.5);
-  return curve.getPoints(48);
-}
-
 /** Build a sampled centerline + from/to floors for every ramp_up -> ramp_in edge. */
 function buildRampCurves(lot: LotData): RampCurve[] {
   const curves: RampCurve[] = [];
@@ -176,29 +157,6 @@ export interface RoadSegment {
 function aisleOf(id: string): number | null {
   const m = id.match(/^J\d+_(\d+)_\d+$/);
   return m ? Number(m[1]) : null;
-}
-
-/** Points for a 180° semicircle connecting two same-x junctions.
- *  Mirrors semicirclePoints in ParkingLot.tsx. */
-function semicirclePoints(
-  ax: number,
-  ay: number,
-  by: number,
-  bulgeDir: number,
-  floor: number,
-  segments = 28,
-): THREE.Vector3[] {
-  const cy = (ay + by) / 2;
-  const r = Math.abs(by - ay) / 2;
-  const pts: THREE.Vector3[] = [];
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments;
-    const ang = -Math.PI / 2 + t * Math.PI;
-    const x = ax + bulgeDir * r * Math.cos(ang);
-    const y = cy + r * Math.sin(ang);
-    pts.push(new THREE.Vector3(x, floor * FLOOR_HEIGHT, y));
-  }
-  return pts;
 }
 
 /** Build road centerline segments from the lot graph for road-edge clamping.
@@ -501,15 +459,21 @@ const WHEEL_POSITIONS: [number, number, number][] = [
 ];
 
 interface CarExteriorProps {
-  /** Refs to the 4 wheel spin groups (animated in DrivableCar's useFrame). */
+  /** Refs to the 4 wheel spin groups (animated in DrivableCar's useFrame).
+   *  Spin is applied as a rotation about the spin group's local Y, which
+   *  maps to the axle direction after the axle-orienting parent rotation. */
   wheelRefs: React.MutableRefObject<(THREE.Group | null)[]>;
+  /** Refs to the 4 wheel steer groups (outermost; only the front two are
+   *  animated). Steering is applied as a rotation about world Y, separate
+   *  from the spin group so the two rotations never share an object. */
+  steerRefs: React.MutableRefObject<(THREE.Group | null)[]>;
   /** When false the GLTF body mesh is hidden (POV mode — the procedural
    *  interior provides the visible cockpit). Wheels remain visible. */
   bodyVisible?: boolean;
 }
 
 /** Loads the GLTF body, removes wheel nodes, recolors with race-red clearcoat. */
-function CarExteriorInner({ wheelRefs, bodyVisible = true }: CarExteriorProps) {
+function CarExteriorInner({ wheelRefs, steerRefs, bodyVisible = true }: CarExteriorProps) {
   const { scene } = useGLTF(PLAYER_MODEL_PATH);
 
   const { bodyMat, glassMat, scene: cloned } = useMemo(() => {
@@ -588,27 +552,32 @@ function CarExteriorInner({ wheelRefs, bodyVisible = true }: CarExteriorProps) {
           view; the procedural CarInterior provides the visible dashboard. */}
       <primitive object={cloned} visible={bodyVisible} rotation={[0, PLAYER_FORWARD_ROT, 0]} scale={PLAYER_MODEL_SCALE} />
 
-      {/* Procedural wheels with spin refs (animated in DrivableCar useFrame).
-          Outer group orients the cylinder axle along Z; inner group spins
-          about local Y (which maps to world Z after the parent rotation). */}
+      {/* Procedural wheels with spin + steer refs (animated in DrivableCar
+          useFrame). Three nested groups keep the three rotations on separate
+          objects so Euler coupling can't make the front wheels tumble:
+            steer group  — rotates about world Y (front wheels only)
+            axle group   — fixed [π/2,0,0], orients the cylinder axle along Z
+            spin group   — rotates about local Y (the axle), rolls the wheel */}
       {WHEEL_POSITIONS.map((p, i) => (
-        <group key={i} position={p} rotation={[Math.PI / 2, 0, 0]}>
-          <group ref={(el) => { wheelRefs.current[i] = el; }}>
-            {/* Tire */}
-            <mesh geometry={tireGeo} castShadow>
-              <primitive object={MAT.tire} attach="material" />
-            </mesh>
-            {/* Rim disc */}
-            <mesh geometry={rimGeo}>
-              <primitive object={MAT.rim} attach="material" />
-            </mesh>
-            {/* 5 spokes */}
-            {Array.from({ length: 5 }).map((_, s) => (
-              <mesh key={s} rotation={[0, 0, (s * Math.PI * 2) / 5]}>
-                <boxGeometry args={[0.04, 0.36, 0.05]} />
+        <group key={i} ref={(el) => { steerRefs.current[i] = el; }} position={p}>
+          <group rotation={[Math.PI / 2, 0, 0]}>
+            <group ref={(el) => { wheelRefs.current[i] = el; }}>
+              {/* Tire */}
+              <mesh geometry={tireGeo} castShadow>
+                <primitive object={MAT.tire} attach="material" />
+              </mesh>
+              {/* Rim disc */}
+              <mesh geometry={rimGeo}>
                 <primitive object={MAT.rim} attach="material" />
               </mesh>
-            ))}
+              {/* 5 spokes */}
+              {Array.from({ length: 5 }).map((_, s) => (
+                <mesh key={s} rotation={[0, 0, (s * Math.PI * 2) / 5]}>
+                  <boxGeometry args={[0.04, 0.36, 0.05]} />
+                  <primitive object={MAT.rim} attach="material" />
+                </mesh>
+              ))}
+            </group>
           </group>
         </group>
       ))}
@@ -871,8 +840,8 @@ function CarInterior({
       </mesh>
 
       {/* --- Roof liner --- */}
-      <mesh position={[0.1, 1.38, 0]}>
-        <boxGeometry args={[2.2, 0.04, 1.55]} />
+      <mesh position={[0.1, 1.34, 0]}>
+        <boxGeometry args={[2.2, 0.04, 1.5]} />
         <primitive object={MAT.dashTrim} attach="material" />
       </mesh>
     </group>
@@ -881,7 +850,7 @@ function CarInterior({
 
 /** A door panel: main card, pull handle, red ambient strip, window switches. */
 function DoorPanel({ side }: { side: 1 | -1 }) {
-  const z = 0.84 * side;
+  const z = 0.80 * side;
   return (
     <group>
       {/* Main door card */}
@@ -970,11 +939,18 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
   const velocityRef = useRef(0); // forward speed (negative = reverse)
   const lateralVelRef = useRef(0); // lateral velocity for grip/slip model
   const headingRef = useRef(0); // yaw angle (0 = facing +X)
+  // Heading from the previous frame. The grip/drift model composes the world
+  // velocity from the PREVIOUS heading's basis (where velocityRef/lateralVelRef
+  // were last written) and decomposes it onto the CURRENT heading's basis, so
+  // a turn bleeds some forward momentum into lateral velocity. Initialised to
+  // the spawn heading so the first frame is an identity transform.
+  const prevHeadingRef = useRef(0);
   const steerInputRef = useRef(0); // live steering input for the wheel visual
   const steerAngleRef = useRef(0); // smoothed steering angle (radians)
   const floorRef = useRef(0); // current floor (for flat-ground height)
   const liveSpeedRef = useRef(0); // numeric speed feed for the interior speedometer
   const wheelRefs = useRef<(THREE.Group | null)[]>([null, null, null, null]);
+  const steerRefs = useRef<(THREE.Group | null)[]>([null, null, null, null]);
   const keys = useKeyboard();
 
   // Pre-compute ramp curves for height sampling.
@@ -1016,6 +992,7 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
 
   useEffect(() => {
     headingRef.current = spawn.heading;
+    prevHeadingRef.current = spawn.heading;
     floorRef.current = 0;
   }, [spawn.heading]);
 
@@ -1089,34 +1066,49 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
     // (perpendicular). Lateral velocity decays each frame based on GRIP,
     // simulating tire grip. When turning, some forward momentum bleeds into
     // lateral, creating a natural drift/slip feel rather than on-rails.
+    //
+    // velocityRef and lateralVelRef are stored in the PREVIOUS frame's heading
+    // basis (the basis they were last written in). To move correctly after the
+    // heading changed this frame, we first compose the world velocity from the
+    // PREVIOUS heading's basis, then decompose it onto the CURRENT heading's
+    // basis. The component that no longer aligns with the new forward axis
+    // becomes lateral velocity — that is the momentum carryover the drift
+    // model is meant to provide. (Composing and decomposing with the SAME
+    // basis, as the old code did, is an identity transform and produces no
+    // lateral velocity at all.)
     const heading = headingRef.current;
+    const prevHeading = prevHeadingRef.current;
     const cosH = Math.cos(heading);
     const sinH = Math.sin(heading);
+    const cosP = Math.cos(prevHeading);
+    const sinP = Math.sin(prevHeading);
     // Forward unit vector (car faces +X at yaw 0): (cos, 0, -sin)
     // Right unit vector (perpendicular): (sin, 0, cos)
-    // When the heading changes, the old velocity vector is no longer aligned.
-    // The component along the new heading stays as forward velocity; the
-    // perpendicular component becomes lateral velocity.
-    // Compute current world velocity from forward + lateral.
-    const fwdVx = cosH * velocityRef.current;
-    const fwdVz = -sinH * velocityRef.current;
-    const latVx = sinH * lateralVelRef.current;
-    const latVz = cosH * lateralVelRef.current;
+    // Compose world velocity from the PREVIOUS heading's basis.
+    const fwdVx = cosP * velocityRef.current;
+    const fwdVz = -sinP * velocityRef.current;
+    const latVx = sinP * lateralVelRef.current;
+    const latVz = cosP * lateralVelRef.current;
     const worldVx = fwdVx + latVx;
     const worldVz = fwdVz + latVz;
-    // Decompose world velocity into new forward + lateral components.
+    // Decompose world velocity onto the CURRENT heading's basis. The part of
+    // the old forward velocity that is no longer along the new forward axis
+    // shows up as lateral velocity — the drift bleed.
     velocityRef.current = worldVx * cosH - worldVz * sinH;
     lateralVelRef.current = worldVx * sinH + worldVz * cosH;
     // Apply grip: lateral velocity decays (tires resist sideways motion).
     lateralVelRef.current *= Math.pow(1 - GRIP, dt * 60);
     if (Math.abs(lateralVelRef.current) < 0.01) lateralVelRef.current = 0;
 
-    // Move the car by the combined velocity.
+    // Move the car by the combined velocity, using the current heading basis.
     const totalVx = cosH * velocityRef.current + sinH * lateralVelRef.current;
     const totalVz = -sinH * velocityRef.current + cosH * lateralVelRef.current;
     g.position.x += totalVx * dt;
     g.position.z += totalVz * dt;
     g.rotation.y = heading;
+    // Remember this frame's heading as the basis velocityRef/lateralVelRef are
+    // now stored in, for next frame's composition.
+    prevHeadingRef.current = heading;
 
     // --- Height: ramp sampling (distance-to-polyline), else flat floor ---
     // Ramps connected to the current floor are considered. We also check the
@@ -1228,10 +1220,10 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
     // Skipped on ramps (they have their own edge clamp above) and near slot
     // nodes (allows driving into parking bays that extend beyond the road
     // width). Only segments on the current floor are considered.
-    // The slot-exception radius is SLOT_WIDTH/2 + 1 (≈3.25) — small enough
+    // The slot-exception radius is SLOT_WIDTH/2 + 1 (≈2.25) — small enough
     // that it only fires when the car is actually at a slot entrance, not
-    // when it's on the aisle (the aisle centerline is SLOT_OFFSET=9 units
-    // from the nearest slot, so a radius of 3.25 never fires on the aisle).
+    // when it's on the aisle (the aisle centerline is SLOT_OFFSET=6 units
+    // from the nearest slot, so a radius of 2.25 never fires on the aisle).
     if (!onRamp) {
       let nearSlot = false;
       const slotExceptionRadius = SLOT_WIDTH / 2 + 1;
@@ -1322,22 +1314,20 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
     }
 
     // --- Wheel spin + front wheel steering animation ---
+    // Spin and steer live on separate nested groups so they never share an
+    // object's Euler angles (which would couple them and make the front
+    // wheels tumble). Spin is on the innermost group (local Y = axle after
+    // the π/2 X parent); steer is on the outermost group (world Y).
     // Correct angular velocity: v / r. Wheel radius is 0.34.
     const wheelSpin = velocityRef.current / 0.34 * dt;
+    const visualSteer = steerAngleRef.current * 0.6;
     for (let i = 0; i < wheelRefs.current.length; i++) {
       const wr = wheelRefs.current[i];
-      if (!wr) continue;
-      wr.rotation.y -= wheelSpin;
-      // Front wheels (indices 0, 1) visually steer.
+      if (wr) wr.rotation.y -= wheelSpin;
+      // Front wheels (indices 0, 1) visually steer about world Y.
       if (i < 2) {
-        // The wheel group is inside a parent rotated π/2 about X.
-        // Visual steering is a Y rotation on the outer group.
-        // We apply it to the parent by adjusting the parent's Y rotation.
-        // But the parent's rotation is [π/2, 0, 0], so we need to set
-        // the steer on the inner group's parent. Since we can't easily
-        // access the parent from the ref, we apply steer as a Z rotation
-        // on the inner group (which, after the π/2 X parent, maps to Y).
-        wr.rotation.z = steerAngleRef.current * 0.6;
+        const sr = steerRefs.current[i];
+        if (sr) sr.rotation.y = visualSteer;
       }
     }
   });
@@ -1345,8 +1335,14 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
   return (
     <>
       <group ref={groupRef} position={spawn.pos} rotation={[0, spawn.heading, 0]}>
-        <CarExterior wheelRefs={wheelRefs} bodyVisible={!pov} />
-        <CarInterior steerRef={steerInputRef} speedRef={liveSpeedRef} />
+        <CarExterior wheelRefs={wheelRefs} steerRefs={steerRefs} bodyVisible={!pov} />
+        {/* The procedural interior exists only to be seen from the driver's-eye
+            camera. Rendering it in third person draws the box-model cockpit
+            through the GLTF body (roof liner, windows, seats all clip), so it
+            is mounted only in POV mode. The steering-wheel animation and the
+            speedometer live inside it and are only visible in POV, so they
+            unmount safely with it. */}
+        {pov && <CarInterior steerRef={steerInputRef} speedRef={liveSpeedRef} />}
       </group>
       {/* Blob shadow under the player car (kept flat via shadowRef in useFrame) */}
       <mesh ref={shadowRef} rotation={[-Math.PI / 2, 0, 0]} position={spawn.pos}>

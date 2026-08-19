@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import { FLOOR_HEIGHT, LANE_WIDTH, RAMP_LENGTH, toWorld } from "./constants";
+import { LANE_WIDTH, toWorld } from "./constants";
 import type { LotData, LotNode } from "../types";
+import { rampPoints, semicirclePoints } from "./geometry";
 
 /*
  * Path resolution for active cars.
@@ -25,55 +26,6 @@ const LANE_SHIFT = -LANE_WIDTH / 2;
 /* ------------------------------------------------------------------ *
  *  Curve generators (mirror ParkingLot.tsx exactly)
  * ------------------------------------------------------------------ */
-
-/** Points for a 180° semicircle connecting two same-x junctions. */
-function semicirclePoints(
-  ax: number,
-  ay: number,
-  by: number,
-  bulgeDir: number,
-  floor: number,
-  segments = 48,
-): THREE.Vector3[] {
-  const cy = (ay + by) / 2;
-  const r = Math.abs(by - ay) / 2;
-  const pts: THREE.Vector3[] = [];
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments;
-    const ang = -Math.PI / 2 + t * Math.PI;
-    const x = ax + bulgeDir * r * Math.cos(ang);
-    const y = cy + r * Math.sin(ang);
-    pts.push(new THREE.Vector3(x, floor * FLOOR_HEIGHT, y));
-  }
-  return pts;
-}
-
-/** Control points for a sweeping spiral ramp between two floors. */
-function rampPoints(
-  from: [number, number, number],
-  to: [number, number, number],
-): THREE.Vector3[] {
-  const [x0, y0, z0] = from;
-  const [x1, y1, z1] = to;
-  const midY = (y0 + y1) / 2;
-  const midZ = (z0 + z1) / 2;
-  // Bulge in -x so the ramp leaves the x=0 edge and climbs outside the slab
-  const sweep = -RAMP_LENGTH;
-  // ctrl[1] & ctrl[3] keep z and y equal to the endpoints so the ramp
-  // starts/ends parallel to the road (zero z-tangent) and flat (zero
-  // y-tangent). The Y profile [y0, y0, midY, y1, y1] makes CatmullRom
-  // produce an S-curve (ease-in/ease-out); the Z shift happens only at
-  // the middle control point. Max slope ~23% at midpoint.
-  const ctrl = [
-    new THREE.Vector3(x0, y0, z0),
-    new THREE.Vector3(x0 + sweep * 0.7, y0, z0),
-    new THREE.Vector3(x0 + sweep, midY, midZ),
-    new THREE.Vector3(x0 + sweep * 0.7, y1, z1),
-    new THREE.Vector3(x1, y1, z1),
-  ];
-  const curve = new THREE.CatmullRomCurve3(ctrl, false, "catmullrom", 0.5);
-  return curve.getPoints(48);
-}
 
 /* ------------------------------------------------------------------ *
  *  Perpendicular lane offset

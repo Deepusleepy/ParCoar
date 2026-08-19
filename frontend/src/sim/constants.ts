@@ -33,8 +33,14 @@ export const LANE_WIDTH = 3.5;
 /** Full road width across both lanes of an aisle. */
 export const ROAD_WIDTH = LANE_WIDTH * 2;
 
-/** Length of the spiral ramp connecting one floor to the next. */
-export const RAMP_LENGTH = 14;
+/** How far west of the building the inter-floor ramp runs, in lot units.
+ *  The ramp hugs the outside of the west face rather than cutting across the
+ *  garage, so this only needs to clear the slab edge. */
+export const RAMP_OUTSET = 11;
+
+/** Corner radius of the ramp's two 90-degree turns. Large enough that a car
+ *  can drive through them without the road-edge clamp fighting the steering. */
+export const RAMP_CORNER_RADIUS = 7;
 
 /** Height of a structural pillar (one storey). */
 export const PILLAR_HEIGHT = FLOOR_HEIGHT;
