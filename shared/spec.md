@@ -13,10 +13,10 @@ this exactly.
 ## Lot Layout
 
 Both sides load `shared/lot.json` (or `public/lot.json` in the frontend).
-The lot is a 3-floor parking garage with a serpentine layout: 4 aisles per
-floor, 20 bays per aisle side, 2 sides per aisle = 160 slots per floor,
-480 slots total. 180° curved turns connect aisles. An L-shaped ramp running
-along the outside of the west face connects each floor to the next.
+The lot is a 3-floor parking garage with 4 two-way aisles per floor,
+20 bays per aisle side, 2 sides per aisle = 160 slots per floor, 480 slots
+total. A serpentine spine of 180° curved turns connects the aisles. An L-shaped
+ramp running along the outside of the west face connects each floor to the next.
 
 A parking bay has one outgoing edge, back to its own aisle junction, so a
 parked car can leave. The backend never routes *through* a bay, only to one.
@@ -67,7 +67,10 @@ Edge shape (adjacency list, directed):
     {"dir": "right", "to": "S0_9"},
     {"dir": "straight", "to": "J0_0_2"}
   ],
-  "T0_0": [{"dir": "straight", "to": "J0_1_20"}],
+  "T0_0": [
+    {"dir": "right", "to": "J0_1_20"},
+    {"dir": "left", "to": "J0_0_20"}
+  ],
   "R0_up": [{"dir": "up", "to": "R1_in"}],
   "ENTRY_ROAD": [{"dir": "straight", "to": "E0"}],
   "EXIT2": [{"dir": "straight", "to": "EXIT_ROAD"}],
@@ -95,9 +98,11 @@ Node ID convention:
   the road leading into/out of the garage. `ENTRY_ROAD` has one edge to `E0`;
   the exit node has one edge to `EXIT_ROAD`.
 
-Aisles are one-way (serpentine: even aisles go right, odd aisles go left).
-Turn nodes are 180° curves at the end of each aisle connecting to the next.
-The graph is directed — cars can only travel in the direction of the edges.
+Every road is two-way. The original serpentine direction is even aisles to
+the right and odd aisles to the left; the mirrored edges allow the opposite
+travel direction on the second lane. Turn labels reverse hand in the reverse
+direction. The graph remains a directed adjacency list with one edge recorded
+for each travel direction. Bay edges are not mirrored.
 
 ## Message: Frontend -> Backend (state update)
 

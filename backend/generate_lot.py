@@ -1,9 +1,9 @@
 """
 Lot layout generator for the ParCoar parking guidance system.
 
-Produces shared/lot.json — a 3-floor parking garage with a serpentine layout:
-each floor has 4 aisles running back and forth, with 180° curved turns at the
-ends. Slots line both sides of every aisle. Spiral ramps connect floors.
+Produces shared/lot.json — a 3-floor parking garage whose two-way aisles
+follow a serpentine spine through 180° curved turns. Slots line both sides of
+every aisle. Ramps connect floors.
 
 Layout per floor (top view), 4 aisles x 20 bays x 2 sides = 160 slots:
 
@@ -100,12 +100,12 @@ def main():
                     nodes[sid] = {"type": "slot", "floor": f, "x": jx, "y": sy, "size": size}
 
             # --- Chain: previous node → first junction of this aisle ---
-            # Always "straight": the 180° direction changes between aisles are
-            # represented by the turn nodes, not by this edge.
             first_j = junction_ids[0]
             if prev_node not in edges:
                 edges[prev_node] = []
-            edges[prev_node].append({"dir": "straight", "to": first_j})
+            # The turn is right after a +x aisle and left after a -x aisle.
+            direction = ("left" if going_right else "right") if prev_node.startswith("T") else "straight"
+            edges[prev_node].append({"dir": direction, "to": first_j})
 
             # --- Edges along the aisle: each junction → its slots + next junction ---
             for j_idx, jid in enumerate(junction_ids):
@@ -186,6 +186,23 @@ def main():
         aisle_y = round(node["y"] / AISLE_SPACING) * AISLE_SPACING
         jid = junctions_by_pos.get((node["floor"], node["x"], aisle_y))
         edges[nid] = [{"dir": "straight", "to": jid}] if jid else []
+
+    # Mirror every road edge. Bay edges stay one-in/one-out so searches cannot
+    # use a parking bay as a shortcut. Reversing a turn also reverses its hand.
+    road_edges = [
+        (source, edge["to"], edge["dir"])
+        for source, outgoing in edges.items()
+        for edge in outgoing
+        if nodes[source]["type"] != "slot" and nodes[edge["to"]]["type"] != "slot"
+    ]
+    for source, target, direction in road_edges:
+        if nodes[target]["type"] == "turn":
+            direction = "left" if edges[target][0]["dir"] == "right" else "right"
+        elif direction == "left":
+            direction = "right"
+        elif direction == "right":
+            direction = "left"
+        edges[target].append({"dir": direction, "to": source})
 
     lot = {
         "floors": FLOORS,
