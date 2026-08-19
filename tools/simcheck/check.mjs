@@ -1,0 +1,257 @@
+/**
+ * ParCoar movement gate.
+ *
+ * Drives the running simulator in a real browser, watches every car for a
+ * while, and fails if any of the movement invariants below is broken. Run it
+ * after touching anything that moves a car: the queueing rules, the path
+ * resolution, the curve generators, or the backend graph.
+ *
+ *   node tools/simcheck/check.mjs [url] [seconds]
+ *
+ * Exit code 0 means every invariant held. Non-zero means at least one broke,
+ * and the offending samples are printed.
+ *
+ * A note on thresholds, because getting one wrong hid a real bug for days.
+ * The first version of this only reported a car as stuck after it had been
+ * motionless for FIVE seconds. The actual defect — cars halting under the
+ * overhead boards — produced halts of up to 3.4 seconds, so the check
+ * reported a clean garage for ten minutes straight while the bug was fully
+ * present and plainly visible on screen. A threshold set above the failure
+ * magnitude is not a test. MAX_PAUSE_MS is deliberately just above normal
+ * following behaviour, not above "obviously broken".
+ */
+import { chromium } from "playwright";
+
+const URL = process.argv[2] ?? "http://localhost:5180/";
+const SECONDS = Number(process.argv[3] ?? 180);
+
+/* --- Invariants ---------------------------------------------------- */
+
+/** Longest a car may sit still WITH CLEAR ROAD AHEAD. Waiting behind another
+ *  car is ordinary traffic and is not a failure however long it lasts; what a
+ *  viewer calls a bug is a car stopping with nothing in front of it. The
+ *  check below only counts a pause against you when no other car occupied
+ *  either of the next two nodes on its route at any point during the wait.
+ *  Normal following and the websocket handshake both settle inside a second. */
+const MAX_PAUSE_MS = 1500;
+/** Closest two car centres may come, in world units. Bodies are 4.5 long. */
+const MIN_CAR_GAP = 2.8;
+/** Top speed is 7 units/s. Anything this fast over a real distance is a jump,
+ *  not driving. Both conditions are needed: two animation frames a couple of
+ *  milliseconds apart give a huge apparent speed off a 7cm step. */
+const MAX_SPEED = 25;
+const MIN_JUMP_DISTANCE = 1.0;
+/** A car may not climb or drop this much between frames. */
+const MAX_VERTICAL_STEP = 1.5;
+/** Every car on the road should pass at least one guidance board, or the
+ *  garage is not demonstrating anything. */
+const MIN_CARS_WITH_GUIDANCE_FRACTION = 0.9;
+
+const browser = await chromium.launch({
+  headless: true,
+  args: ["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist"],
+});
+const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+const pageErrors = [];
+page.on("pageerror", (e) => pageErrors.push(e.message.slice(0, 200)));
+
+await page.goto(URL, { waitUntil: "load" });
+await page.waitForFunction(() => window.__parcoarSim && window.__parcoarScene, { timeout: 30000 });
+const lot = await page.evaluate(async () => (await fetch("/lot.json")).json());
+await page.waitForTimeout(4000);
+
+// Two samplers. The scene graph one catches physical problems (overlap,
+// jumps); the sim-state one catches decision problems (pauses, routing).
+await page.evaluate((secs) => {
+  window.__frames = [];
+  window.__states = [];
+  const scene = window.__parcoarScene;
+  const isCar = (o) => {
+    if (!o.isGroup || o.parent !== scene) return false;
+    let hit = false;
+    o.traverse((c) => { if (c.isMesh && /wheel/i.test(c.name)) hit = true; });
+    return hit;
+  };
+  const tick = () => {
+    const frame = [];
+    for (const child of scene.children) {
+      if (!isCar(child)) continue;
+      frame.push({
+        id: child.uuid.slice(0, 8),
+        x: child.position.x, y: child.position.y, z: child.position.z,
+        yaw: child.rotation.y,
+      });
+    }
+    window.__frames.push({ t: performance.now(), frame });
+    window.__raf = requestAnimationFrame(tick);
+  };
+  tick();
+  window.__stateId = setInterval(() => {
+    const s = window.__parcoarSim;
+    if (s) window.__states.push({ t: Date.now(), cars: JSON.parse(JSON.stringify(s.cars)), signs: s.signs.map((x) => ({ id: x.id, path: x.path })) });
+  }, 100);
+  setTimeout(() => { cancelAnimationFrame(window.__raf); clearInterval(window.__stateId); }, secs * 1000);
+}, SECONDS);
+
+await page.waitForTimeout(SECONDS * 1000 + 1500);
+const { frames, states } = await page.evaluate(() => ({ frames: window.__frames, states: window.__states }));
+await browser.close();
+
+/* --- Analysis ------------------------------------------------------- */
+
+const failures = [];
+const note = (name, detail) => failures.push({ name, detail });
+
+// Physical: per-car motion between frames.
+const byCar = new Map();
+for (const { t, frame } of frames) {
+  for (const c of frame) {
+    if (!byCar.has(c.id)) byCar.set(c.id, []);
+    byCar.get(c.id).push({ t, ...c });
+  }
+}
+const jumps = [];
+const verticals = [];
+const reversals = [];
+for (const [id, pts] of byCar) {
+  let reverseRun = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const dt = (b.t - a.t) / 1000;
+    if (dt <= 0 || dt > 0.2) continue;
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist / dt > MAX_SPEED && dist > MIN_JUMP_DISTANCE) {
+      jumps.push({ id, dist: +dist.toFixed(2), at: [+b.x.toFixed(1), +b.z.toFixed(1)] });
+    }
+    if (Math.abs(b.y - a.y) > MAX_VERTICAL_STEP) {
+      verticals.push({ id, dy: +(b.y - a.y).toFixed(2) });
+    }
+    if (dist > 0.01) {
+      const along = (dx * Math.cos(b.yaw) + dz * -Math.sin(b.yaw)) / dist;
+      reverseRun = along < -0.5 ? reverseRun + 1 : 0;
+      if (reverseRun === 12) reversals.push({ id, at: [+b.x.toFixed(1), +b.z.toFixed(1)] });
+    }
+  }
+}
+
+// Physical: two cars too close on the same level.
+const overlaps = [];
+const seenPair = new Set();
+for (const { frame } of frames) {
+  for (let i = 0; i < frame.length; i++) {
+    for (let j = i + 1; j < frame.length; j++) {
+      const a = frame[i];
+      const b = frame[j];
+      if (Math.abs(a.y - b.y) > 2) continue;
+      const d = Math.hypot(a.x - b.x, a.z - b.z);
+      if (d >= MIN_CAR_GAP) continue;
+      const key = [a.id, b.id].sort().join("|");
+      if (seenPair.has(key)) continue;
+      seenPair.add(key);
+      overlaps.push({ pair: key, gap: +d.toFixed(2), at: [+a.x.toFixed(1), +a.z.toFixed(1)] });
+    }
+  }
+}
+
+// Decisions: how long each car sat still, where, and whether anything was
+// actually in front of it.
+const held = new Map();
+const pauses = [];
+for (const { t, cars, signs } of states) {
+  for (const c of cars) {
+    const prev = held.get(c.id);
+    const still = c.from === c.to;
+    const isNew = !prev || prev.node !== c.from || prev.still !== still;
+    if (isNew) {
+      if (prev && prev.still) {
+        pauses.push({ id: c.id, node: prev.node, ms: t - prev.since, blocked: prev.blocked });
+      }
+      held.set(c.id, { node: c.from, still, since: t, blocked: false });
+    }
+    if (!still) continue;
+    // Was anything occupying the road immediately ahead at this instant?
+    const entry = held.get(c.id);
+    if (entry.blocked) continue;
+    const route = signs.find((x) => x.id === c.id)?.path ?? [];
+    const ahead = route.slice(1, 3);
+    entry.blocked = cars.some(
+      (o) => o.id !== c.id && (ahead.includes(o.from) || ahead.includes(o.toNode ?? o.to)),
+    );
+  }
+  for (const id of [...held.keys()]) if (!cars.some((c) => c.id === id)) held.delete(id);
+}
+/** Only pauses with clear road ahead count as failures. */
+const longPauses = pauses.filter((p) => p.ms > MAX_PAUSE_MS && !p.blocked);
+const queuedPauses = pauses.filter((p) => p.ms > MAX_PAUSE_MS && p.blocked);
+
+// Decisions: routing stability and guidance coverage.
+const boardNodes = new Set(
+  Object.entries(lot.nodes)
+    .filter(([, n]) => n.type === "turn" || n.type === "ramp_up")
+    .map(([id]) => id),
+);
+const slotsPerCar = new Map();
+const carsSeen = new Set();
+const carsWithGuidance = new Set();
+for (const { cars, signs } of states) {
+  for (const c of cars) {
+    carsSeen.add(c.id);
+    if (c.slot && !c.leaving) {
+      if (!slotsPerCar.has(c.id)) slotsPerCar.set(c.id, new Set());
+      slotsPerCar.get(c.id).add(c.slot);
+    }
+  }
+  for (const s of signs) {
+    if ((s.path ?? []).some((n) => boardNodes.has(n))) carsWithGuidance.add(s.id);
+  }
+}
+const reTargeted = [...slotsPerCar].filter(([, set]) => set.size > 1).map(([id]) => id);
+const guidanceFraction = carsSeen.size ? carsWithGuidance.size / carsSeen.size : 1;
+
+if (longPauses.length) {
+  const worst = longPauses.reduce((a, b) => (a.ms > b.ms ? a : b));
+  note(`cars stopped longer than ${MAX_PAUSE_MS}ms with clear road ahead`,
+    `${longPauses.length} times, worst ${worst.ms}ms at ${worst.node}` +
+    (boardNodes.has(worst.node) ? " (a guidance board node)" : ""));
+}
+if (overlaps.length) note("cars overlapped", `${overlaps.length} pairs, closest ${Math.min(...overlaps.map((o) => o.gap))}`);
+if (jumps.length) note("cars jumped", `${jumps.length} times, furthest ${Math.max(...jumps.map((j) => j.dist))}`);
+if (verticals.length) note("cars changed height abruptly", `${verticals.length} times`);
+if (reversals.length) note("cars drove backwards on the road", `${reversals.length} times`);
+if (reTargeted.length) note("cars were re-assigned a bay mid-journey", reTargeted.join(", "));
+if (guidanceFraction < MIN_CARS_WITH_GUIDANCE_FRACTION) {
+  note("cars never passed a guidance board",
+    `only ${(guidanceFraction * 100).toFixed(0)}% of ${carsSeen.size} cars had one on their route`);
+}
+if (pageErrors.length) note("the page threw errors", pageErrors.slice(0, 3).join(" | "));
+
+const pauseMs = pauses.map((p) => p.ms).sort((a, b) => a - b);
+console.log(JSON.stringify({
+  url: URL,
+  seconds: SECONDS,
+  carsSeen: carsSeen.size,
+  frames: frames.length,
+  longestPauseMs: pauseMs.length ? pauseMs[pauseMs.length - 1] : 0,
+  medianPauseMs: pauseMs.length ? pauseMs[Math.floor(pauseMs.length / 2)] : 0,
+  pausesOverThresholdWithClearRoad: longPauses.length,
+  pausesOverThresholdQueuedBehindAnother: queuedPauses.length,
+  closestCarGap: overlaps.length ? Math.min(...overlaps.map((o) => o.gap)) : null,
+  carsWithGuidancePercent: +(guidanceFraction * 100).toFixed(0),
+}, null, 2));
+
+if (failures.length === 0) {
+  console.log("\nPASS — every movement invariant held.");
+  process.exit(0);
+}
+console.log("\nFAIL");
+for (const f of failures) console.log(`  - ${f.name}: ${f.detail}`);
+if (longPauses.length) {
+  console.log("\n  longest pauses:");
+  for (const p of longPauses.sort((a, b) => b.ms - a.ms).slice(0, 8)) {
+    console.log(`    ${p.id} ${p.ms}ms at ${p.node}${boardNodes.has(p.node) ? "  [board]" : ""}`);
+  }
+}
+process.exit(1);
