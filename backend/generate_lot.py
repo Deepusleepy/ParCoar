@@ -31,11 +31,28 @@ FLOORS = 3
 AISLES_PER_FLOOR = 4
 JUNCTIONS_PER_AISLE = 8
 SLOTS_PER_JUNCTION = 2  # left + right
-JUNCTION_SPACING = 10   # x-distance between junctions along an aisle
-AISLE_SPACING = 14      # y-distance between aisles
-SLOT_OFFSET = 4.5       # y-distance from aisle center to slot
+JUNCTION_SPACING = 5    # x-distance between junctions along an aisle
+AISLE_SPACING = 24      # y-distance between aisle centrelines
+SLOT_OFFSET = 9         # y-distance from aisle centre to slot centre
+ROAD_WIDTH = 9          # full driving-road width across both lanes (±4.5 of centre)
+SLOT_DEPTH = 5          # parking bay depth (perpendicular to the aisle)
 SLOT_SIZES = ["small", "medium", "large"]
 FLOOR_HEIGHT = 15       # z-distance between floors (used by frontend only)
+APPROACH_OFFSET = 15    # x-distance of entry/exit approach roads west of the lot
+
+
+def slot_number(aisle, j_idx, s_pos):
+    """Sequential per-side slot number within a floor.
+
+    Each aisle holds JUNCTIONS_PER_AISLE junctions, each with two slots
+    (s_pos 0 = the -y side, s_pos 1 = the +y side). Numbers are assigned
+    side-by-side rather than interleaved per junction, so every *side* of
+    an aisle is a contiguous, predictable run (e.g. A1..A8 on one side,
+    A9..A16 on the other), in travel order. Aisles chain contiguously:
+    aisle 0 = 1..16, aisle 1 = 17..32, etc.
+    """
+    per_aisle = JUNCTIONS_PER_AISLE * SLOTS_PER_JUNCTION
+    return aisle * per_aisle + s_pos * JUNCTIONS_PER_AISLE + j_idx + 1
 
 
 def main():
@@ -77,8 +94,7 @@ def main():
             for j_idx, jid in enumerate(junction_ids):
                 jx = nodes[jid]["x"]
                 for s_pos in range(SLOTS_PER_JUNCTION):
-                    slot_global = aisle * JUNCTIONS_PER_AISLE * SLOTS_PER_JUNCTION + j_idx * SLOTS_PER_JUNCTION + s_pos + 1
-                    sid = f"S{f}_{slot_global}"
+                    sid = f"S{f}_{slot_number(aisle, j_idx, s_pos)}"
                     sy = y + (-SLOT_OFFSET if s_pos == 0 else SLOT_OFFSET)
                     size = random.choice(SLOT_SIZES)
                     nodes[sid] = {"type": "slot", "floor": f, "x": jx, "y": sy, "size": size}
@@ -103,10 +119,9 @@ def main():
             # --- Edges along the aisle: each junction → its slots + next junction ---
             for j_idx, jid in enumerate(junction_ids):
                 edge_list = []
-                # Slots
-                slot_global_base = aisle * JUNCTIONS_PER_AISLE * SLOTS_PER_JUNCTION + j_idx * SLOTS_PER_JUNCTION
-                left_slot = f"S{f}_{slot_global_base + 1}"
-                right_slot = f"S{f}_{slot_global_base + 2}"
+                # Slots — s_pos 0 is the -y side ("left"), s_pos 1 the +y side ("right").
+                left_slot = f"S{f}_{slot_number(aisle, j_idx, 0)}"
+                right_slot = f"S{f}_{slot_number(aisle, j_idx, 1)}"
                 edge_list.append({"dir": "left", "to": left_slot})
                 edge_list.append({"dir": "right", "to": right_slot})
                 # Next junction along the aisle
@@ -158,6 +173,18 @@ def main():
             # when the first aisle chains from it (prev_node starts as entry_id = ramp_in)
             pass
 
+    # --- Entry / exit approach roads (road segments outside the lot) ---
+    # Entry approach: cars arrive from the west and enter at E0 (floor 0).
+    nodes["ENTRY_ROAD"] = {"type": "approach", "floor": 0, "x": -APPROACH_OFFSET, "y": nodes["E0"]["y"]}
+    edges["ENTRY_ROAD"] = [{"dir": "straight", "to": "E0"}]
+
+    # Exit approach: cars leave EXIT2 (top floor) and drive away to the west.
+    exit_id = f"EXIT{FLOORS - 1}"
+    exit_node = nodes[exit_id]
+    nodes["EXIT_ROAD"] = {"type": "approach", "floor": FLOORS - 1, "x": -APPROACH_OFFSET, "y": exit_node["y"]}
+    edges[exit_id].append({"dir": "straight", "to": "EXIT_ROAD"})
+    edges["EXIT_ROAD"] = []
+
     # --- Slot nodes are terminal (no outgoing edges) ---
     for nid, node in nodes.items():
         if node["type"] == "slot" and nid not in edges:
@@ -171,6 +198,8 @@ def main():
         "junction_spacing": JUNCTION_SPACING,
         "aisle_spacing": AISLE_SPACING,
         "slot_offset": SLOT_OFFSET,
+        "road_width": ROAD_WIDTH,
+        "slot_depth": SLOT_DEPTH,
         "nodes": nodes,
         "edges": edges,
     }
@@ -185,6 +214,7 @@ def main():
     junction_count = sum(1 for n in nodes.values() if n["type"] == "junction")
     turn_count = sum(1 for n in nodes.values() if n["type"] == "turn")
     ramp_count = sum(1 for n in nodes.values() if "ramp" in n["type"])
+    approach_count = sum(1 for n in nodes.values() if n["type"] == "approach")
     print(f"Generated {out_path}")
     print(f"  Floors: {FLOORS}")
     print(f"  Aisles/floor: {AISLES_PER_FLOOR}")
@@ -192,6 +222,7 @@ def main():
     print(f"  Turns: {turn_count}")
     print(f"  Slots: {slot_count}")
     print(f"  Ramp nodes: {ramp_count}")
+    print(f"  Approach roads: {approach_count}")
     print(f"  Total nodes: {len(nodes)}")
 
 

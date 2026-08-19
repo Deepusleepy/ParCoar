@@ -4,9 +4,11 @@ export type NodeType =
   | "entry"
   | "junction"
   | "slot"
+  | "turn"
   | "ramp_up"
   | "ramp_in"
-  | "exit";
+  | "exit"
+  | "approach";
 
 export type SlotSize = "small" | "medium" | "large";
 
@@ -41,6 +43,17 @@ export interface LotEdge {
 }
 
 export interface LotData {
+  floors: number;
+  floor_height: number;
+  aisles_per_floor: number;
+  junctions_per_aisle: number;
+  junction_spacing: number;
+  aisle_spacing: number;
+  slot_offset: number;
+  /** Full driving-road width across both lanes (mirrors constants.ROAD_WIDTH). */
+  road_width?: number;
+  /** Parking bay depth perpendicular to the aisle (mirrors constants.SLOT_DEPTH). */
+  slot_depth?: number;
   nodes: Record<string, LotNode>;
   edges: Record<string, LotEdge[]>;
 }
@@ -58,6 +71,8 @@ export interface StateCar {
 export interface StateMessage {
   type: "state";
   cars: StateCar[];
+  /** Slot node IDs that already have a car (pre-parked + parked). */
+  occupied_slots: string[];
 }
 
 export interface InstructionSign {
@@ -69,6 +84,13 @@ export interface InstructionSign {
   slot: string;
   slot_floor: number;
   status: CarStatus;
+  /** Next node on the car's BFS path to its slot (look-ahead for signboards).
+   *  The frontend lights up the signboard at this node BEFORE the car arrives,
+   *  so the driver sees the direction in advance. null when the car is one
+   *  step from its slot or already parked. */
+  next_node?: string | null;
+  /** Direction to take at `next_node`. null when `next_node` is null. */
+  next_direction?: Direction | null;
 }
 
 export interface InstructionsMessage {
@@ -102,10 +124,32 @@ export interface ActiveCar {
   parked: boolean;
 }
 
-/** A static, pre-parked car rendered for atmosphere only. */
-export interface PreParkedCar {
-  slotNode: string;
+/** One entry in the roster of active auto-running cars, shown on every
+ *  permanent signboard. Computed from the latest backend instructions on
+ *  every WS message. */
+export interface CarRosterEntry {
+  carId: string;
   color: CarColor;
   plate: string;
-  size: CarSize;
+  slot: string;
+  slotFloor: number;
+  /** Car's current floor, used to filter the roster per-board so each
+   *  signboard only shows cars on its own floor. */
+  currentFloor: number;
+  status: CarStatus;
+}
+
+/** A dynamic sign at a junction node, showing info about the car waiting
+ *  there. Computed from the latest backend instructions on every WS message
+ *  — only present while a car is actually stopped at the node. */
+export interface NodeSign {
+  nodeId: string;
+  carColor: CarColor;
+  carPlate: string;
+  direction: InstructionSign["direction"];
+  slot: string;
+  slotFloor: number;
+  floor: number;
+  nodeX: number;
+  nodeY: number;
 }

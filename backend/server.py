@@ -1,4 +1,4 @@
-import json, os, random
+import json, os
 from collections import deque
 from websockets.sync.server import serve
 
@@ -15,16 +15,9 @@ SIZE_RANK = {"small": 0, "medium": 1, "large": 2}
 # All slot node ids in the lot.
 all_slots = [n for n, d in nodes.items() if d["type"] == "slot"]
 
-# Pre-fill ~50% of slots with static parked cars (random color/plate, size matches slot).
-# These never move; we just mark their slots occupied.
+# Slots that already have a car. Synced from the frontend on every state
+# message (pre-parked + parked cars), plus slots we assign to routing cars.
 occupied = set()
-parked = {}
-random.seed(42)
-for slot in random.sample(all_slots, len(all_slots) // 2):
-    occupied.add(slot)
-    n = len(parked) + 1
-    parked[slot] = {"id": "P" + str(n), "color": random.choice(["red", "blue", "green", "white", "black"]), "plate": "PARK-" + str(n), "size": nodes[slot]["size"]}
-print("Pre-parked", len(parked), "slots;", len(all_slots) - len(occupied), "free")
 
 # Active cars we are tracking: id -> {color, plate, size, node, slot, status}.
 cars = {}
@@ -101,8 +94,49 @@ def next_direction(car):
     return "arrived"
 
 
+def next_node_and_direction(car):
+    """Compute the next node id and the direction at that node, so the
+    frontend can light up the signboard at the next junction BEFORE the car
+    arrives (the car is still en route to the next node). Returns
+    (next_node, next_direction) or (None, None) if there is no next node."""
+    if car["node"] == car["slot"]:
+        return None, None
+    path = bfs(car["node"], car["slot"])
+    if not path or len(path) < 3:
+        return None, None
+    next_node = path[1]
+    for e in edges.get(path[1], []):
+        if e["to"] == path[2]:
+            return next_node, e["dir"]
+    return next_node, "arrived"
+
+
 def handle_message(msg):
     """Process an incoming state message and build the instructions reply."""
+    # Sync occupied slots from the frontend. The frontend now sends ALL
+    # occupied slots: pre-parked, parked, and slots active routing cars are
+    # heading toward. This closes the race where a just-parked car's slot
+    # briefly left routing_claimed before appearing in the frontend parked
+    # list, allowing the backend to reassign it to another car.
+    frontend_occupied = set(msg.get("occupied_slots", []))
+    occupied.clear()
+    occupied.update(frontend_occupied)
+    # After syncing from the frontend, also keep ALL backend-tracked cars'
+    # slots. The frontend's occupied_slots may briefly omit a just-parked
+    # car's slot during the React re-render window (or after a page reload
+    # before the frontend re-sends it); this keeps the backend from
+    # reassigning it to another car. Keeping parked cars' slots too means a
+    # stale parked car that vanished from the frontend's message doesn't
+    # free its slot until the prune step below removes it from `cars`.
+    for c in cars.values():
+        if c["slot"]:
+            occupied.add(c["slot"])
+
+    # Track which car ids appear in this message so we can prune stale cars
+    # from the backend's tracking dict (cars that vanished, e.g. after a
+    # page reload or no_slot timeout).
+    seen_this_message = {c["id"] for c in msg.get("cars", [])}
+
     signs = []
     for c in msg.get("cars", []):
         cid = c["id"]
@@ -114,6 +148,10 @@ def handle_message(msg):
         else:
             # Existing car: just update where it is now.
             cars[cid]["node"] = c["node"]
+            # If a previously-parked car reappears at a different node
+            # (e.g. page reload reuses the same car ID), re-route it.
+            if cars[cid]["status"] == "parked" and cars[cid]["node"] != cars[cid].get("slot"):
+                cars[cid]["status"] = "routing"
         car = cars[cid]
         # No suitable slot anywhere: report lot full.
         if car["status"] == "no_slot":
@@ -125,11 +163,21 @@ def handle_message(msg):
         if car["node"] == car["slot"]:
             car["status"] = "parked"
             direction = "arrived"
+            next_node = None
+            next_dir = None
         else:
             direction = next_direction(car)
+            next_node, next_dir = next_node_and_direction(car)
         signs.append({"car_id": cid, "color": car["color"], "plate": car["plate"],
                       "node": car["node"], "direction": direction, "slot": car["slot"],
-                      "slot_floor": nodes[car["slot"]]["floor"], "status": car["status"]})
+                      "slot_floor": nodes[car["slot"]]["floor"], "status": car["status"],
+                      "next_node": next_node, "next_direction": next_dir})
+
+    # Prune stale cars: those we track that didn't appear in this message.
+    for cid in list(cars.keys()):
+        if cid not in seen_this_message:
+            del cars[cid]
+
     return {"type": "instructions", "signs": signs}
 
 
