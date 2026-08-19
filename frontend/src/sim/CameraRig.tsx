@@ -1,18 +1,26 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
-import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import * as THREE from "three";
 import { FLOOR_HEIGHT, LOT_CENTER_X, LOT_CENTER_Z } from "./constants";
 
 /**
  * Camera modes available to the user.
- * - `orbit`: free orbit/pan/zoom around a movable target (the default).
- * - `overview` / `floorN`: animated "jump" to a predefined framing; once
- *   settled, orbit is re-enabled so the user can look around from there.
+ *
+ * - `orbit`: FREE-FLY spectator camera (the default). There is no orbit
+ *   target and no min/max distance — the camera can fly anywhere, including
+ *   inside the building. Mouse drag looks, WASD flies, Space/Shift move in
+ *   world up/down, Ctrl boosts, the mouse wheel sets fly speed.
+ * - `overview` / `floor0` / `floor1` / `floor2`: INSTANT teleports. The free
+ *   camera is snapped to a good vantage for that floor and control is handed
+ *   straight back to free flight. Nothing stays locked.
  * - `follow`: chase cam locked behind & above a selected car.
- * - `pov`: first-person view from inside a selected car.
+ * - `pov`: first-person view from inside the player car.
  * - `drive`: third-person chase cam behind the player car.
+ *
+ * The names "orbit"/"overview"/"floor0"/"floor1"/"floor2"/"follow"/"pov"/
+ * "drive" are kept stable because App.tsx imports `CameraMode` and switches on
+ * these literals; "orbit" is the default App starts in, so it stays the name
+ * for free flight.
  */
 export type CameraMode =
   | "orbit"
@@ -24,58 +32,94 @@ export type CameraMode =
   | "pov"
   | "drive";
 
+/**
+ * Imperative handle exposed via `controlsRef`. App.tsx only ever calls
+ * `controlsRef.current?.reset()` (the "Reset View" button); Scene.tsx calls
+ * `saveState()` once after mount as a no-op. `reset()` returns the free camera
+ * to a sensible default vantage.
+ */
+export interface FlyControlsHandle {
+  reset(): void;
+  saveState(): void;
+}
+
 export interface CameraRigProps {
   mode: CameraMode;
   followCarId: string | null;
   /** Shared map of active-car id -> THREE.Group, populated by ActiveCarMesh. */
   carGroupsRef?: React.MutableRefObject<Map<string, THREE.Group>>;
   /** App-level controls ref (for the Reset View button). */
-  controlsRef?: React.Ref<OrbitControlsImpl>;
-  /** Initial orbit target (the default lot-center framing). */
+  controlsRef?: React.Ref<FlyControlsHandle>;
+  /** Initial look target; used to orient the free camera on mount and on reset. */
   initialTarget: [number, number, number];
 }
 
-/** Predefined camera framings for the preset modes. */
+/* ------------------------------------------------------------------ *
+ *  Tuning
+ * ------------------------------------------------------------------ */
+
+/** Base fly speed in world units / second. The building is ~55 x 63 x 45,
+ *  so 25 u/s crosses a storey in well under a second; the boost and wheel
+ *  range let you cross the whole lot or creep up to a surface. */
+const DEFAULT_FLY_SPEED = 25;
+const MIN_FLY_SPEED = 4;
+const MAX_FLY_SPEED = 160;
+/** Boost multiplier when Ctrl is held. */
+const BOOST_MULT = 3.0;
+/** Look sensitivity: radians per pixel of mouse drag. */
+const LOOK_SENSITIVITY = 0.0025;
+/** Pitch clamp: stop just shy of straight up/down so the view never flips. */
+const PITCH_LIMIT = Math.PI / 2 - 0.05;
+
+/** Default vantage for Reset View: a high 3/4 aerial over the lot. */
+const DEFAULT_VANTAGE = {
+  pos: new THREE.Vector3(LOT_CENTER_X + 35, 65, LOT_CENTER_Z + 65),
+  look: new THREE.Vector3(LOT_CENTER_X, FLOOR_HEIGHT, LOT_CENTER_Z),
+};
+
+/** Predefined camera framings for the preset (teleport) modes.
+ *  Each floor's vantage sits INSIDE its storey at floor*FLOOR_HEIGHT + 6,
+ *  never within 0.5 of a slab (slabs are at multiples of FLOOR_HEIGHT).
+ *  See the report for the arithmetic. */
 const PRESETS: Record<
   "overview" | "floor0" | "floor1" | "floor2",
   { pos: THREE.Vector3; look: THREE.Vector3 }
 > = {
   overview: {
-    pos: new THREE.Vector3(LOT_CENTER_X, 80, LOT_CENTER_Z + 80),
+    pos: new THREE.Vector3(LOT_CENTER_X + 30, 70, LOT_CENTER_Z + 70),
     look: new THREE.Vector3(LOT_CENTER_X, (3 * FLOOR_HEIGHT) / 2, LOT_CENTER_Z),
   },
   floor0: {
-    pos: new THREE.Vector3(LOT_CENTER_X + 30, 0 * FLOOR_HEIGHT + 15, LOT_CENTER_Z - 30),
+    pos: new THREE.Vector3(LOT_CENTER_X + 28, 0 * FLOOR_HEIGHT + 6, LOT_CENTER_Z - 28),
     look: new THREE.Vector3(LOT_CENTER_X, 0 * FLOOR_HEIGHT + 2, LOT_CENTER_Z),
   },
   floor1: {
-    pos: new THREE.Vector3(LOT_CENTER_X + 30, 1 * FLOOR_HEIGHT + 15, LOT_CENTER_Z - 30),
+    pos: new THREE.Vector3(LOT_CENTER_X + 28, 1 * FLOOR_HEIGHT + 6, LOT_CENTER_Z - 28),
     look: new THREE.Vector3(LOT_CENTER_X, 1 * FLOOR_HEIGHT + 2, LOT_CENTER_Z),
   },
   floor2: {
-    pos: new THREE.Vector3(LOT_CENTER_X + 30, 2 * FLOOR_HEIGHT + 15, LOT_CENTER_Z - 30),
+    pos: new THREE.Vector3(LOT_CENTER_X + 28, 2 * FLOOR_HEIGHT + 6, LOT_CENTER_Z - 28),
     look: new THREE.Vector3(LOT_CENTER_X, 2 * FLOOR_HEIGHT + 2, LOT_CENTER_Z),
   },
 };
 
-/** Frame-rate-independent lerp factor: approaches 1 at `strength` per second.
- *  `strength` is clamped to [0, 1] because values > 1 make `(1 - strength)^dt`
- *  produce NaN for fractional `dt`, which corrupts the camera transform. */
+/** Frame-rate-independent lerp factor: approaches 1 at `strength` per second. */
 function lerpK(strength: number, dt: number): number {
   const s = Math.max(0, Math.min(1, strength));
   return 1 - Math.pow(1 - s, dt);
 }
 
+const isPreset = (m: CameraMode): m is "overview" | "floor0" | "floor1" | "floor2" =>
+  m === "overview" || m === "floor0" || m === "floor1" || m === "floor2";
+
 /**
- * CameraRig owns the OrbitControls instance and drives the camera each frame
- * based on the current `mode`. In `orbit` mode the user is in full control
- * (pan/orbit/zoom). In every other mode OrbitControls is disabled and the
- * rig animates the camera directly; preset modes re-enable orbit once the
- * camera has settled so the user can look around from the chosen vantage.
+ * CameraRig drives the camera each frame based on the current `mode`.
  *
- * drei's OrbitControls only calls `controls.update()` when `enabled` is true,
- * so disabling it gives us a free hand to move the camera without fighting
- * the controls' internal spherical state.
+ * In the free-flight modes (`orbit` and the presets after their one-shot
+ * teleport) the user has full WASD/mouse control with no orbit target. In
+ * `follow` / `pov` / `drive` the rig drives the camera directly from the
+ * selected car's transform (read from `carGroupsRef`) and free-flight input
+ * is ignored.
  */
 export function CameraRig({
   mode,
@@ -85,64 +129,188 @@ export function CameraRig({
   initialTarget,
 }: CameraRigProps) {
   const camera = useThree((s) => s.camera);
-  // Internal handle so useFrame can read the controls imperatively.
-  const internal = useRef<OrbitControlsImpl | null>(null);
+  const gl = useThree((s) => s.gl);
 
-  // Forward the controls instance to both our ref and the app's controlsRef.
-  const setRef = useCallback(
-    (inst: OrbitControlsImpl | null) => {
-      internal.current = inst;
-      if (controlsRef && typeof controlsRef === "object") {
-        (controlsRef as React.MutableRefObject<OrbitControlsImpl | null>).current = inst;
-      }
-    },
-    [controlsRef],
-  );
+  // Free-flight orientation state. Position lives on the camera itself; yaw
+  // and pitch live here so mouse-look can update them outside useFrame.
+  const yawRef = useRef(0);
+  const pitchRef = useRef(0);
+  const flySpeedRef = useRef(DEFAULT_FLY_SPEED);
+  // Tracks which preset mode we have already teleported into, so a preset
+  // teleports once on entry and then hands back to free flight.
+  const presetDoneRef = useRef<CameraMode | null>(null);
+  // Previous frame's mode, used to re-derive yaw/pitch when handing back from
+  // a car mode into free flight.
+  const prevModeRef = useRef<CameraMode>(mode);
 
-  // Set the initial orbit target once on mount. Doing this imperatively
-  // (instead of via the `target` prop) decouples the target from the render
-  // cycle so user panning isn't reset by re-renders.
-  useEffect(() => {
-    const controls = internal.current;
-    if (!controls) return;
-    controls.target.set(initialTarget[0], initialTarget[1], initialTarget[2]);
-    controls.update();
-  }, []); // mount only — intentionally excludes initialTarget
-
-  // Animate presets until the camera is close to the target framing.
-  const animatingRef = useRef(true);
-  const modeRef = useRef<CameraMode>(mode);
-  useEffect(() => {
-    // Any mode switch (re)arms the preset animation; follow/pov always track.
-    animatingRef.current = true;
-    modeRef.current = mode;
-  }, [mode]);
-
-  // Reusable temp vectors to avoid per-frame allocation.
+  // Reusable temp vectors (avoid per-frame allocation).
+  const tmpDir = useRef(new THREE.Vector3());
+  const fwd = useRef(new THREE.Vector3());
+  const right = useRef(new THREE.Vector3());
+  const move = useRef(new THREE.Vector3());
   const tmpPos = useRef(new THREE.Vector3());
   const tmpLook = useRef(new THREE.Vector3());
-  const fwd = useRef(new THREE.Vector3());
   const tmpFwd = useRef(new THREE.Vector3());
   const tmpFwd2 = useRef(new THREE.Vector3());
   const tmpUp = useRef(new THREE.Vector3());
   const tmpEuler = useRef(new THREE.Euler());
   const tmpQuat = useRef(new THREE.Quaternion());
 
+  /** Orient the free camera to look at `target`, deriving yaw/pitch from the
+   *  direction vector. Uses the lookDir convention:
+   *    lookDir = (-cos(pitch) sin(yaw), sin(pitch), -cos(pitch) cos(yaw))
+   *  => pitch = asin(dir.y), yaw = atan2(-dir.x, -dir.z). */
+  const lookAtTarget = (target: THREE.Vector3) => {
+    tmpDir.current.subVectors(target, camera.position);
+    const len = tmpDir.current.length();
+    if (len < 1e-6) return;
+    tmpDir.current.divideScalar(len);
+    pitchRef.current = THREE.MathUtils.clamp(
+      Math.asin(THREE.MathUtils.clamp(tmpDir.current.y, -1, 1)),
+      -PITCH_LIMIT,
+      PITCH_LIMIT,
+    );
+    yawRef.current = Math.atan2(-tmpDir.current.x, -tmpDir.current.z);
+  };
+
+  // --- Mount: set Euler order + initial orientation from the camera's
+  //     starting position toward initialTarget. ---
+  useEffect(() => {
+    camera.rotation.order = "YXZ";
+    const target = new THREE.Vector3(initialTarget[0], initialTarget[1], initialTarget[2]);
+    lookAtTarget(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // mount only
+
+  // --- Keyboard state for free flight. ---
+  const keysRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const isFlyKey = (code: string) =>
+      code === "KeyW" ||
+      code === "KeyA" ||
+      code === "KeyS" ||
+      code === "KeyD" ||
+      code === "Space" ||
+      code === "ShiftLeft" ||
+      code === "ShiftRight" ||
+      code === "ControlLeft" ||
+      code === "ControlRight";
+    const onDown = (e: KeyboardEvent) => {
+      if (!isFlyKey(e.code)) return;
+      // Stop the page from scrolling / the browser from intercepting
+      // Ctrl+keys while flying.
+      e.preventDefault();
+      keysRef.current.add(e.code);
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (!isFlyKey(e.code)) return;
+      keysRef.current.delete(e.code);
+    };
+    const onBlur = () => keysRef.current.clear();
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+
+  // --- Mouse-drag look + wheel fly-speed. Attached to the canvas element. ---
+  useEffect(() => {
+    const el = gl.domElement;
+    let dragging = false;
+    let lastX = 0;
+    let lastY = 0;
+
+    const onPointerDown = (e: PointerEvent) => {
+      // Left button only — look around. Don't capture right/middle so R3F
+      // object picking and any context menu keep working.
+      if (e.button !== 0) return;
+      dragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      el.setPointerCapture(e.pointerId);
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (!dragging) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      // Yaw about world up; pitch about local X. Inverted Y so pushing the
+      // mouse up looks up.
+      yawRef.current -= dx * LOOK_SENSITIVITY;
+      pitchRef.current = THREE.MathUtils.clamp(
+        pitchRef.current + dy * LOOK_SENSITIVITY,
+        -PITCH_LIMIT,
+        PITCH_LIMIT,
+      );
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        /* pointer id may already be released */
+      }
+    };
+    const onWheel = (e: WheelEvent) => {
+      // Wheel adjusts base fly speed; it does NOT zoom toward a target.
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      flySpeedRef.current = THREE.MathUtils.clamp(
+        flySpeedRef.current * factor,
+        MIN_FLY_SPEED,
+        MAX_FLY_SPEED,
+      );
+    };
+
+    el.addEventListener("pointerdown", onPointerDown);
+    el.addEventListener("pointermove", onPointerMove);
+    el.addEventListener("pointerup", onPointerUp);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      el.removeEventListener("pointerdown", onPointerDown);
+      el.removeEventListener("pointermove", onPointerMove);
+      el.removeEventListener("pointerup", onPointerUp);
+      el.removeEventListener("wheel", onWheel);
+    };
+  }, [gl]);
+
+  // --- Imperative handle for App's "Reset View" button + Scene's saveState. ---
+  const handle = useMemo<FlyControlsHandle>(
+    () => ({
+      reset: () => {
+        camera.position.copy(DEFAULT_VANTAGE.pos);
+        lookAtTarget(DEFAULT_VANTAGE.look);
+        flySpeedRef.current = DEFAULT_FLY_SPEED;
+        presetDoneRef.current = null;
+      },
+      saveState: () => {
+        /* no-op: the free camera has no saved spherical state to restore. */
+      },
+    }),
+    // camera is a stable instance; refs are stable. lookAtTarget closes over
+    // refs only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [camera],
+  );
+
+  useEffect(() => {
+    if (controlsRef && typeof controlsRef === "object") {
+      (controlsRef as React.MutableRefObject<FlyControlsHandle | null>).current = handle;
+    }
+  }, [handle, controlsRef]);
+
+  // --- Per-frame camera driving. ---
   useFrame((_, delta) => {
-    const controls = internal.current;
-    if (!controls) return;
     const dt = Math.min(delta, 1 / 30);
 
-    // --- Orbit: hand control to the user. ---
-    if (mode === "orbit") {
-      controls.enabled = true;
-      return;
-    }
-
-    // --- Follow / POV / Drive: lock onto a car. ---
+    // --- Follow / POV / Drive: lock onto a car. Free-flight input ignored. ---
     if (mode === "follow" || mode === "pov" || mode === "drive") {
-      // POV/drive modes drive the player car (registered by DrivableCar);
-      // follow mode tracks a selected AI car by id.
       const carGroup =
         mode === "follow"
           ? followCarId
@@ -150,42 +318,32 @@ export function CameraRig({
             : null
           : (carGroupsRef?.current.get("player") ?? null);
       if (!carGroup) {
-        // Car gone (parked / despawned): release control so the user isn't
-        // frozen on a stale frame.
-        controls.enabled = true;
+        // Car gone (parked / despawned): release to free flight so the user
+        // isn't frozen on a stale frame.
         return;
       }
-      controls.enabled = false;
 
       const yaw = carGroup.rotation.y;
       const pitch = carGroup.rotation.z;
       // Car model faces +X at yaw 0; rotation about Y maps +X -> (cos, 0, -sin).
-      // Incorporate pitch so the camera tilts with the car on ramps.
-      fwd.current.set(Math.cos(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.sin(yaw) * Math.cos(pitch)).normalize();
+      fwd.current
+        .set(Math.cos(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.sin(yaw) * Math.cos(pitch))
+        .normalize();
       const carPos = carGroup.position;
 
       if (mode === "follow") {
-        // Chase cam: behind the car along its forward axis, raised.
-        // Height of 9 (vs 7 before) lifts the camera above the floor surface
-        // so the view shows the scene ahead, not a flat expanse of floor.
         tmpPos.current
           .copy(carPos)
           .sub(tmpFwd.current.copy(fwd.current).multiplyScalar(14))
           .add(tmpUp.current.set(0, 9, 0));
-        // Look slightly ahead of the car so the view leads the motion.
         tmpLook.current
           .copy(carPos)
           .add(tmpFwd2.current.copy(fwd.current).multiplyScalar(5))
           .add(tmpUp.current.set(0, 1.5, 0));
-
         const k = lerpK(0.9, dt);
         camera.position.lerp(tmpPos.current, k);
-        // Keep the controls target in sync so a later switch to orbit is
-        // framed on the car, then orient the camera toward it.
-        controls.target.lerp(tmpLook.current, k);
-        camera.lookAt(controls.target);
+        camera.lookAt(tmpLook.current);
       } else if (mode === "drive") {
-        // Third-person chase cam: higher and further back for parking visibility.
         tmpPos.current
           .copy(carPos)
           .sub(tmpFwd.current.copy(fwd.current).multiplyScalar(9))
@@ -194,89 +352,87 @@ export function CameraRig({
           .copy(carPos)
           .add(tmpFwd2.current.copy(fwd.current).multiplyScalar(6))
           .add(tmpUp.current.set(0, 1.2, 0));
-        const k = lerpK(0.98, dt); // responsive follow so the view keeps up
+        const k = lerpK(0.98, dt);
         camera.position.lerp(tmpPos.current, k);
-        controls.target.lerp(tmpLook.current, k);
-        camera.lookAt(controls.target);
+        camera.lookAt(tmpLook.current);
       } else {
-        // POV: driver's-eye position inside the cabin.
-        // Right-hand drive: the driver sits on the right side of the car.
-        // At yaw 0 (facing +X) the driver's right is -Z, so the right vector
-        // in world space is (-sin(yaw), 0, -cos(yaw)).
-        //
-        // The eye offset is built in car-local space (forward/right/up) then
-        // transformed by the car's full rotation (yaw about Y, then pitch
-        // about Z) so the camera tilts with the car on ramps.
-        const EYE_FWD = 0.3; // at the steering wheel, ahead of car origin
-        const EYE_RIGHT = 0.42; // toward the driver (right) side
-        const EYE_UP = 1.22; // eye height below roof (1.38), above wheel (1.12)
-        // Local-space eye offset: +X forward, -Z toward driver (right), +Y up.
-        // Reuse tmpPos as localEye, tmpLook as localLook to avoid allocation.
+        // POV: driver's-eye position inside the cabin (right-hand drive).
+        const EYE_FWD = 0.3;
+        const EYE_RIGHT = 0.42;
+        const EYE_UP = 1.22;
         tmpPos.current.set(EYE_FWD, EYE_UP, -EYE_RIGHT);
-        // Look nearly level through the windshield (center at y≈1.08), with a
-        // slight downward tilt so the road is visible ahead of the hood.
         tmpLook.current.set(EYE_FWD + 14, EYE_UP - 0.25, -EYE_RIGHT);
-        // Build the car's rotation: yaw (about Y) then pitch (about Z), in the
-        // order three.js applies them for a +X-facing car (Euler XYZ default).
-        // Reuse pre-allocated quaternion/euler.
         tmpEuler.current.set(0, yaw, pitch, "XYZ");
         tmpQuat.current.setFromEuler(tmpEuler.current);
-        // Save local offsets before applying quaternion.
         const lex = tmpPos.current.x, ley = tmpPos.current.y, lez = tmpPos.current.z;
         const llx = tmpLook.current.x, lly = tmpLook.current.y, llz = tmpLook.current.z;
         tmpPos.current.applyQuaternion(tmpQuat.current).add(carPos);
         tmpLook.current.set(llx, lly, llz).applyQuaternion(tmpQuat.current).add(carPos);
-
-        // POV mode — rigid attachment, no smoothing. Lerping lags the car and
-        // lets the camera clip through walls; a direct snap keeps it locked.
         camera.position.copy(tmpPos.current);
-        controls.target.copy(tmpLook.current);
         camera.lookAt(tmpLook.current);
-        // Restore tmpPos for next frame (it was mutated).
         tmpPos.current.set(lex, ley, lez);
       }
       return;
     }
 
-    // --- Presets (overview / floorN): animated jump, then free orbit. ---
-    const preset = PRESETS[mode];
-    if (!preset) {
-      controls.enabled = true;
-      return;
+    // --- Free flight (orbit + presets after teleport). ---
+
+    // Handing back from a car mode: re-derive yaw/pitch from the camera's
+    // current forward so free flight continues from where the car cam left
+    // off instead of snapping to a stale orientation.
+    const prev = prevModeRef.current;
+    prevModeRef.current = mode;
+    if ((prev === "follow" || prev === "pov" || prev === "drive") && !isPreset(mode)) {
+      camera.getWorldDirection(tmpDir.current);
+      // getWorldDirection returns the forward unit vector; reuse the same
+      // yaw/pitch inversion as lookAtTarget.
+      pitchRef.current = THREE.MathUtils.clamp(
+        Math.asin(THREE.MathUtils.clamp(tmpDir.current.y, -1, 1)),
+        -PITCH_LIMIT,
+        PITCH_LIMIT,
+      );
+      yawRef.current = Math.atan2(-tmpDir.current.x, -tmpDir.current.z);
     }
 
-    if (!animatingRef.current) {
-      // Settled: let the user orbit from the preset vantage.
-      controls.enabled = true;
-      return;
+    // Preset: one-shot teleport to the vantage, then continue as free flight.
+    if (isPreset(mode) && presetDoneRef.current !== mode) {
+      const p = PRESETS[mode];
+      camera.position.copy(p.pos);
+      lookAtTarget(p.look);
+      flySpeedRef.current = DEFAULT_FLY_SPEED;
+      presetDoneRef.current = mode;
     }
 
-    controls.enabled = false;
-    const k = lerpK(0.9, dt);
-    camera.position.lerp(preset.pos, k);
-    controls.target.lerp(preset.look, k);
-    camera.lookAt(controls.target);
+    // Apply keyboard movement (frame-rate independent).
+    const keys = keysRef.current;
+    const boost =
+      keys.has("ControlLeft") || keys.has("ControlRight");
+    const speed = flySpeedRef.current * (boost ? BOOST_MULT : 1);
 
-    // Close enough -> stop animating and hand control back.
-    if (
-      camera.position.distanceTo(preset.pos) < 0.6 &&
-      controls.target.distanceTo(preset.look) < 0.6
-    ) {
-      animatingRef.current = false;
-      controls.enabled = true;
+    // Horizontal forward from yaw (drop pitch so looking down doesn't send
+    // you sideways); right is perpendicular in the XZ plane.
+    fwd.current.set(-Math.sin(yawRef.current), 0, -Math.cos(yawRef.current)).normalize();
+    right.current.set(Math.cos(yawRef.current), 0, -Math.sin(yawRef.current));
+
+    move.current.set(0, 0, 0);
+    if (keys.has("KeyW")) move.current.add(fwd.current);
+    if (keys.has("KeyS")) move.current.sub(fwd.current);
+    if (keys.has("KeyD")) move.current.add(right.current);
+    if (keys.has("KeyA")) move.current.sub(right.current);
+    // World up/down so looking down doesn't drift you sideways.
+    if (keys.has("Space")) move.current.y += 1;
+    if (keys.has("ShiftLeft") || keys.has("ShiftRight")) move.current.y -= 1;
+
+    if (move.current.lengthSq() > 0) {
+      move.current.normalize().multiplyScalar(speed * dt);
+      camera.position.add(move.current);
     }
+
+    // Commit orientation. Order YXZ keeps yaw about world up and pitch about
+    // the camera's local X, so there is never any roll.
+    camera.rotation.set(pitchRef.current, yawRef.current, 0, "YXZ");
   });
 
-  return (
-    <OrbitControls
-      ref={setRef}
-      enableDamping
-      dampingFactor={0.08}
-      autoRotate={false}
-      minDistance={10}
-      maxDistance={320}
-      minPolarAngle={0.04} // ~2° — allow near-top-down view
-      maxPolarAngle={Math.PI * 0.62} // ~112° — see the bottom floor from below horizontal
-    />
-  );
+  // The rig is fully imperative; it renders no scene objects.
+  return null;
 }

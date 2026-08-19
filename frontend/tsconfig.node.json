@@ -1,5 +1,8 @@
 {
   "compilerOptions": {
+    // Keep build info out of the project dir: vite watches the tree and a
+    // rewritten .tsbuildinfo triggers a full page reload on every typecheck.
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
     "target": "ES2023",
     "lib": ["ES2023"],
     "module": "ESNext",
