@@ -173,6 +173,24 @@ export function CameraRig({
     yawRef.current = Math.atan2(-tmpDir.current.x, -tmpDir.current.z);
   };
 
+  // --- Dev-only: let an automated visual check park the camera anywhere. ---
+  // The free-fly rig rewrites camera.rotation every frame from yaw/pitch, so
+  // an external lookAt() would be overwritten; this sets the rig's own state
+  // instead. Stripped from production builds by the import.meta.env.DEV guard.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as unknown as {
+      __parcoarFly?: (pos: [number, number, number], look: [number, number, number]) => void;
+    };
+    w.__parcoarFly = (pos, look) => {
+      camera.position.set(pos[0], pos[1], pos[2]);
+      lookAtTarget(new THREE.Vector3(look[0], look[1], look[2]));
+    };
+    return () => {
+      delete w.__parcoarFly;
+    };
+  });
+
   // --- Mount: set Euler order + initial orientation from the camera's
   //     starting position toward initialTarget. ---
   useEffect(() => {

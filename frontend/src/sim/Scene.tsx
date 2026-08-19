@@ -66,28 +66,32 @@ const AISLE_X_CENTER = (AISLE_X_MIN + AISLE_X_MAX) / 2;
 const SEG_LENGTH = 14;
 const SEG_OFFSETS = [-16, 0, 16];
 const INSTANCES_PER_FLOOR = AISLE_Z.length * SEG_OFFSETS.length; // 4 * 3 = 12
+/** Only storeys with a slab above them get ceiling fixtures. */
+const COVERED_FLOORS = FLOORS.slice(0, -1);
 
-/** One InstancedMesh of ceiling strips per floor, mounted just below that
- *  floor's ceiling slab. The ceiling of storey N is the slab of floor N+1,
- *  whose underside sits at (N+1)*FLOOR_HEIGHT - 0.5; we hang the strips 0.2
- *  below that. The top storey (floor 2) has no slab above it, but we still
- *  hang strips at the same relative height so every storey shows a visible
- *  light source. */
+/** One InstancedMesh of ceiling strips per COVERED floor, mounted just below
+ *  that floor's ceiling slab. The ceiling of storey N is the slab of floor
+ *  N+1, whose underside sits at (N+1)*FLOOR_HEIGHT - 0.5; the strips hang 0.2
+ *  below that.
+ *
+ *  The top storey has no slab above it, so it gets no strips. Hanging them
+ *  there anyway left a row of bright bars floating unsupported in the sky,
+ *  clearly visible from every outside camera angle. It is an open roof deck;
+ *  the directional skylight already lights it. */
 function CeilingFixtures() {
   const meshRefs = [
-    useRef<THREE.InstancedMesh>(null),
     useRef<THREE.InstancedMesh>(null),
     useRef<THREE.InstancedMesh>(null),
   ];
 
   // One shared box geometry + one emissive material for all floors.
-  const geometry = useMemo(() => new THREE.BoxGeometry(SEG_LENGTH, 0.12, 0.5), []);
+  const geometry = useMemo(() => new THREE.BoxGeometry(SEG_LENGTH, 0.1, 0.32), []);
   const material = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
         color: 0x000000,
         emissive: new THREE.Color(0xfff2e0),
-        emissiveIntensity: 2.6,
+        emissiveIntensity: 1.5,
         roughness: 1,
         metalness: 0,
         // Read as a bright source rather than being tonemapped back to grey.
@@ -100,7 +104,7 @@ function CeilingFixtures() {
   // effect (rather than one per floor) keeps the hook count stable.
   useLayoutEffect(() => {
     const m = new THREE.Matrix4();
-    FLOORS.forEach((floor, fi) => {
+    COVERED_FLOORS.forEach((floor, fi) => {
       const mesh = meshRefs[fi].current;
       if (!mesh) return;
       const ceilY = (floor + 1) * FLOOR_HEIGHT - 0.7;
@@ -118,7 +122,7 @@ function CeilingFixtures() {
 
   return (
     <>
-      {FLOORS.map((f, fi) => (
+      {COVERED_FLOORS.map((f, fi) => (
         <instancedMesh
           key={`fixtures-${f}`}
           ref={meshRefs[fi]}

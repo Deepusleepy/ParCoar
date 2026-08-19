@@ -207,12 +207,14 @@ export function FloorPaint({
     for (const [id, node] of slots) {
       const num = id.replace(/^S\d+_/, "");
       const label = `${floorLetter}${num}`;
-      const aisleY = Math.round(node.y / AISLE_SPACING) * AISLE_SPACING;
-      const side = node.y < aisleY ? -1 : 1;
-      // -y side bay: driver looks toward -z, text top must point to -z
-      // (back), so rotate 180deg. +y side bay: no rotation. The two differ
-      // by 180deg as required.
-      const rotDeg = side === -1 ? 180 : 0;
+      // Which way does traffic run down this aisle? The garage is one-way
+      // serpentine: even aisles run +x, odd aisles run -x. A bay number has
+      // to read for the driver approaching it, and both sides of an aisle
+      // are approached from the same direction, so the rotation follows the
+      // AISLE, not which side of it the bay sits on. Keying it off the side
+      // (as this did originally) left half of every aisle upside down.
+      const aisleIndex = Math.round(node.y / AISLE_SPACING);
+      const rotDeg = aisleIndex % 2 === 0 ? 0 : 180;
 
       // Fit font to the bay width.
       let fontWorld = 1.4;
