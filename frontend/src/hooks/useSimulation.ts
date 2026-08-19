@@ -13,6 +13,7 @@ import type {
   ServerMessage,
   StateMessage,
 } from "../types";
+import { resolvePath } from "../sim/paths";
 import {
   AISLE_SPACING,
   CAR_LENGTH,
@@ -109,6 +110,30 @@ function directionAt(lot: LotData, route: string[], hop: number): Direction {
   return edge ? edge.dir : "arrived";
 }
 
+/** Real driven length of one leg, in world units, memoised per node pair.
+ *
+ *  Straight-line distance badly understates a curved leg: a 180-degree turn
+ *  loop measures 17.2 point to point but is about 32 units of road, and the
+ *  ramp measures 53 against 83 driven. The queueing maths below is all in
+ *  "how far apart are these two cars", so it has to use the distance the car
+ *  actually drives or it holds cars back for seconds at every turn. */
+const legLengthCache = new Map<string, number>();
+function legLength(lot: LotData, fromId: string, toId: string): number {
+  const key = `${fromId}>${toId}`;
+  const cached = legLengthCache.get(key);
+  if (cached !== undefined) return cached;
+  const a = lot.nodes[fromId];
+  const b = lot.nodes[toId];
+  let len = 0;
+  if (a && b) {
+    const pts = resolvePath(a, b, lot);
+    for (let i = 1; i < pts.length; i++) len += pts[i].distanceTo(pts[i - 1]);
+  }
+  if (!(len > 1e-6)) len = nodeGap(lot, fromId, toId);
+  legLengthCache.set(key, len);
+  return len;
+}
+
 /** Straight-line distance between two graph nodes, in world units. */
 function nodeGap(lot: LotData, a: string, b: string): number {
   const A = lot.nodes[a];
@@ -186,8 +211,8 @@ function isNodeBusy(
     // floor above. nodeGap is straight-line and so understates the ramp's
     // real path length, which only makes this more conservative.
     if (other.fromNode === target && other.toNode !== target) {
-      const legLength = nodeGap(lot, other.fromNode, other.toNode);
-      if (other.progress * legLength > CAR_LENGTH * 1.5) return false;
+      const len = legLength(lot, other.fromNode, other.toNode);
+      if (other.progress * len > CAR_LENGTH * 1.5) return false;
     }
     // The mirror of the same idea, and the one that produced the jam Deepu
     // could see: a car heading TOWARD `target` held it for the whole leg. On
@@ -202,8 +227,24 @@ function isNodeBusy(
     // the node before anyone else can reach it, and on every aisle hop the
     // leg is shorter than that, so short-range behaviour is unchanged.
     if (other.toNode === target && other.fromNode !== target) {
-      const legLength = nodeGap(lot, other.fromNode, other.toNode);
-      if ((1 - other.progress) * legLength > CAR_LENGTH * 2) return false;
+      const len = legLength(lot, other.fromNode, other.toNode);
+      if (other.fromNode === self.fromNode) {
+        // The other car is on the very leg we are about to start, ahead of
+        // us. What matters then is the gap BETWEEN us, which is how far it
+        // has already driven — not how far it still has to go.
+        //
+        // Measuring how far it had left to go is what made a car sit at the
+        // mouth of every 180-degree turn for two to three seconds: the car
+        // ahead had to get roughly half way round the loop before the one
+        // behind was let on, even though the loop is 32 units of road and
+        // comfortably holds two cars. Deepu watched a car stop dead under a
+        // turn board with nothing in front of it but clear tarmac.
+        if (other.progress * len > CAR_LENGTH * 1.6) return false;
+      } else if ((1 - other.progress) * len > CAR_LENGTH * 2) {
+        // Converging on the node from a different leg, and still far enough
+        // off that it has no claim on it yet.
+        return false;
+      }
     }
     const otherDirection = carRoadDirection(lot, other, instructions);
     return direction === null || otherDirection === null || direction === otherDirection;
