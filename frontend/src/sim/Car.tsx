@@ -484,6 +484,14 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
     const aa = wps[ii];
     const bb = wps[ii + 1];
     const p = segProgressRef.current;
+    // Publish how far along this leg the car is. The real progress lives in
+    // refs in here, and car.progress was only ever reset to 0 on arrival, so
+    // to the queueing logic in useSimulation every car looked as if it were
+    // still sitting on the node it had just left. That is harmless on a
+    // 2.6-unit aisle hop and very much not harmless on the ramp, which is one
+    // 89-unit leg: a car at the foot of it waited for the car ahead to reach
+    // the next floor.
+    car.progress = segCount > 0 ? (ii + p) / segCount : 0;
     g.position.set(
       aa.x + (bb.x - aa.x) * p,
       aa.y + (bb.y - aa.y) * p + CAR_Y_OFFSET,

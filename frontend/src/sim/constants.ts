@@ -185,8 +185,6 @@ export const MAX_ACTIVE_CARS = 4;
 /** Spawn interval (ms) when below target. */
 export const SPAWN_INTERVAL_MS = 6000;
 
-/** Fraction of slots pre-filled at startup. */
-export const PREPARK_FILL_RATIO = 0.5;
 
 export const CAR_COLORS: CarColor[] = [
   "red",

@@ -39,6 +39,35 @@ const MIN_STAY_MS = 30_000;
 /** How many cars one signboard lists. Four is the most that stays legible
  *  from the far end of an aisle, and MAX_ACTIVE_CARS is 4 anyway. */
 const BOARD_ROWS = 4;
+
+/* How full each storey starts, from its own entrance to its far end.
+ *
+ * This used to be a flat 50% across the whole garage, which quietly killed
+ * the point of the product. The backend routes a car to its NEAREST free
+ * bay, so with one bay in two free right at the entrance every car parked
+ * within seconds of arriving. Measured: 18 of 26 cars had a route that never
+ * passed a single guidance board, and six of the eleven boards were lit less
+ * than 2% of the time. Cars drove past dark signs, which is exactly what
+ * Deepu was seeing.
+ *
+ * A real garage is full near the door and empty at the back, and that is the
+ * condition that makes guidance worth having at all. The gradient is
+ * per-STOREY, not global: a car that comes up the ramp arrives at the far
+ * end of the building but at the START of that floor's own run of bays, so a
+ * single garage-wide gradient left every upper floor empty right where cars
+ * entered it and no upstairs board ever lit.
+ *
+ * Ground floor is close to full so arrivals are pushed upstairs; each floor
+ * above starts fuller than it ends, so a car still has to drive its length.
+ * None of this touches the search, which stays a plain outward sweep to the
+ * nearest free bay: that is the part Deepu has to explain. */
+const FLOOR_FILL: Record<number, [start: number, end: number]> = {
+  0: [0.995, 0.93],
+  1: [0.98, 0.30],
+  2: [0.75, 0.05],
+};
+/** Fallback for any storey not listed above. */
+const DEFAULT_FILL: [number, number] = [0.8, 0.1];
 /** How many cars may be driving to the exit at once. */
 const MAX_LEAVING_CARS = 2;
 const MAX_STAY_MS = 90_000;
@@ -148,6 +177,17 @@ function isNodeBusy(
     if (other === self || other.parked) return false;
     if (other.fromNode !== target && other.toNode !== target) return false;
     if (lot.nodes[target]?.type === "slot") return true;
+    // A car that has already LEFT `target` only blocks it until its tail is
+    // clear. Reserving the whole leg is right for a 2.6-unit aisle hop, where
+    // the car is still overhanging the node it left, and wrong for the ramp,
+    // which is a single leg tens of units long: a car at the ramp foot sat
+    // motionless for thirteen seconds waiting for the car ahead to reach the
+    // floor above. nodeGap is straight-line and so understates the ramp's
+    // real path length, which only makes this more conservative.
+    if (other.fromNode === target && other.toNode !== target) {
+      const legLength = nodeGap(lot, other.fromNode, other.toNode);
+      if (other.progress * legLength > CAR_LENGTH * 1.5) return false;
+    }
     const otherDirection = carRoadDirection(lot, other, instructions);
     return direction === null || otherDirection === null || direction === otherDirection;
   };
@@ -177,25 +217,49 @@ function nextNodeForDirection(
  *  random for visual variety. When the backend assigns a slot to an active
  *  car, we remove any pre-parked car from that slot to avoid overlap. */
 function generatePreParked(lot: LotData): ParkedCarData[] {
+  // Order every bay the way a driver actually meets it: floor by floor, aisle
+  // by aisle along the spine, and along each aisle in its travel direction.
+  // Position in this list is how deep into the garage a bay is.
   const slots = Object.entries(lot.nodes)
     .filter(([, n]) => n.type === "slot" && n.size)
     .sort(([, a], [, b]) => {
       if (a.floor !== b.floor) return a.floor - b.floor;
-      if (a.y !== b.y) return a.y - b.y;
-      return a.x - b.x;
+      const aisleA = Math.round(a.y / AISLE_SPACING);
+      const aisleB = Math.round(b.y / AISLE_SPACING);
+      if (aisleA !== aisleB) return aisleA - aisleB;
+      const travel = aisleA % 2 === 0 ? 1 : -1;
+      if (a.x !== b.x) return (a.x - b.x) * travel;
+      return a.y - b.y;
     });
+
+  // Rank each bay within its own storey, so "depth" means how far into that
+  // floor's run of bays it is, counted from where cars enter that floor.
+  const rankInFloor = new Map<string, number>();
+  const floorTotals = new Map<number, number>();
+  for (const [id, node] of slots) {
+    const n = floorTotals.get(node.floor) ?? 0;
+    rankInFloor.set(id, n);
+    floorTotals.set(node.floor, n + 1);
+  }
+
   const out: ParkedCarData[] = [];
   for (let i = 0; i < slots.length; i++) {
-    if (i % 2 === 0) {
-      const [id, node] = slots[i];
-      out.push({
-        key: `pre-${id}`,
-        slotNode: id,
-        color: randomColor(),
-        plate: randomPlate(),
-        size: node.size!,
-      });
-    }
+    const [id, node] = slots[i];
+    const total = floorTotals.get(node.floor) ?? 1;
+    const depth = total > 1 ? (rankInFloor.get(id) ?? 0) / (total - 1) : 0;
+    const [start, end] = FLOOR_FILL[node.floor] ?? DEFAULT_FILL;
+    const fill = start + (end - start) * depth;
+    // Deterministic hash on the bay's rank, so the same bays are taken on
+    // every reload and the garage does not reshuffle itself mid-demo.
+    const noise = ((i * 2654435761) >>> 0) / 4294967296;
+    if (noise >= fill) continue;
+    out.push({
+      key: `pre-${id}`,
+      slotNode: id,
+      color: randomColor(),
+      plate: randomPlate(),
+      size: node.size!,
+    });
   }
   return out;
 }
