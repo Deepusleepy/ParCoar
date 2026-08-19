@@ -68,6 +68,10 @@ const MAX_FLY_SPEED = 160;
 const BOOST_MULT = 3.0;
 /** Look sensitivity: radians per pixel of mouse drag. */
 const LOOK_SENSITIVITY = 0.0025;
+/** Pointer-lock look. Deliberately lower than drag-look: captured mouse
+ *  deltas are raw and unsmoothed, and at drag sensitivity the view jitters
+ *  with every small hand movement. */
+const MOUSE_LOOK_SENSITIVITY = 0.0011;
 /** Pitch clamp: stop just shy of straight up/down so the view never flips. */
 const PITCH_LIMIT = Math.PI / 2 - 0.05;
 
@@ -265,9 +269,11 @@ export function CameraRig({
     const onPointerMove = (e: PointerEvent) => {
       if (locked()) {
         // movementX/Y are raw deltas; there is no cursor position to track.
-        yawRef.current -= e.movementX * LOOK_SENSITIVITY;
+        yawRef.current -= e.movementX * MOUSE_LOOK_SENSITIVITY;
+        // MINUS: movementY is positive when the mouse is pushed DOWN, and
+        // pushing the mouse down must look down, which is negative pitch.
         pitchRef.current = THREE.MathUtils.clamp(
-          pitchRef.current + e.movementY * LOOK_SENSITIVITY,
+          pitchRef.current - e.movementY * MOUSE_LOOK_SENSITIVITY,
           -PITCH_LIMIT,
           PITCH_LIMIT,
         );
@@ -282,7 +288,7 @@ export function CameraRig({
       // mouse up looks up.
       yawRef.current -= dx * LOOK_SENSITIVITY;
       pitchRef.current = THREE.MathUtils.clamp(
-        pitchRef.current + dy * LOOK_SENSITIVITY,
+        pitchRef.current - dy * LOOK_SENSITIVITY,
         -PITCH_LIMIT,
         PITCH_LIMIT,
       );
@@ -429,7 +435,7 @@ export function CameraRig({
         // rim and dash top filled the frame and no road was visible at all.
         // 1.31 overshot the other way, lifting the eye above the windscreen
         // header so the cabin stopped framing the view. 1.25 sits between.
-        const EYE_UP = 1.25;
+        const EYE_UP = 1.20;
         tmpPos.current.set(EYE_FWD, EYE_UP, -EYE_RIGHT);
         tmpLook.current.set(EYE_FWD + 14, EYE_UP - 0.25, -EYE_RIGHT);
         tmpEuler.current.set(0, yaw, pitch, "XYZ");

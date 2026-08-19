@@ -6,7 +6,6 @@ import {
   AISLE_SPACING,
   FLOOR_HEIGHT,
   LANE_COLOR,
-  LANE_WIDTH,
   MARKING_WHITE,
   ROAD_WIDTH,
   SLOT_DEPTH,
@@ -154,22 +153,14 @@ export function FloorPaint({
       lineWorld(a.x0, a.y + half, a.x1, a.y + half, 0.15, MARKING_WHITE);
     }
 
-    // 4. Lane divider: a broken WHITE line down the middle of each aisle.
+    // 4. No lane divider at all.
     //
-    //    This used to be a solid double-yellow, which in every road-marking
-    //    convention means "opposing traffic, do not cross". But this garage is
-    //    one-way serpentine: both lanes of an aisle run the same direction,
-    //    which is why the painted arrows in both lanes point the same way. The
-    //    markings were contradicting each other and reading as a bug. A broken
-    //    white line is the correct marking for lanes flowing the same way, and
-    //    it also signals that changing lanes to reach a bay is allowed.
-    const DASH = 1.6;
-    const GAP = 1.4;
-    for (const a of aisles) {
-      for (let x = a.x0; x < a.x1; x += DASH + GAP) {
-        lineWorld(x, a.y, Math.min(x + DASH, a.x1), a.y, 0.12, MARKING_WHITE);
-      }
-    }
+    //    An aisle here is ONE one-way carriageway, not two lanes. Painting a
+    //    divider down it, of any kind, invites the question "why do both sides
+    //    point the same way" -- which is exactly what happened, first with a
+    //    double-yellow and then with a broken white line. Removing the divider
+    //    and running a single row of arrows down the centre removes the
+    //    implied second lane entirely.
 
     // 5 + 6. Parking bays: side lines + closed back line in white, and a
     //        crisp colour-coded bar on the aisle-facing edge.
@@ -247,11 +238,12 @@ export function FloorPaint({
       ctx.restore();
     }
 
-    // 8. Direction arrows in both driving lanes. Even aisle index flows +x,
-    //    odd flows -x. Simple filled chevron ~1.4 long, every 6 units.
+    // 8. ONE row of direction arrows down the centre of the aisle. Even aisle
+    //    index flows +x, odd flows -x. A row per notional lane made it look
+    //    like a two-way road whose halves both pointed the same way.
     for (const a of aisles) {
       const dir = a.index % 2 === 0 ? 1 : -1;
-      const laneZs = [a.y - LANE_WIDTH / 2, a.y + LANE_WIDTH / 2];
+      const laneZs = [a.y];
       for (const laneZ of laneZs) {
         for (let x = a.x0 + 3; x <= a.x1 - 3; x += 6) {
           const [tipX, tipY] = w2c(x + 0.7 * dir, laneZ);

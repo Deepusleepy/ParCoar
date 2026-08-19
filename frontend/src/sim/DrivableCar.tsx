@@ -608,6 +608,8 @@ const WHEEL_POSITIONS: [number, number, number][] = [
 ];
 
 interface CarExteriorProps {
+  /** Hide the GLTF shell (POV only): from inside, its panels block the view. */
+  bodyVisible?: boolean;
   /** Refs to the 4 wheel spin groups (animated in DrivableCar's useFrame).
    *  Spin is applied as a rotation about the spin group's local Y, which
    *  maps to the axle direction after the axle-orienting parent rotation. */
@@ -1140,12 +1142,12 @@ function CarInterior({
 
       {/* Glazing, pillars, and headliner close the cabin without crossing the body shell. */}
       {[-0.87, 0.87].map((z) => (
-        <mesh key={z} position={[1.32, 1.16, z]} rotation={[0, 0, 0.94]} geometry={INTERIOR_GEO.box} scale={[0.06, 0.56, 0.07]}>
+        <mesh key={z} position={[1.32, 1.30, z]} rotation={[0, 0, 0.94]} geometry={INTERIOR_GEO.box} scale={[0.06, 0.8, 0.07]}>
           <primitive object={MAT.liner} attach="material" />
         </mesh>
       ))}
-      <group position={[1.32, 1.165, 0]} rotation={[0, -Math.PI / 2, 0]}>
-        <mesh rotation={[0.94, 0, 0]} geometry={INTERIOR_GEO.plane} scale={[1.72, 0.62, 1]}>
+      <group position={[1.32, 1.30, 0]} rotation={[0, -Math.PI / 2, 0]}>
+        <mesh rotation={[0.94, 0, 0]} geometry={INTERIOR_GEO.plane} scale={[1.72, 0.95, 1]}>
           <primitive object={MAT.glass} attach="material" />
         </mesh>
       </group>
@@ -1163,21 +1165,21 @@ function CarInterior({
       <mesh position={[-1.05, 1.15, 0]} rotation={[0, Math.PI / 2, 0]} geometry={INTERIOR_GEO.plane} scale={[1.65, 0.29, 1]}>
         <primitive object={MAT.glass} attach="material" />
       </mesh>
-      <mesh position={[0.04, 1.334, 0]} geometry={INTERIOR_GEO.box} scale={[2.0, 0.025, 1.72]}>
+      <mesh position={[0.04, 1.534, 0]} geometry={INTERIOR_GEO.box} scale={[2.0, 0.025, 1.72]}>
         <primitive object={MAT.liner} attach="material" />
       </mesh>
       {[-0.48, 0.48].map((z) => (
-        <mesh key={z} position={[0.78, 1.305, z]} rotation={[0, 0, -0.08]} geometry={INTERIOR_GEO.box} scale={[0.42, 0.025, 0.3]}>
+        <mesh key={z} position={[0.78, 1.505, z]} rotation={[0, 0, -0.08]} geometry={INTERIOR_GEO.box} scale={[0.42, 0.025, 0.3]}>
           <primitive object={MAT.liner} attach="material" />
         </mesh>
       ))}
-      <mesh position={[1.05, 1.3, 0]} geometry={INTERIOR_GEO.cylinder} scale={[0.012, 0.065, 0.012]}>
+      <mesh position={[1.05, 1.5, 0]} geometry={INTERIOR_GEO.cylinder} scale={[0.012, 0.065, 0.012]}>
         <primitive object={MAT.dashTrim} attach="material" />
       </mesh>
-      <mesh position={[1.0, 1.255, 0]} geometry={INTERIOR_GEO.box} scale={[0.045, 0.095, 0.29]}>
+      <mesh position={[1.0, 1.455, 0]} geometry={INTERIOR_GEO.box} scale={[0.045, 0.095, 0.29]}>
         <primitive object={MAT.dashTrim} attach="material" />
       </mesh>
-      <mesh position={[0.974, 1.255, 0]} geometry={INTERIOR_GEO.box} scale={[0.009, 0.07, 0.245]}>
+      <mesh position={[0.974, 1.455, 0]} geometry={INTERIOR_GEO.box} scale={[0.009, 0.07, 0.245]}>
         <primitive object={MAT.mirror} attach="material" />
       </mesh>
     </group>

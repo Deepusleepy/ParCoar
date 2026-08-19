@@ -336,34 +336,59 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
   // already-translated geometry (bounding box center = origin → wheel ends
   // up at the car center).
   const handleModelLoad = useCallback((obj: THREE.Object3D) => {
-    const wheels: THREE.Object3D[] = [];
+    // Collect the TOPMOST node of each wheel, and spin only that.
+    //
+    // The trap: a GLTF wheel is often a Group holding two mesh primitives (tyre
+    // and rim, different materials), and every one of those nodes has "wheel"
+    // in its name. Matching on the name alone collected the group AND both
+    // children, so the group was spun while its children had also been offset
+    // 1.3 units from the group origin. The children then orbited the car in a
+    // huge arc; measured in the running scene, the rear wheels sat 1.09 above
+    // the car and the fronts 1.11 below, which is how tyres ended up on the
+    // roof. Centring each primitive on its own bounding box also pulled the
+    // tyre and rim apart, because their boxes differ.
+    const isWheelName = (n: string) => {
+      const s = n.toLowerCase();
+      return s.includes("wheel") || s.includes("tire") || s.includes("rim");
+    };
+    const roots: THREE.Object3D[] = [];
     obj.traverse((child) => {
-      const name = child.name.toLowerCase();
-      if (name.includes("wheel") || name.includes("tire") || name.includes("rim")) {
-        // Re-center the wheel so its pivot is at the wheel's actual center.
-        // Doing this twice on the same mesh BURIES THE WHEEL. The second pass
-        // measures an already-centred wheel, gets a centre of (0,0,0), and
-        // moves the node to the car's origin, so the wheels vanish inside the
-        // body. React StrictMode double-invokes effects in dev, which is
-        // exactly how that happened: every moving car had no tyres.
-        if (child instanceof THREE.Mesh && !child.userData.wheelCentred) {
-          child.userData.wheelCentred = true;
-          // Clone the geometry — scene.clone() shares geometries, so without
-          // this every car of the same model would share the translated geo.
-          child.geometry = child.geometry.clone();
-          child.geometry.computeBoundingBox();
-          const box = child.geometry.boundingBox!;
-          const center = new THREE.Vector3();
-          box.getCenter(center);
-          // Translate geometry so the center is at the origin, then offset
-          // the node position so the wheel stays in its original location.
-          child.geometry.translate(-center.x, -center.y, -center.z);
-          child.position.copy(center);
-        }
-        wheels.push(child);
-      }
+      if (!isWheelName(child.name)) return;
+      // Only the highest matching node in each chain.
+      if (child.parent && isWheelName(child.parent.name)) return;
+      roots.push(child);
     });
-    wheelMeshesRef.current = wheels;
+
+    for (const root of roots) {
+      if (root.userData.wheelCentred) continue;
+      root.userData.wheelCentred = true;
+
+      // Combined bounds of every mesh under this wheel, in the wheel's own
+      // parent space, so tyre and rim stay together.
+      const box = new THREE.Box3();
+      root.traverse((c) => {
+        if (!(c instanceof THREE.Mesh)) return;
+        c.geometry.computeBoundingBox();
+        const b = c.geometry.boundingBox!.clone();
+        // Meshes sit at the wheel root's origin in these models, but respect
+        // any local offset rather than assuming none.
+        b.translate(c.position);
+        box.union(b);
+      });
+      if (box.isEmpty()) continue;
+      const centre = box.getCenter(new THREE.Vector3());
+
+      // Shift every primitive so the wheel's centre lands on the root origin,
+      // then move the root to compensate. Now rotating the root spins the whole
+      // wheel about its own axle, and nothing orbits.
+      root.traverse((c) => {
+        if (!(c instanceof THREE.Mesh)) return;
+        c.geometry = c.geometry.clone();
+        c.geometry.translate(-centre.x, -centre.y, -centre.z);
+      });
+      root.position.add(centre);
+    }
+    wheelMeshesRef.current = roots;
   }, []);
 
   useFrame((_, delta) => {

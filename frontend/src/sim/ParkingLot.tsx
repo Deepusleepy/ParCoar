@@ -5,7 +5,6 @@ import { Html, Text } from "@react-three/drei";
 import type { CarRosterEntry, LotData, LotNode, NodeSign, NodeType, SlotSize } from "../types";
 import {
   AISLE_SPACING,
-  DIVIDER_COLOR,
   FLOOR_COLOR,
   FLOOR_HEIGHT,
   GUARDRAIL_COLOR,
@@ -238,12 +237,6 @@ const MAT_EDGE = new THREE.MeshStandardMaterial({
   roughness: 0.5,
   emissive: MARKING_WHITE,
   emissiveIntensity: 0.1,
-  side: THREE.DoubleSide,
-  envMapIntensity: 0.3,
-});
-const MAT_DIVIDER = new THREE.MeshStandardMaterial({
-  color: DIVIDER_COLOR,
-  roughness: 0.9,
   side: THREE.DoubleSide,
   envMapIntensity: 0.3,
 });
@@ -878,8 +871,8 @@ const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
       <mesh geometry={ribbon} material={MAT_ASPHALT} receiveShadow />
       {/* Edge lines (left + right merged) */}
       <mesh geometry={edges} material={MAT_EDGE} />
-      {/* Raised concrete divider through the turn (no parking, cars cannot cross) */}
-      <mesh geometry={divider} material={MAT_DIVIDER} castShadow receiveShadow />
+      {/* No raised divider. It rendered as a faceted grey bar floating above
+          the tarmac, and an aisle here is one one-way carriageway anyway. */}
       {/* Guardrails on both outer edges of the turn */}
       <GuardRailAlongPath points={leftRailPts} yBase={ROAD_Y} />
       <GuardRailAlongPath points={rightRailPts} yBase={ROAD_Y} />
@@ -964,8 +957,8 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
       <mesh geometry={road} material={MAT_RAMP} receiveShadow />
       {/* Edge lines (left + right merged) */}
       <mesh geometry={edges} material={MAT_EDGE} />
-      {/* Raised concrete divider through the ramp (no parking, cars cannot cross) */}
-      <mesh geometry={divider} material={MAT_DIVIDER} castShadow receiveShadow />
+      {/* No raised divider. It rendered as a faceted grey bar floating above
+          the tarmac, and an aisle here is one one-way carriageway anyway. */}
       {/* Guardrails on both sides of the ramp */}
       <GuardRailAlongPath points={leftRailPts} yBase={ROAD_Y} />
       <GuardRailAlongPath points={rightRailPts} yBase={ROAD_Y} />

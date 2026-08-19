@@ -90,10 +90,14 @@ export const SLOT_SIZE: Record<SlotSize, { w: number; l: number }> = {
 };
 
 /** Car body dimensions by car size (length along travel axis, width across). */
+/** Car body dimensions by size. Scale is uniform, so `length` also sets the
+ *  rendered width; these are trimmed slightly from real-world figures because
+ *  a 1.95-wide car in a 2.5-wide bay left only 0.27 either side and the wing
+ *  mirrors of neighbouring cars visibly touched. */
 export const CAR_DIMS: Record<CarSize, { length: number; width: number; height: number }> = {
-  small:  { length: 3.6, width: 1.65, height: 1.35 },
-  medium: { length: 4.5, width: 1.80, height: 1.45 },
-  large:  { length: 5.0, width: 1.95, height: 1.65 },
+  small:  { length: 3.4, width: 1.55, height: 1.35 },
+  medium: { length: 4.1, width: 1.68, height: 1.45 },
+  large:  { length: 4.5, width: 1.80, height: 1.65 },
 };
 
 /* ------------------------------------------------------------------ *

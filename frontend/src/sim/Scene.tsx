@@ -269,7 +269,16 @@ export const Scene = memo(function Scene({
         toneMapping: THREE.ACESFilmicToneMapping,
         toneMappingExposure: 1.15,
       }}
-      onCreated={({ scene }) => {
+      onCreated={({ scene, gl, camera }) => {
+        // Dev-only handles so an automated pass can inspect the real scene
+        // graph and drive the camera, instead of guessing from screenshots.
+        if (import.meta.env.DEV) {
+          Object.assign(window as unknown as Record<string, unknown>, {
+            __parcoarScene: scene,
+            __parcoarGL: gl,
+            __parcoarCamera: camera,
+          });
+        }
         // Very dark blue-gray background (not a pure black void) with subtle
         // depth fog so distant floors fade slightly.
         scene.background = new THREE.Color(0x0a0b0e);
