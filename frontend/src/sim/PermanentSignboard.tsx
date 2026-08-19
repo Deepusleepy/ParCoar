@@ -2,7 +2,7 @@ import { memo } from "react";
 import { Text } from "@react-three/drei";
 import * as THREE from "three";
 import type { CarRosterEntry, Direction, NodeSign } from "../types";
-import { FLOOR_HEIGHT, ROAD_WIDTH } from "./constants";
+import { COLOR_HEX, FLOOR_HEIGHT, ROAD_WIDTH } from "./constants";
 
 export interface PermanentSignboardProps {
   position: [number, number, number];
@@ -94,6 +94,8 @@ const BOARD_RIM_GEO = new THREE.BoxGeometry(BOARD_W + 0.14, BOARD_H + 0.14, 0.16
 const SCREEN_GEO = new THREE.PlaneGeometry(SCREEN_W, SCREEN_H);
 const ROD_GEO = new THREE.CylinderGeometry(0.06, 0.06, ROD_LENGTH, 8);
 const BANNER_GEO = new THREE.PlaneGeometry(SCREEN_W - 0.6, 0.7);
+/** Solid block of the car's colour, shown next to its plate. */
+const SWATCH_GEO = new THREE.PlaneGeometry(0.5, 0.5);
 
 /* --- Shared materials: 11 boards share these instead of one set each. */
 // Frame is deliberately NOT the same near-black as the screen. A board seen
@@ -124,12 +126,6 @@ const SCREEN_MATERIAL = new THREE.MeshStandardMaterial({
   emissiveIntensity: 0.4,
   roughness: 0.5,
   metalness: 0.1,
-});
-const BANNER_MATERIAL = new THREE.MeshStandardMaterial({
-  color: "#0c2740",
-  emissive: ACCENT,
-  emissiveIntensity: 0.35,
-  roughness: 0.5,
 });
 /** Bright arrow shown only in driver mode (a live signal is active). */
 const ARROW_BRIGHT_MATERIAL = new THREE.MeshStandardMaterial({
@@ -211,9 +207,42 @@ function PermanentSignboardImpl({
                 One instruction, large. A driver reads this from the far end of
                 an aisle, so everything on it has to survive that distance. ---- */
             <>
-              <mesh position={[0, 0.95, -0.01]} geometry={BANNER_GEO} material={BANNER_MATERIAL} />
+              {/* The banner is painted in the car's OWN colour, and a solid
+                  swatch sits beside the plate. With several cars nose to tail
+                  in one aisle a plate alone does not tell a driver which of
+                  them the board is talking to; matching the colour of the car
+                  does it at a glance, from much further away than text. */}
+              <mesh position={[0, 0.95, -0.01]} geometry={BANNER_GEO}>
+                <meshStandardMaterial
+                  color="#0c1220"
+                  emissive={COLOR_HEX[dynamic!.carColor]}
+                  emissiveIntensity={0.5}
+                  roughness={0.5}
+                />
+              </mesh>
+              <mesh position={[-SCREEN_W / 2 + 0.75, 0.95, 0.01]} geometry={SWATCH_GEO}>
+                <meshStandardMaterial
+                  color={COLOR_HEX[dynamic!.carColor]}
+                  emissive={COLOR_HEX[dynamic!.carColor]}
+                  emissiveIntensity={0.85}
+                  roughness={0.4}
+                />
+              </mesh>
+              {/* How far off the car still is, so a board that lights early
+                  reads as "coming up" rather than "turn now". */}
               <Text
-                position={[0, 0.95, 0]}
+                position={[SCREEN_W / 2 - 0.85, 0.95, 0]}
+                fontSize={0.34}
+                color={dynamic!.hopsAway <= 1 ? ACCENT : DIM_TEXT}
+                anchorX="center"
+                anchorY="middle"
+                outlineWidth={0.02}
+                outlineColor="#000000"
+              >
+                {dynamic!.hopsAway <= 1 ? "NOW" : `IN ${dynamic!.hopsAway}`}
+              </Text>
+              <Text
+                position={[0.35, 0.95, 0]}
                 fontSize={0.72}
                 color={BODY_TEXT}
                 anchorX="center"
@@ -282,7 +311,7 @@ export const PermanentSignboard = memo(PermanentSignboardImpl, propsEqual);
 
 /** Signature of the dynamic sign fields the component actually renders. */
 function dynamicKey(d: NodeSign | undefined): string {
-  return d ? `${d.carPlate}|${d.direction}|${d.slot}|${d.slotFloor}` : "";
+  return d ? `${d.carPlate}|${d.carColor}|${d.direction}|${d.slot}|${d.slotFloor}|${d.hopsAway}` : "";
 }
 
 

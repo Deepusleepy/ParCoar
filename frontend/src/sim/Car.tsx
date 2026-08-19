@@ -190,99 +190,96 @@ export function ParkedCarField({ cars }: { cars: ParkedCarInstance[] }) {
   );
 }
 
+/** Upper bound on parked cars of one size. The garage has 480 bays in total,
+ *  so this can never be exceeded, and allocating once means a car arriving or
+ *  leaving never reallocates a buffer. */
+const PARKED_CAPACITY = 512;
+
 function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInstance[] }) {
   const { scene } = useGLTF(MODEL_PATHS[size]);
 
+  // Build the instanced meshes ONCE per model, at full capacity. This used to
+  // rebuild on every change to `cars`, which meant every single arrival and
+  // departure tore down and reallocated ~18 InstancedMeshes holding a few
+  // hundred instances each. With cars parking and leaving continuously that
+  // was a visible hitch every few seconds, and it is the main reason the scene
+  // felt laggy despite a healthy frame rate between hitches.
   const built = useMemo(() => {
-    if (cars.length === 0) return null;
-    // Refresh world matrices so each mesh's model-space transform is current.
-    // The GLTF scene root has identity transform, so mesh.matrixWorld is the
-    // mesh's transform relative to the model origin (what we want to bake in).
     scene.updateMatrixWorld(true);
     const scale = MODEL_SCALE[size];
-    const scaleMat = new THREE.Matrix4().makeScale(scale, scale, scale);
-    const forwardMat = new THREE.Matrix4().makeRotationY(FORWARD_ROT);
+    const base = new THREE.Matrix4()
+      .makeRotationY(FORWARD_ROT)
+      .multiply(new THREE.Matrix4().makeScale(scale, scale, scale));
 
-    // One shared body material. White base so instanceColor multiplies through
-    // to the actual car colour. Matches the parked-car MeshStandardMaterial.
+    // White base so per-instance colour multiplies through to the car colour.
     const bodyMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       metalness: 0.5,
       roughness: 0.4,
     });
-    // One shared glass material for Windows (matches parked-car look: dark,
-    // opaque). Other NON_BODY trim keeps its original GLTF material.
     const glassMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color("#1a1d24"),
       metalness: 0.3,
       roughness: 0.1,
-      transparent: false,
-      opacity: 1,
     });
 
-    const meshes: THREE.InstancedMesh[] = [];
-    const tmpMat = new THREE.Matrix4();
-    const ryMat = new THREE.Matrix4();
-    const tmpColor = new THREE.Color();
-
+    const meshes: { mesh: THREE.InstancedMesh; isBody: boolean; local: THREE.Matrix4 }[] = [];
     scene.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh)) return;
-      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-      const srcMat = mats[0] as THREE.Material | undefined;
+      const srcMat = (Array.isArray(obj.material) ? obj.material[0] : obj.material) as
+        | THREE.Material
+        | undefined;
       if (!srcMat) return;
       const isBody = !NON_BODY.has(srcMat.name);
-      // Body -> shared white standard mat (per-instance colour below).
-      // Windows -> shared dark glass mat. Other trim -> original GLTF mat
-      // (shared with the GLTF cache, so we must NOT dispose it).
       const material = isBody ? bodyMat : srcMat.name === "Windows" ? glassMat : srcMat;
-
-      const im = new THREE.InstancedMesh(obj.geometry, material, cars.length);
+      const im = new THREE.InstancedMesh(obj.geometry, material, PARKED_CAPACITY);
       im.castShadow = true;
       im.receiveShadow = true;
-
-      // Base transform baked into every instance: the model's forward rotation
-      // (GLTF faces +Z, sim expects +X), uniform model scale, and this mesh's
-      // own local transform within the GLTF scene.
-      const base = new THREE.Matrix4().copy(forwardMat).multiply(scaleMat).multiply(obj.matrixWorld);
-
-      for (let i = 0; i < cars.length; i++) {
-        const car = cars[i];
-        tmpMat.makeTranslation(car.position[0], car.position[1], car.position[2]);
-        ryMat.makeRotationY(car.rotationY);
-        tmpMat.multiply(ryMat).multiply(base);
-        im.setMatrixAt(i, tmpMat);
-        if (isBody) {
-          tmpColor.set(COLOR_HEX[car.color]);
-          im.setColorAt(i, tmpColor);
-        }
-      }
-      im.instanceMatrix.needsUpdate = true;
-      if (im.instanceColor) im.instanceColor.needsUpdate = true;
-      im.computeBoundingSphere();
-      meshes.push(im);
+      im.count = 0;
+      im.frustumCulled = false;
+      meshes.push({
+        mesh: im,
+        isBody,
+        local: new THREE.Matrix4().copy(base).multiply(obj.matrixWorld),
+      });
     });
-
-    const dispose = () => {
-      // Dispose instance buffers and the materials we own. Do NOT dispose the
-      // geometries (shared with the GLTF cache / active cars) or the original
-      // GLTF trim materials (shared with the cache).
-      for (const im of meshes) im.dispose();
-      bodyMat.dispose();
-      glassMat.dispose();
-    };
-    return { meshes, dispose };
-  }, [scene, cars, size]);
+    return { meshes, bodyMat, glassMat };
+  }, [scene, size]);
 
   useEffect(() => {
-    if (!built) return;
-    return () => built.dispose();
+    return () => {
+      for (const m of built.meshes) m.mesh.dispose();
+      built.bodyMat.dispose();
+      built.glassMat.dispose();
+    };
   }, [built]);
 
-  if (!built) return null;
+  // Write transforms and colours in place whenever the parked set changes.
+  // No allocation, no mesh churn: just a buffer update and a count.
+  useEffect(() => {
+    const tmp = new THREE.Matrix4();
+    const ry = new THREE.Matrix4();
+    const col = new THREE.Color();
+    const n = Math.min(cars.length, PARKED_CAPACITY);
+    for (const { mesh, isBody, local } of built.meshes) {
+      for (let i = 0; i < n; i++) {
+        const car = cars[i];
+        tmp.makeTranslation(car.position[0], car.position[1], car.position[2]);
+        tmp.multiply(ry.makeRotationY(car.rotationY)).multiply(local);
+        mesh.setMatrixAt(i, tmp);
+        if (isBody) mesh.setColorAt(i, col.set(COLOR_HEX[car.color]));
+      }
+      mesh.count = n;
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.computeBoundingSphere();
+    }
+  }, [built, cars]);
+
   return (
     <group>
-      {built.meshes.map((im, i) => (
-        <primitive key={i} object={im} />
+      {built.meshes.map((m, i) => (
+        <primitive key={i} object={m.mesh} />
       ))}
     </group>
   );
@@ -344,7 +341,13 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
       const name = child.name.toLowerCase();
       if (name.includes("wheel") || name.includes("tire") || name.includes("rim")) {
         // Re-center the wheel so its pivot is at the wheel's actual center.
-        if (child instanceof THREE.Mesh) {
+        // Doing this twice on the same mesh BURIES THE WHEEL. The second pass
+        // measures an already-centred wheel, gets a centre of (0,0,0), and
+        // moves the node to the car's origin, so the wheels vanish inside the
+        // body. React StrictMode double-invokes effects in dev, which is
+        // exactly how that happened: every moving car had no tyres.
+        if (child instanceof THREE.Mesh && !child.userData.wheelCentred) {
+          child.userData.wheelCentred = true;
           // Clone the geometry — scene.clone() shares geometries, so without
           // this every car of the same model would share the translated geo.
           child.geometry = child.geometry.clone();

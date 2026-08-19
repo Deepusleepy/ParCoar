@@ -155,15 +155,17 @@ export const CAR_SPEED = 7;
 /** How often (ms) the frontend sends a state tick to the backend. */
 export const STATE_TICK_MS = 200;
 
-/** Target number of active (moving) cars to maintain. */
-export const TARGET_ACTIVE_CARS = 5;
+/** Target number of arriving (moving) cars to maintain. Deliberately small:
+ *  the aisles are one-way and narrow, and with more than a few cars they queue
+ *  nose to tail and read as a traffic jam rather than a guidance demo. */
+export const TARGET_ACTIVE_CARS = 3;
 
 /** Min/max bounds for the active car count window. */
-export const MIN_ACTIVE_CARS = 4;
-export const MAX_ACTIVE_CARS = 6;
+export const MIN_ACTIVE_CARS = 2;
+export const MAX_ACTIVE_CARS = 4;
 
 /** Spawn interval (ms) when below target. */
-export const SPAWN_INTERVAL_MS = 3600;
+export const SPAWN_INTERVAL_MS = 6000;
 
 /** Fraction of slots pre-filled at startup. */
 export const PREPARK_FILL_RATIO = 0.5;

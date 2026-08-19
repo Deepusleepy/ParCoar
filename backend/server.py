@@ -53,24 +53,26 @@ def bfs(start, goal):
     return None
 
 
-# How many candidate bays to keep looking for after finding the first one.
-# Only needed so the load-spreading rule below has an alternative to offer.
-CANDIDATES = 12
+# A floor with this many cars already heading to it counts as busy, and an
+# arriving car is sent further up instead. This is what keeps all three
+# storeys in use rather than piling every car onto the nearest one.
+BUSY_FLOOR = 3
 
 
 def nearest_free_slot(car_node, car_size):
     """Nearest free bay the car fits in, spreading load away from busy floors.
 
-    One breadth-first sweep outward from the car. Because BFS visits nodes in
-    order of distance, the bays land in `found` nearest-first, so we can stop
-    as soon as we have a handful of candidates instead of searching the whole
-    garage. (The previous version ran a separate search to every single bay,
-    which is hundreds of searches per car.)
+    One breadth-first sweep outward from the car. BFS visits nodes in order of
+    distance, so `found` comes out sorted nearest-first for free, and we can
+    just walk it. The whole garage is a few hundred nodes, so sweeping all of
+    it costs well under a millisecond; an earlier version stopped after a
+    dozen candidates and, because those were all on the nearest floor, it
+    could never offer an alternative and sent every single car to floor A.
     """
     found = []
     seen = {car_node}
     queue = deque([car_node])
-    while queue and len(found) < CANDIDATES:
+    while queue:
         for e in edges.get(queue.popleft(), []):
             nxt = e["to"]
             if nxt in seen:
@@ -91,13 +93,11 @@ def nearest_free_slot(car_node, car_size):
         if c["status"] == "routing" and c["slot"]:
             fl = nodes[c["slot"]]["floor"]
             floor_count[fl] = floor_count.get(fl, 0) + 1
-    # Load spread: if the nearest bay's floor already has 3 cars heading to it,
-    # send this one to the next-nearest bay on a different floor instead.
-    best_floor = nodes[found[0]]["floor"]
-    if floor_count.get(best_floor, 0) >= 3:
-        for s in found[1:]:
-            if nodes[s]["floor"] != best_floor:
-                return s
+    # Take the nearest bay on a floor that is not already busy.
+    for s in found:
+        if floor_count.get(nodes[s]["floor"], 0) < BUSY_FLOOR:
+            return s
+    # Every floor is busy: fall back to the nearest bay of all.
     return found[0]
 
 

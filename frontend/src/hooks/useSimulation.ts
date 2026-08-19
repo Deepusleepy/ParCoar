@@ -33,6 +33,8 @@ const RECONNECT_DELAY_MS = 2000;
  *  one-way, so a car leaving the ground floor drives the whole spiral to the
  *  top exit, which takes about a minute and a half. */
 const MIN_STAY_MS = 30_000;
+/** How many cars may be driving to the exit at once. */
+const MAX_LEAVING_CARS = 2;
 const MAX_STAY_MS = 90_000;
 
 export interface ParkedCarData {
@@ -127,6 +129,7 @@ function spawnCar(): ActiveCar {
     status: "routing",
     parked: false,
     leaving: false,
+    vacating: null,
   };
 }
 
@@ -146,6 +149,7 @@ function departCar(p: ParkedCarData, size: ActiveCar["size"]): ActiveCar {
     status: "routing",
     parked: false,
     leaving: true,
+    vacating: p.slotNode,
   };
 }
 
@@ -238,6 +242,10 @@ export function useSimulation(): SimulationState {
     // Also include slots that active routing cars are heading toward.
     for (const c of activeCarsRef.current) {
       if (c.slot && !c.leaving) occupiedSlots.add(c.slot);
+      // A departing car still blocks its bay until it has physically pulled
+      // out of it. Releasing it on the first tick let an arriving car be sent
+      // straight into an occupied bay.
+      if (c.vacating && c.fromNode === c.vacating) occupiedSlots.add(c.vacating);
     }
     const msg: StateMessage = {
       type: "state",
@@ -600,6 +608,14 @@ export function useSimulation(): SimulationState {
   useEffect(() => {
     if (!lot) return;
     const id = setInterval(() => {
+      // The garage is one-way, so leaving a ground-floor bay means driving the
+      // whole spiral to the top exit: about 250 hops, a minute and a half of
+      // road time. Without a cap on how many are doing that at once, they
+      // accumulate: a soak run peaked at 34 cars on the road against an
+      // arrivals cap of 6.
+      const leaving = activeCarsRef.current.filter((c) => c.leaving).length;
+      if (leaving >= MAX_LEAVING_CARS) return;
+
       const now = Date.now();
       const due = parkedRef.current.find(
         (p) => p.parkedAt !== undefined && now - p.parkedAt > p.stayMs!,

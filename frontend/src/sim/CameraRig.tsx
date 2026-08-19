@@ -248,12 +248,31 @@ export function CameraRig({
       // Left button only — look around. Don't capture right/middle so R3F
       // object picking and any context menu keep working.
       if (e.button !== 0) return;
+      if (document.pointerLockElement === el) return;
       dragging = true;
       lastX = e.clientX;
       lastY = e.clientY;
       el.setPointerCapture(e.pointerId);
     };
+    // Look with the mouse without holding anything, the way a game does.
+    // Click the scene once to capture the pointer; Escape releases it.
+    // Drag-to-look still works when the pointer is not captured, so nothing
+    // is lost for anyone who prefers that.
+    const locked = () => document.pointerLockElement === el;
+    const onClick = () => {
+      if (!locked()) el.requestPointerLock?.();
+    };
     const onPointerMove = (e: PointerEvent) => {
+      if (locked()) {
+        // movementX/Y are raw deltas; there is no cursor position to track.
+        yawRef.current -= e.movementX * LOOK_SENSITIVITY;
+        pitchRef.current = THREE.MathUtils.clamp(
+          pitchRef.current + e.movementY * LOOK_SENSITIVITY,
+          -PITCH_LIMIT,
+          PITCH_LIMIT,
+        );
+        return;
+      }
       if (!dragging) return;
       const dx = e.clientX - lastX;
       const dy = e.clientY - lastY;
@@ -305,12 +324,15 @@ export function CameraRig({
       camera.position.addScaledVector(dolly.current, step);
     };
 
+    el.addEventListener("click", onClick);
     el.addEventListener("pointerdown", onPointerDown);
     el.addEventListener("pointermove", onPointerMove);
     el.addEventListener("pointerup", onPointerUp);
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => {
+      el.removeEventListener("click", onClick);
       el.removeEventListener("pointerdown", onPointerDown);
+      if (document.pointerLockElement === el) document.exitPointerLock?.();
       el.removeEventListener("pointermove", onPointerMove);
       el.removeEventListener("pointerup", onPointerUp);
       el.removeEventListener("wheel", onWheel);

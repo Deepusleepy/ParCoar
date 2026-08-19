@@ -126,6 +126,12 @@ export interface ActiveCar {
   status: CarStatus;
   /** True once the car has settled into its slot and should stop updating. */
   parked: boolean;
+  /** The bay this car is reversing out of, until it has actually left it.
+   *  A departing car releases its bay the moment it starts moving, which let
+   *  the backend hand that bay to an arriving car while the old one was still
+   *  physically sitting in it, so two cars ended up parked on top of each
+   *  other. Held until the car is no longer standing on the bay node. */
+  vacating: string | null;
   /** True when this car has finished its stay and is driving to the exit.
    *  Leaving cars are routed to the exit node instead of to a bay, and are
    *  removed from the simulation once they get there. */

@@ -23,6 +23,18 @@ export type OrbitControlsHandle = FlyControlsHandle;
 
 const FLOORS = [0, 1, 2];
 
+/** Device pixel ratio capped so the shaded pixel count stays within budget.
+ *  Returns native density for ordinary window sizes and backs off on very
+ *  large ones instead of quietly rendering ten-plus megapixels a frame. */
+const PIXEL_BUDGET = 4_500_000;
+function dprForViewport(): number {
+  if (typeof window === "undefined") return 1;
+  const native = Math.min(window.devicePixelRatio || 1, 2);
+  const area = window.innerWidth * window.innerHeight;
+  if (area <= 0) return native;
+  return Math.max(1, Math.min(native, Math.sqrt(PIXEL_BUDGET / area)));
+}
+
 /* ------------------------------------------------------------------ *
  *  Lighting tuning
  * ------------------------------------------------------------------ *
@@ -245,11 +257,12 @@ export const Scene = memo(function Scene({
          is deprecated in three 0.185 and logs a warning every frame; this
          explicit type stops the spam. */
       shadows="percentage"
-      /* Render at the display's own pixel density. Capping at 1.5 on a
-         Retina panel renders at 75% and upscales, which reads as everything
-         being slightly out of focus once you zoom out. There is ample budget
-         now: ~318 draw calls at 120 fps. */
-      dpr={[1, 2]}
+      /* Pixel budget rather than a flat cap. A flat 1.5 made everything look
+         slightly out of focus; a flat 2 on a large Retina display means well
+         over ten million shaded pixels per frame with shadows on, which is
+         its own kind of slow. This renders at native density on normal
+         windows and steps down only when the window is genuinely huge. */
+      dpr={dprForViewport()}
       camera={{ position: cameraPos, fov: 45, near: 0.1, far: 500 }}
       gl={{
         antialias: true,

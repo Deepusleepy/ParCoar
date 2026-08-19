@@ -206,7 +206,7 @@ export function App() {
             ) : (
               <div className="flex items-center gap-3 text-[11px] text-neutral-400">
                 <span>
-                  <span className="text-neutral-200">Drag</span> look
+                  <span className="text-neutral-200">Click</span> to capture mouse
                 </span>
                 <span>
                   <span className="text-neutral-200">W A S D</span> move

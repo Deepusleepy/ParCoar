@@ -21,6 +21,7 @@ import {
   SLOT_WIDTH,
   toWorld,
 } from "./constants";
+import { Envelope } from "./Envelope";
 import { FloorPaint } from "./FloorPaint";
 import { PermanentSignboard } from "./PermanentSignboard";
 import { rampPoints, semicirclePoints } from "./geometry";
@@ -312,23 +313,42 @@ const ARROW_GEO = (() => {
   return mergeGeometries(parts, false) ?? new THREE.BufferGeometry();
 })();
 
-/** Merged gate legs (two side posts). */
-const GATE_LEGS_GEO = (() => {
-  const half = ROAD_WIDTH / 2;
+/** Gate kit: a kerbed island, attendant booth, boom housing, two side posts,
+ *  and a top bar — all merged into one geometry sharing MAT_GATE_FRAME. The
+ *  booth sits on the +z side of the road; the island raises it above the
+ *  approach road so the gate reads as a real portal from a distance. */
+const GATE_FRAME_GEO = (() => {
+  const half = ROAD_WIDTH / 2; // 3.5
   return (
     mergeGeometries(
-      [makeBox(0.3, 4, 0.3, 0, 2, -half), makeBox(0.3, 4, 0.3, 0, 2, half)],
+      [
+        makeBox(0.3, 4, 0.3, 0, 2, -half), // south leg
+        makeBox(0.3, 4, 0.3, 0, 2, half), // north leg
+        makeBox(0.3, 0.3, ROAD_WIDTH + 0.4, 0, 4, 0), // top bar
+        makeBox(0.7, 1.4, 0.7, 0, 3.0, half), // boom housing on north leg
+        makeBox(2.2, 2.6, 2.2, 0, 1.6, 6), // attendant booth on the island
+        makeBox(7, 0.45, 4.5, 0, 0.075, 5.75), // kerbed island (north of road)
+      ],
       false,
     ) ?? new THREE.BufferGeometry()
   );
 })();
 
-/** Merged gate top bar + label panel. */
-const GATE_BARS_GEO = (() =>
+/** Coloured gate parts: the boom arm + tip + label backplate, merged so the
+ *  coloured elements are a single draw call. Shared geometry; the material
+ *  (green/red) is picked per gate. */
+const GATE_BOOM_GEO = (() =>
   mergeGeometries(
-    [makeBox(0.3, 0.3, ROAD_WIDTH + 0.4, 0, 4, 0), makeBox(1.6, 0.9, 0.12, 0, 3.2, 0)],
+    [
+      makeBox(0.15, 0.12, ROAD_WIDTH - 0.3, 0, 3.0, 0), // boom arm
+      makeBox(0.35, 0.25, 0.35, 0, 3.0, -ROAD_WIDTH / 2), // boom tip
+      makeBox(1.8, 0.9, 0.12, 0, 3.4, 0.1), // label backplate
+    ],
     false,
   ) ?? new THREE.BufferGeometry())();
+
+/** Emissive booth window on the booth's road-facing (south) face. */
+const GATE_SCREEN_GEO = makeBox(1.4, 1.0, 0.06, 0, 1.6, 4.85);
 
 /** Area-sign dimensions shared by the merged sign body and the screen plane. */
 // Sized against a 7-wide road and a 4.5-long car. The old 5.0 x 2.2 panel on
@@ -1122,7 +1142,10 @@ const GuardRails = memo(function GuardRails({
   );
 });
 
-/** An entry/exit portal arch with a coloured label. */
+/** An entry/exit portal: kerbed island, attendant booth with a lit window,
+ *  boom barrier on a proper housing, two side posts, a top bar, and a coloured
+ *  overhead label. Entry and exit use the same kit — green boom vs red boom.
+ *  Three draw calls per gate (frame, coloured boom, booth screen). */
 const Gate = memo(function Gate({
   position,
   color,
@@ -1136,11 +1159,13 @@ const Gate = memo(function Gate({
   const barMat = color === "#22c55e" ? MAT_GATE_GREEN : MAT_GATE_RED;
   return (
     <group position={[x, y, z]}>
-      {/* Two side legs (merged) */}
-      <mesh geometry={GATE_LEGS_GEO} material={MAT_GATE_FRAME} castShadow />
-      {/* Top bar + label panel (merged) */}
-      <mesh geometry={GATE_BARS_GEO} material={barMat} />
-      <Html position={[0, 3.2, 0.08]} center distanceFactor={80} occlude={false}>
+      {/* Frame: legs + top bar + boom housing + booth + kerbed island (merged) */}
+      <mesh geometry={GATE_FRAME_GEO} material={MAT_GATE_FRAME} castShadow receiveShadow />
+      {/* Coloured boom arm + tip + label backplate (merged) */}
+      <mesh geometry={GATE_BOOM_GEO} material={barMat} />
+      {/* Lit booth window */}
+      <mesh geometry={GATE_SCREEN_GEO} material={MAT_AREA_SCREEN} />
+      <Html position={[0, 3.4, 0.16]} center distanceFactor={80} occlude={false}>
         <div
           style={{
             color: "#fff",
@@ -1307,6 +1332,11 @@ export const ParkingLot = memo(function ParkingLot({
 
   return (
     <group>
+      {/* Building envelope: site apron, perimeter spandrels, stair/lift core,
+          roof parapet. Sits under/around the slabs so the structure reads as
+          finished instead of floating in the void. */}
+      <Envelope bounds={bounds} floors={floors} />
+
       {/* Floor slabs (each upper slab is the ceiling of the storey below). */}
       {floors.map((f) => (
         <FloorSlab key={`slab${f}`} floor={f} bounds={bounds} rampHole={geo.rampHoles.get(f)} />
