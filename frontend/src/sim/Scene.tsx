@@ -1,6 +1,6 @@
 import { memo, Suspense, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import { Canvas } from "@react-three/fiber";
-import { Environment, Html } from "@react-three/drei";
+import { Environment, Html, Text } from "@react-three/drei";
 import * as THREE from "three";
 import type { CarRosterEntry, NodeSign } from "../types";
 import {
@@ -180,7 +180,11 @@ export const Scene = memo(function Scene({
          is deprecated in three 0.185 and logs a warning every frame; this
          explicit type stops the spam. */
       shadows="percentage"
-      dpr={[1, 1.5]}
+      /* Render at the display's own pixel density. Capping at 1.5 on a
+         Retina panel renders at 75% and upscales, which reads as everything
+         being slightly out of focus once you zoom out. There is ample budget
+         now: ~318 draw calls at 120 fps. */
+      dpr={[1, 2]}
       camera={{ position: cameraPos, fov: 45, near: 0.1, far: 500 }}
       gl={{
         antialias: true,
@@ -269,34 +273,25 @@ export const Scene = memo(function Scene({
       {/* The parking garage environment. */}
       <ParkingLot nodeSigns={nodeSigns} carRoster={carRoster} />
 
-      {/* Bright, billboarded floor labels on the camera-facing edge of each
-          storey. (ParkingLot renders its own small corner labels; these are
-          the prominent, always-readable ones.) Html is DOM, so it always
-          faces the screen and scales with distance via distanceFactor. */}
+      {/* Floor labels, standing at the front edge of each storey.
+          These were drei <Html> with distanceFactor, which is DOM scaled by
+          camera distance: fine from far away, but flying close blew a single
+          label up to fill half the screen. In-world text scales the way
+          everything else in the scene does. */}
       {FLOORS.map((f) => (
-        <Html
+        <Text
           key={`flabel${f}`}
-          position={[LOT_CENTER_X, f * FLOOR_HEIGHT + 6, LOT_MIN_Z - 2]}
-          center
-          distanceFactor={100}
-          occlude={false}
-          zIndexRange={[20, 0]}
+          position={[LOT_CENTER_X, f * FLOOR_HEIGHT + 4.5, LOT_MIN_Z + 0.4]}
+          fontSize={2.6}
+          color="#ffffff"
+          anchorX="center"
+          anchorY="middle"
+          letterSpacing={0.18}
+          outlineWidth={0.06}
+          outlineColor="#000000"
         >
-          <div
-            style={{
-              color: "#ffffff",
-              fontSize: "16px",
-              fontWeight: 800,
-              letterSpacing: "0.22em",
-              whiteSpace: "nowrap",
-              pointerEvents: "none",
-              textShadow:
-                "0 1px 6px rgba(0,0,0,0.95), 0 0 2px rgba(0,0,0,0.9)",
-            }}
-          >
-            FLOOR {String.fromCharCode(65 + f)}
-          </div>
-        </Html>
+          {`FLOOR ${String.fromCharCode(65 + f)}`}
+        </Text>
       ))}
 
       {/* Dynamic content (cars, signboards, ...) injected by the app. */}

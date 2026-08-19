@@ -92,15 +92,28 @@ const ARROW_SHAPE = (() => {
 })();
 const ARROW_GEOMETRY = new THREE.ShapeGeometry(ARROW_SHAPE);
 const BOARD_BODY_GEO = new THREE.BoxGeometry(BOARD_W, BOARD_H, 0.2);
+const BOARD_RIM_GEO = new THREE.BoxGeometry(BOARD_W + 0.14, BOARD_H + 0.14, 0.16);
 const SCREEN_GEO = new THREE.PlaneGeometry(SCREEN_W, SCREEN_H);
 const ROD_GEO = new THREE.CylinderGeometry(0.06, 0.06, ROD_LENGTH, 8);
 const BANNER_GEO = new THREE.PlaneGeometry(SCREEN_W - 0.6, 0.7);
 
 /* --- Shared materials: 11 boards share these instead of one set each. */
+// Frame is deliberately NOT the same near-black as the screen. A board seen
+// from behind (which happens constantly once the camera can fly anywhere) was
+// rendering as a pure black rectangle against a dark scene and reading as a
+// hole in the world rather than as the back of a sign.
 const FRAME_MATERIAL = new THREE.MeshStandardMaterial({
-  color: FRAME_COLOR,
-  metalness: 0.4,
-  roughness: 0.6,
+  color: "#1b1f29",
+  metalness: 0.35,
+  roughness: 0.55,
+});
+/** Thin lit edge around the board so its silhouette is always legible. */
+const EDGE_MATERIAL = new THREE.MeshStandardMaterial({
+  color: "#2b323f",
+  emissive: "#38bdf8",
+  emissiveIntensity: 0.07,
+  metalness: 0.3,
+  roughness: 0.5,
 });
 const ROD_MATERIAL = new THREE.MeshStandardMaterial({
   color: FRAME_COLOR,
@@ -201,6 +214,9 @@ function PermanentSignboardImpl({
       <group position={[0, BOARD_CENTER_Y, 0]} rotation={[0.3, 0, 0]}>
         {/* Board body — matte black metal frame */}
         <mesh castShadow geometry={BOARD_BODY_GEO} material={FRAME_MATERIAL} />
+        {/* Lit rim, slightly larger than the body, so the board reads as an
+            object from every angle including directly behind it. */}
+        <mesh geometry={BOARD_RIM_GEO} material={EDGE_MATERIAL} />
 
         {/* Emissive screen on the +Z face — true black with dark-blue glow */}
         <mesh position={[0, 0, 0.11]} geometry={SCREEN_GEO} material={SCREEN_MATERIAL} />

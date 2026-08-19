@@ -134,6 +134,8 @@ export function CameraRig({
   // Free-flight orientation state. Position lives on the camera itself; yaw
   // and pitch live here so mouse-look can update them outside useFrame.
   const yawRef = useRef(0);
+  /** Scratch vector for wheel dolly; avoids allocating per wheel event. */
+  const dolly = useRef(new THREE.Vector3());
   const pitchRef = useRef(0);
   const flySpeedRef = useRef(DEFAULT_FLY_SPEED);
   // Tracks which preset mode we have already teleported into, so a preset
@@ -276,14 +278,31 @@ export function CameraRig({
       }
     };
     const onWheel = (e: WheelEvent) => {
-      // Wheel adjusts base fly speed; it does NOT zoom toward a target.
       e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-      flySpeedRef.current = THREE.MathUtils.clamp(
-        flySpeedRef.current * factor,
-        MIN_FLY_SPEED,
-        MAX_FLY_SPEED,
+      // Shift+wheel trims how fast W/A/S/D fly. Plain wheel moves the camera
+      // along the direction you are looking, which is what "zoom" means to
+      // anyone who has used a 3D viewer. The first version only adjusted fly
+      // speed, silently, so scrolling appeared to do nothing at all.
+      if (e.shiftKey) {
+        const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+        flySpeedRef.current = THREE.MathUtils.clamp(
+          flySpeedRef.current * factor,
+          MIN_FLY_SPEED,
+          MAX_FLY_SPEED,
+        );
+        return;
+      }
+      // Dolly along the true look direction (including pitch) so scrolling
+      // while looking down takes you down toward the floor, not past it.
+      // Step scales with fly speed so it stays usable at every zoom level.
+      const step = -Math.sign(e.deltaY) * flySpeedRef.current * 0.28;
+      const cp = Math.cos(pitchRef.current);
+      dolly.current.set(
+        -Math.sin(yawRef.current) * cp,
+        Math.sin(pitchRef.current),
+        -Math.cos(yawRef.current) * cp,
       );
+      camera.position.addScaledVector(dolly.current, step);
     };
 
     el.addEventListener("pointerdown", onPointerDown);
@@ -296,7 +315,7 @@ export function CameraRig({
       el.removeEventListener("pointerup", onPointerUp);
       el.removeEventListener("wheel", onWheel);
     };
-  }, [gl]);
+  }, [gl, camera]);
 
   // --- Imperative handle for App's "Reset View" button + Scene's saveState. ---
   const handle = useMemo<FlyControlsHandle>(

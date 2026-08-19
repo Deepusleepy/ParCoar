@@ -330,9 +330,11 @@ const GATE_BARS_GEO = (() =>
   ) ?? new THREE.BufferGeometry())();
 
 /** Area-sign dimensions shared by the merged sign body and the screen plane. */
-const AREA_POST_H = 4;
-const AREA_PANEL_W = 5.0;
-const AREA_PANEL_H = 2.2;
+// Sized against a 7-wide road and a 4.5-long car. The old 5.0 x 2.2 panel on
+// a 4-unit post read as a motorway billboard standing indoors.
+const AREA_POST_H = 2.9;
+const AREA_PANEL_W = 3.2;
+const AREA_PANEL_H = 1.25;
 
 /** Merged area-sign body: vertical post + tilted panel frame in one geometry. */
 const AREA_SIGN_GEO = (() => {
@@ -600,12 +602,16 @@ function buildGeometry(lot: LotData) {
     const flowsPositive = aisle.index % 2 === 0;
     const entryX = flowsPositive ? aisle.x0 : aisle.x1;
     const arrowDir: 1 | -1 = flowsPositive ? 1 : -1;
-    const signX = entryX + arrowDir * 3;
+    // Sit the post BEFORE the first bay of the aisle. It used to be placed
+    // 3 units *into* the aisle at a z of ROAD_WIDTH/2 + 1 = 4.5, but bays now
+    // start only 3.5 from the aisle centreline, so the post was landing inside
+    // a bay and running straight through whatever car was parked there.
+    const signX = entryX - arrowDir * 2.5;
     // Face oncoming traffic: toward the entry end (opposite of travel dir).
     const faceX = -arrowDir;
     const rotY = Math.atan2(faceX, 0);
     // Place signs just outside the road edge on each side (road half-width + 1).
-    const sideOffset = ROAD_WIDTH / 2 + 1;
+    const sideOffset = ROAD_WIDTH / 2 + 0.6;
 
     for (const [nums, sideY] of [
       [leftNums, aisleY - sideOffset],
@@ -617,7 +623,10 @@ function buildGeometry(lot: LotData) {
       const label = `${floorLetter}${minNum} - ${floorLetter}${maxNum}`;
       // The -y board (sideY < aisleY) is viewed from the opposite side, so
       // its arrow direction must be flipped relative to the aisle travel dir.
-      const sideArrowDir: 1 | -1 = sideY < aisleY ? (-arrowDir as 1 | -1) : arrowDir;
+      // Both signs on an aisle show the SAME direction. The aisle is one-way,
+      // and both boards face oncoming traffic, so flipping the far one (as
+      // this did) put contradictory arrows on the two sides of one aisle.
+      const sideArrowDir: 1 | -1 = arrowDir;
       areaSigns.push({
         position: toWorld(signX, sideY, aisle.floor),
         rotY,
@@ -1210,7 +1219,7 @@ const AreaSignboard = memo(function AreaSignboard({ sign }: { sign: AreaSignDesc
         {/* Slot range label */}
         <Text
           position={[0, 0.2, 0.1]}
-          fontSize={0.65}
+          fontSize={0.4}
           color="#f1f5f9"
           anchorX="center"
           anchorY="middle"
@@ -1222,7 +1231,7 @@ const AreaSignboard = memo(function AreaSignboard({ sign }: { sign: AreaSignDesc
         {/* Direction arrow (sky-blue, pointing along travel direction) */}
         <Text
           position={[0, -0.55, 0.1]}
-          fontSize={0.8}
+          fontSize={0.44}
           color={ACCENT}
           anchorX="center"
           anchorY="middle"

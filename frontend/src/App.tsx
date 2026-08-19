@@ -185,8 +185,22 @@ export function App() {
                 </div>
               </div>
             ) : (
-              <div className="text-[11px] text-neutral-400">
-                Drag to orbit · Right-drag to pan · Scroll to zoom
+              <div className="flex items-center gap-3 text-[11px] text-neutral-400">
+                <span>
+                  <span className="text-neutral-200">Drag</span> look
+                </span>
+                <span>
+                  <span className="text-neutral-200">W A S D</span> move
+                </span>
+                <span>
+                  <span className="text-neutral-200">Space / Shift</span> up, down
+                </span>
+                <span>
+                  <span className="text-neutral-200">Ctrl</span> boost
+                </span>
+                <span>
+                  <span className="text-neutral-200">Scroll</span> fly forward
+                </span>
               </div>
             )}
             <button

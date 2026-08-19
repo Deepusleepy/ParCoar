@@ -4,7 +4,6 @@ import type { JSX } from "react";
 import type { LotData } from "../types";
 import {
   AISLE_SPACING,
-  CENTER_LINE_COLOR,
   FLOOR_HEIGHT,
   LANE_COLOR,
   LANE_WIDTH,
@@ -155,10 +154,21 @@ export function FloorPaint({
       lineWorld(a.x0, a.y + half, a.x1, a.y + half, 0.15, MARKING_WHITE);
     }
 
-    // 4. Double yellow centre line: two 0.08-wide lines at y +/- 0.1.
+    // 4. Lane divider: a broken WHITE line down the middle of each aisle.
+    //
+    //    This used to be a solid double-yellow, which in every road-marking
+    //    convention means "opposing traffic, do not cross". But this garage is
+    //    one-way serpentine: both lanes of an aisle run the same direction,
+    //    which is why the painted arrows in both lanes point the same way. The
+    //    markings were contradicting each other and reading as a bug. A broken
+    //    white line is the correct marking for lanes flowing the same way, and
+    //    it also signals that changing lanes to reach a bay is allowed.
+    const DASH = 1.6;
+    const GAP = 1.4;
     for (const a of aisles) {
-      lineWorld(a.x0, a.y - 0.1, a.x1, a.y - 0.1, 0.08, CENTER_LINE_COLOR);
-      lineWorld(a.x0, a.y + 0.1, a.x1, a.y + 0.1, 0.08, CENTER_LINE_COLOR);
+      for (let x = a.x0; x < a.x1; x += DASH + GAP) {
+        lineWorld(x, a.y, Math.min(x + DASH, a.x1), a.y, 0.12, MARKING_WHITE);
+      }
     }
 
     // 5 + 6. Parking bays: side lines + closed back line in white, and a

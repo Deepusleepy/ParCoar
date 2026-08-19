@@ -34,9 +34,11 @@ export const LANE_WIDTH = 3.5;
 export const ROAD_WIDTH = LANE_WIDTH * 2;
 
 /** How far west of the building the inter-floor ramp runs, in lot units.
- *  The ramp hugs the outside of the west face rather than cutting across the
- *  garage, so this only needs to clear the slab edge. */
-export const RAMP_OUTSET = 11;
+ *  Must exceed |slab minX| + ROAD_WIDTH/2 or the ramp's inner edge buries
+ *  itself in the slab for its whole length: at 11 the ramp spanned x -14.5
+ *  to -7.5 while the slab starts at -9.5, a 2-unit overlap along 51 units of
+ *  run. 15 puts the ramp entirely outside, clear by 2 units. */
+export const RAMP_OUTSET = 15;
 
 /** Corner radius of the ramp's two 90-degree turns. Large enough that a car
  *  can drive through them without the road-edge clamp fighting the steering. */
