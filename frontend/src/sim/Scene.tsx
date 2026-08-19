@@ -107,8 +107,12 @@ const HOUSING_HEIGHT = 0.3;
 const HOUSING_WIDTH = 0.5;
 const HOUSING_TOP_Y = (floor: number) => (floor + 1) * FLOOR_HEIGHT - 0.5;
 const HOUSING_CENTER_Y = (floor: number) => HOUSING_TOP_Y(floor) - HOUSING_HEIGHT / 2;
-// Lamp sits just inside the housing's underside face, slightly inset in X/Z
-// so the dark housing rim frames it.
+// The lamp hangs just PROUD of the housing's underside, inset in X/Z so the
+// dark housing rim frames it. It used to sit flush: its bottom face was at
+// exactly the housing's bottom face, two coplanar surfaces fighting for the
+// same depth value. That is the flicker Deepu photographed — every strip
+// broke into shimmering black blocks and hatching as the camera moved,
+// because which surface won varied per pixel and per frame.
 const LAMP_LENGTH = SEG_LENGTH - 0.4;
 // Widened from 0.34 so the bright face stays above a pixel at distance and
 // grazing angles — the old sub-pixel width aliased into jagged white streaks
@@ -116,7 +120,11 @@ const LAMP_LENGTH = SEG_LENGTH - 0.4;
 // frames it.
 const LAMP_WIDTH = 0.42;
 const LAMP_THICKNESS = 0.06;
-const LAMP_CENTER_Y = (floor: number) => HOUSING_TOP_Y(floor) - HOUSING_HEIGHT + LAMP_THICKNESS / 2;
+/** How far the lamp's top edge is buried inside the housing. Anything > 0
+ *  keeps the two boxes from ever sharing a face. */
+const LAMP_INSET = 0.02;
+const LAMP_CENTER_Y = (floor: number) =>
+  HOUSING_TOP_Y(floor) - HOUSING_HEIGHT - LAMP_THICKNESS / 2 + LAMP_INSET;
 
 function CeilingFixtures() {
   const housingRefs = [
@@ -285,6 +293,7 @@ export const Scene = memo(function Scene({
             __parcoarScene: scene,
             __parcoarGL: gl,
             __parcoarCamera: camera,
+            __parcoarTHREE: THREE,
           });
         }
         // Very dark blue-gray background (not a pure black void) with subtle

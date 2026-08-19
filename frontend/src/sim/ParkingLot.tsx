@@ -13,7 +13,6 @@ import {
   MARKING_WHITE,
   PILLAR_COLOR,
   PILLAR_HEIGHT,
-  RAMP_COLOR,
   ROAD_WIDTH,
   SLAB_PAD_X,
   SLAB_PAD_Z,
@@ -226,12 +225,6 @@ const MAT_ASPHALT = new THREE.MeshStandardMaterial({
   side: THREE.DoubleSide,
   envMapIntensity: 0.3,
 });
-const MAT_RAMP = new THREE.MeshStandardMaterial({
-  color: RAMP_COLOR,
-  roughness: 0.95,
-  side: THREE.DoubleSide,
-  envMapIntensity: 0.3,
-});
 const MAT_EDGE = new THREE.MeshStandardMaterial({
   color: MARKING_WHITE,
   roughness: 0.5,
@@ -359,6 +352,18 @@ const GATE_BOOM_GEO = (() =>
 /** Emissive booth window on the booth's road-facing (south) face. */
 const GATE_SCREEN_GEO = makeBox(1.4, 1.0, 0.06, 0, 1.6, 4.85);
 
+/** How far back along the approach road the gate portal stands, away from the
+ *  building. Both approach roads run in from -x, so the gate moves to -x.
+ *
+ *  It used to sit exactly on the entry/exit node at x = 0, which is also
+ *  where the first aisle's two bay-range signboards stand (2.5 before the
+ *  first bay, at z = +/-4.1). The gate's own legs are at z = +/-3.5 on the
+ *  same x, so from a driver's seat each leg stood squarely in front of one
+ *  board — the "A21 - A40" sign on the ground floor was permanently hidden
+ *  behind a black post. Standing the portal off the building also reads
+ *  better: a barrier belongs on the approach, before you are inside. */
+const GATE_SETBACK = 6;
+
 /** Area-sign dimensions shared by the merged sign body and the screen plane. */
 // Sized against a 7-wide road and a 4.5-long car. The old 5.0 x 2.2 panel on
 // a 4-unit post read as a motorway billboard standing indoors.
@@ -440,8 +445,9 @@ interface AreaSignDesc {
   position: [number, number, number];
   rotY: number;
   label: string;
-  /** Direction the arrow points along the aisle (+1 = +x, -1 = -x). */
-  arrowDir: 1 | -1;
+  /** True when this board's bays lie on the approaching driver's LEFT. The
+   *  board faces oncoming traffic, so the arrow points that way on screen. */
+  pointsLeft: boolean;
 }
 
 /** Parse the aisle index from a junction id "J{floor}_{aisle}_{n}". */
@@ -665,25 +671,29 @@ function buildGeometry(lot: LotData) {
     // Place signs just outside the road edge on each side (road half-width + 1).
     const sideOffset = ROAD_WIDTH / 2 + 0.6;
 
-    for (const [nums, sideY] of [
-      [leftNums, aisleY - sideOffset],
-      [rightNums, aisleY + sideOffset],
-    ] as [number[], number][]) {
+    for (const [nums, sideSign] of [
+      [leftNums, -1],
+      [rightNums, 1],
+    ] as [number[], -1 | 1][]) {
       if (nums.length === 0) continue;
       const minNum = Math.min(...nums);
       const maxNum = Math.max(...nums);
       const label = `${floorLetter}${minNum} - ${floorLetter}${maxNum}`;
-      // The -y board (sideY < aisleY) is viewed from the opposite side, so
-      // its arrow direction must be flipped relative to the aisle travel dir.
-      // Both signs on an aisle show the SAME direction. The aisle is one-way,
-      // and both boards face oncoming traffic, so flipping the far one (as
-      // this did) put contradictory arrows on the two sides of one aisle.
-      const sideArrowDir: 1 | -1 = arrowDir;
+      // Which hand is this row of bays on, for the driver coming down the
+      // aisle? Facing +x, the driver's left is -z; facing -x it is +z. So the
+      // row is on their left exactly when its side and the flow direction
+      // disagree in sign.
+      //
+      // Both boards used to show the aisle's TRAVEL direction instead, so
+      // every board in the garage displayed the same sideways arrow -- one of
+      // them always pointing at the wrong row of bays, and neither of them
+      // telling the driver anything the road markings didn't.
+      const pointsLeft = sideSign * arrowDir < 0;
       areaSigns.push({
-        position: toWorld(signX, sideY, aisle.floor),
+        position: toWorld(signX, aisleY + sideSign * sideOffset, aisle.floor),
         rotY,
         label,
-        arrowDir: sideArrowDir,
+        pointsLeft,
       });
     }
   }
@@ -1004,7 +1014,7 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
       {/* Support slab under ramp */}
       <mesh geometry={soffit} material={MAT_SLAB} receiveShadow />
       {/* Road surface */}
-      <mesh geometry={road} material={MAT_RAMP} receiveShadow />
+      <mesh geometry={road} material={MAT_ASPHALT} receiveShadow />
       {/* Edge lines (left + right merged) */}
       <mesh geometry={edges} material={MAT_EDGE} />
       {/* No raised divider. It rendered as a faceted grey bar floating above
@@ -1298,8 +1308,8 @@ const AreaSignboard = memo(function AreaSignboard({ sign }: { sign: AreaSignDesc
         <mesh geometry={AREA_SCREEN_GEO} material={MAT_AREA_SCREEN} position={[0, 0, 0.08]} />
         {/* Slot range label */}
         <Text
-          position={[0, 0.2, 0.1]}
-          fontSize={0.4}
+          position={[0, 0.18, 0.1]}
+          fontSize={0.42}
           color="#f1f5f9"
           anchorX="center"
           anchorY="middle"
@@ -1308,17 +1318,20 @@ const AreaSignboard = memo(function AreaSignboard({ sign }: { sign: AreaSignDesc
         >
           {sign.label}
         </Text>
-        {/* Direction arrow (sky-blue, pointing along travel direction) */}
+        {/* Arrow pointing at the row of bays this board is announcing. It sat
+            at y = -0.55, which is outside the 0.95-tall screen (+/-0.475) and
+            half off the panel frame \u2014 the arrow appeared to float below the
+            board rather than on it. */}
         <Text
-          position={[0, -0.55, 0.1]}
-          fontSize={0.44}
+          position={[0, -0.28, 0.1]}
+          fontSize={0.4}
           color={ACCENT}
           anchorX="center"
           anchorY="middle"
           outlineWidth={0.02}
           outlineColor="#000000"
         >
-          {sign.arrowDir > 0 ? "\u2192" : "\u2190"}
+          {sign.pointsLeft ? "\u2190" : "\u2192"}
         </Text>
       </group>
     </group>
@@ -1463,7 +1476,11 @@ export const ParkingLot = memo(function ParkingLot({
             to={[entry.x, entry.y]}
             floor={entry.floor}
           />
-          <Gate position={entry.pos} color="#22c55e" label="ENTRY" />
+          <Gate
+            position={[entry.pos[0] - GATE_SETBACK, entry.pos[1], entry.pos[2]]}
+            color="#22c55e"
+            label="ENTRY"
+          />
         </>
       )}
       {exit && (
@@ -1473,7 +1490,11 @@ export const ParkingLot = memo(function ParkingLot({
             to={[exit.x - 15, exit.y]}
             floor={exit.floor}
           />
-          <Gate position={exit.pos} color="#e5484d" label="EXIT" />
+          <Gate
+            position={[exit.pos[0] - GATE_SETBACK, exit.pos[1], exit.pos[2]]}
+            color="#e5484d"
+            label="EXIT"
+          />
         </>
       )}
     </group>

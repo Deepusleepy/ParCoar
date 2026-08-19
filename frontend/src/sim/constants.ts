@@ -116,7 +116,10 @@ export const CAR_DIMS: Record<CarSize, { length: number; width: number; height: 
 
 /** Concrete floor slab colour (lighter so asphalt reads clearly). */
 export const FLOOR_COLOR = "#3a3d44";
-/** Driving-lane asphalt colour (outbound lane, dark). */
+/** Asphalt colour. ONE value for every driveable surface — straight aisles,
+ *  turn loops and the inter-floor ramp. They used to be three different
+ *  greys on three different materials, which read as a patchwork of roads
+ *  that changed colour at every junction. */
 export const LANE_COLOR = "#1a1d24";
 /** Double-yellow centre line colour. */
 export const CENTER_LINE_COLOR = "#eab308";
@@ -124,8 +127,6 @@ export const CENTER_LINE_COLOR = "#eab308";
 export const LANE_MARKING_COLOR = "#f4f6fa";
 /** Lane edge stripe colour. */
 export const LANE_EDGE_COLOR = "#c9ccd4";
-/** Ramp asphalt colour. */
-export const RAMP_COLOR = "#16181d";
 /** Structural pillar / column colour. */
 export const PILLAR_COLOR = "#15171c";
 /** Low perimeter wall / guardrail colour. */

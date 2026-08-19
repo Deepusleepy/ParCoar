@@ -5,7 +5,6 @@ import type { LotData } from "../types";
 import {
   AISLE_SPACING,
   FLOOR_HEIGHT,
-  LANE_COLOR,
   MARKING_WHITE,
   ROAD_WIDTH,
   SLOT_DEPTH,
@@ -89,22 +88,33 @@ export function FloorPaint({
     ctx.clearRect(0, 0, canvasW, canvasH);
 
     // Group this floor's junctions by aisle index to recover each aisle's
-    // centreline (y) and x extent.
-    const aisleMap = new Map<number, { y: number; xs: number[] }>();
+    // centreline (y) and x extent. `bayX0/bayX1` is the junction-only span
+    // (where the bays and arrows live); `x0/x1` also covers the entry, exit
+    // and ramp nodes at x = 0, which is how far the tarmac actually runs.
+    const aisleMap = new Map<number, { y: number; xs: number[]; bayXs: number[] }>();
     for (const [id, node] of Object.entries(lot.nodes)) {
       if (node.floor !== floor || node.type !== "junction") continue;
       const idx = aisleOf(id);
       if (idx === null) continue;
-      const entry = aisleMap.get(idx) ?? { y: node.y, xs: [] };
+      const entry = aisleMap.get(idx) ?? { y: node.y, xs: [], bayXs: [] };
       entry.xs.push(node.x);
+      entry.bayXs.push(node.x);
       aisleMap.set(idx, entry);
     }
+    const CONNECTIONS = new Set(["entry", "exit", "ramp_up", "ramp_in"]);
+    for (const node of Object.values(lot.nodes)) {
+      if (node.floor !== floor || !CONNECTIONS.has(node.type)) continue;
+      const idx = Math.round(node.y / AISLE_SPACING);
+      aisleMap.get(idx)?.xs.push(node.x);
+    }
     const aisles = [...aisleMap.entries()]
-      .map(([idx, { y, xs }]) => ({
+      .map(([idx, { y, xs, bayXs }]) => ({
         index: idx,
         y,
         x0: Math.min(...xs),
         x1: Math.max(...xs),
+        bayX0: Math.min(...bayXs),
+        bayX1: Math.max(...bayXs),
       }))
       .sort((a, b) => a.index - b.index);
 
@@ -149,13 +159,21 @@ export function FloorPaint({
       );
     };
 
-    // 2. Road surface: one filled rect per aisle, ROAD_WIDTH wide, centred
-    //    on the aisle y, spanning that aisle's x range.
-    for (const a of aisles) {
-      rectWorld(a.x0, a.y - half, a.x1, a.y + half, LANE_COLOR);
-    }
+    // 2. No road surface is painted here.
+    //
+    //    The tarmac is real geometry: AisleRoad's raised box, TurnRoad's and
+    //    RampRoad's ribbons, all sharing one asphalt material. Filling the
+    //    aisles again on this canvas layered a second, differently-shaded
+    //    surface on top of the first — a transparent MeshStandardMaterial at
+    //    y = 0.16 over an opaque one at y = 0.15 — so a straight aisle, the
+    //    turn at the end of it and the ramp beyond that were three visibly
+    //    different greys. The fill also stopped at the outermost junction
+    //    (x = 2.6) while the asphalt box runs to x = 0, putting a hard colour
+    //    seam right at every entry, exit and ramp mouth.
 
-    // 3. White road edge lines (0.15 wide) on both outer edges of each aisle.
+    // 3. White road edge lines (0.15 wide) on both outer edges of each aisle,
+    //    running the full length of the tarmac including the approach to the
+    //    entry / exit / ramp node.
     for (const a of aisles) {
       lineWorld(a.x0, a.y - half, a.x1, a.y - half, 0.15, MARKING_WHITE);
       lineWorld(a.x0, a.y + half, a.x1, a.y + half, 0.15, MARKING_WHITE);
