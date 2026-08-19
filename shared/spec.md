@@ -27,35 +27,35 @@ Top-level fields in lot.json:
   "floors": 3,
   "floor_height": 15,
   "aisles_per_floor": 4,
-  "junctions_per_aisle": 8,
-  "junction_spacing": 5,
-  "aisle_spacing": 24,
-  "slot_offset": 9,
-  "road_width": 9,
+  "junctions_per_aisle": 20,
+  "junction_spacing": 2.6,
+  "aisle_spacing": 17,
+  "slot_offset": 6,
+  "road_width": 7,
   "slot_depth": 5,
   "nodes": { ... },
   "edges": { ... }
 }
 ```
 
-- `junction_spacing`: x-distance between junctions along an aisle
+- `junction_spacing`: x-distance between junctions, which is also one bay pitch
 - `aisle_spacing`: y-distance between aisle centrelines
 - `slot_offset`: y-distance from an aisle centre to a slot centre
-- `road_width`: full driving-road width across both lanes (±4.5 of centre)
+- `road_width`: full driving-road width across both lanes (±3.5 of centre)
 - `slot_depth`: parking bay depth (perpendicular to the aisle)
 
 Node shape:
 ```json
 {
-  "J0_0_1":   {"type": "junction", "floor": 0, "x": 5, "y": 0},
-  "S0_1":     {"type": "slot", "floor": 0, "x": 5, "y": -9, "size": "large"},
-  "T0_0":     {"type": "turn", "floor": 0, "x": 45, "y": 0},
-  "R0_up":    {"type": "ramp_up", "floor": 0, "x": 0, "y": 72},
+  "J0_0_1":   {"type": "junction", "floor": 0, "x": 2.6, "y": 0},
+  "S0_1":     {"type": "slot", "floor": 0, "x": 2.6, "y": -6, "size": "large"},
+  "T0_0":     {"type": "turn", "floor": 0, "x": 54.6, "y": 0},
+  "R0_up":    {"type": "ramp_up", "floor": 0, "x": 0, "y": 51},
   "R1_in":    {"type": "ramp_in", "floor": 1, "x": 0, "y": 0},
   "E0":       {"type": "entry", "floor": 0, "x": 0, "y": 0},
-  "EXIT2":    {"type": "exit", "floor": 2, "x": 0, "y": 72},
+  "EXIT2":    {"type": "exit", "floor": 2, "x": 0, "y": 51},
   "ENTRY_ROAD": {"type": "approach", "floor": 0, "x": -15, "y": 0},
-  "EXIT_ROAD":  {"type": "approach", "floor": 2, "x": -15, "y": 72}
+  "EXIT_ROAD":  {"type": "approach", "floor": 2, "x": -15, "y": 51}
 }
 ```
 
@@ -67,11 +67,11 @@ Edge shape (adjacency list, directed):
     {"dir": "right", "to": "S0_9"},
     {"dir": "straight", "to": "J0_0_2"}
   ],
-  "T0_0": [{"dir": "straight", "to": "J0_1_8"}],
+  "T0_0": [{"dir": "straight", "to": "J0_1_20"}],
   "R0_up": [{"dir": "up", "to": "R1_in"}],
   "ENTRY_ROAD": [{"dir": "straight", "to": "E0"}],
   "EXIT2": [{"dir": "straight", "to": "EXIT_ROAD"}],
-  "S0_1": []
+  "S0_1": [{"dir": "straight", "to": "J0_0_1"}]
 }
 ```
 
@@ -84,9 +84,9 @@ Node ID convention:
 - Slots: `S{floor}_{global_number}` (e.g. `S0_1` = floor 0, slot 1). Numbers are
   assigned side-by-side per aisle: each aisle side is a contiguous run in travel
   order (s_pos 0 = the -y side, s_pos 1 = the +y side), and aisles chain
-  contiguously (aisle 0 = 1..16, aisle 1 = 17..32, etc.).
+  contiguously (aisle 0 = 1..40, aisle 1 = 41..80, etc.).
 - Turns: `T{floor}_{aisle}` (e.g. `T0_0` = floor 0, turn after aisle 0)
-- Ramps: `R{floor}_up` (bottom of ramp) and `R{floor}_in` (top of ramp, = entry to that floor)
+- Ramps: `R{floor}_up` (foot of ramp) and `R{floor}_in` (head of ramp, = entry to that floor)
 - Entry: `E0` (floor 0 only)
 - Exit: `EXIT{floor}` (top floor only)
 - Approach roads: `ENTRY_ROAD` (west of E0) and `EXIT_ROAD` (west of the exit).
@@ -185,13 +185,15 @@ If `status` is "no_slot", the lot is full for this car's size.
 
 The backend assigns slots considering, in order:
 1. **Size match**: car can only use a slot of equal or larger size
-2. **Distance**: nearest free slot by BFS hop count from the car's current node
+2. **Distance**: nearest free slot by BFS hop count from the car's current node.
+   One breadth-first sweep outward finds it; because BFS visits nodes in order
+   of distance, the first free bay it reaches is the closest one.
 3. **Load spread**: if the nearest floor already has 3+ cars routing to it,
    prefer the next nearest slot on a different floor
 
 ## Pre-parked Cars
 
-At startup, ~50% of slots are pre-filled with static cars (random color,
+At startup, ~50% of the 480 slots are pre-filled with static cars (random color,
 plate, size matching the slot). These cars never move. The frontend
 generates them deterministically (every other slot, sorted by floor/y/x)
 and renders them in the 3D scene. The frontend reports all occupied slots
