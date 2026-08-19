@@ -43,6 +43,8 @@ function directionToRotation(dir: Direction): number {
       return 0;
     case "up":
       return -Math.PI / 4;
+    case "down":
+      return (-Math.PI * 3) / 4;
     case "arrived":
       return 0;
     default:

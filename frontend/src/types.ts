@@ -12,7 +12,7 @@ export type NodeType =
 
 export type SlotSize = "small" | "medium" | "large";
 
-export type Direction = "left" | "right" | "straight" | "up" | "arrived";
+export type Direction = "left" | "right" | "straight" | "up" | "down" | "arrived";
 
 export type CarStatus = "routing" | "parked" | "no_slot" | "left";
 

@@ -195,13 +195,13 @@ def main():
         for edge in outgoing
         if nodes[source]["type"] != "slot" and nodes[edge["to"]]["type"] != "slot"
     ]
+    opposite = {"left": "right", "right": "left", "up": "down", "down": "up"}
     for source, target, direction in road_edges:
         if nodes[target]["type"] == "turn":
-            direction = "left" if edges[target][0]["dir"] == "right" else "right"
-        elif direction == "left":
-            direction = "right"
-        elif direction == "right":
-            direction = "left"
+            # Driving into a turn from the far side makes the opposite hand.
+            direction = opposite[edges[target][0]["dir"]]
+        else:
+            direction = opposite.get(direction, direction)
         edges[target].append({"dir": direction, "to": source})
 
     lot = {

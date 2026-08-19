@@ -233,11 +233,6 @@ const MAT_SLAB = new THREE.MeshStandardMaterial({
   side: THREE.DoubleSide,
   envMapIntensity: 0.3,
 });
-const MAT_TRIM = new THREE.MeshStandardMaterial({
-  color: "#2a2d34",
-  roughness: 0.7,
-  envMapIntensity: 0.3,
-});
 const MAT_ASPHALT = new THREE.MeshStandardMaterial({
   color: LANE_COLOR,
   roughness: 0.95,
@@ -762,26 +757,37 @@ const FloorSlab = memo(function FloorSlab({
   const cz = (bounds.minZ + bounds.maxZ) / 2;
   const y = floor * FLOOR_HEIGHT;
 
-  const { slabGeo, perimTrimGeo, holeTrimGeo } = useMemo(() => {
-    // Perimeter edge trim — four bars, merged into one geometry.
-    const perim = [
-      makeBox(w, 0.06, 0.12, 0, 0.02, d / 2),
-      makeBox(w, 0.06, 0.12, 0, 0.02, -d / 2),
-      makeBox(0.12, 0.06, d, w / 2, 0.02, 0),
-      makeBox(0.12, 0.06, d, -w / 2, 0.02, 0),
-    ];
-    const perimTrimGeo = mergeGeometries(perim, false) ?? new THREE.BufferGeometry();
-
-    if (!rampHole) {
-      const slabGeo = makeBox(w, 0.5, d, 0, -0.25, 0);
-      return { slabGeo, perimTrimGeo, holeTrimGeo: null as THREE.BufferGeometry | null };
-    }
+  // No edge trim of any kind.
+  //
+  // The slab used to carry two sets of thin bars: four around its perimeter
+  // and four framing the ramp opening, each 0.06 tall and 0.12 wide. Both
+  // were meant to read as a kerb. At that size neither ever did. What they
+  // actually produced was a hard hairline of a different tone drawn exactly
+  // along the lip of the deck, running the full 81.6 by 77 of every storey,
+  // which from any outside camera reads as a wire strung across the building.
+  // That is the "weird rod" Deepu has photographed repeatedly. It is present
+  // on all three floors because every slab draws its own.
+  //
+  // Proven by raycasting three separate pixel columns through the rod in his
+  // screenshot: all three hit a mesh of size 81.72 x 0.06 x 77.12 in colour
+  // #2a2d34 (MAT_TRIM), 2 to 4 pixels tall, sandwiched between the ramp road
+  // above and below it.
+  //
+  // The hole trim was worse than cosmetic: its bar at the hole's right edge
+  // sat at x = 0, spanning the full 11-unit width of the ramp opening — a bar
+  // laid across the ramp mouth, exactly where a car drives off the ramp onto
+  // the deck.
+  //
+  // Neither is needed. The Envelope already puts a 1-unit spandrel and a
+  // lighter coping band along every slab edge, which is the kerb; the ramp
+  // opening is framed by the ramp's own edge lines and guardrails.
+  const slabGeo = useMemo(() => {
+    if (!rampHole) return makeBox(w, 0.5, d, 0, -0.25, 0);
 
     // Hole case: split the slab into 4 boxes surrounding a rectangular hole.
     // rampHole = [centerX, centerZ, halfX, halfZ] (world coords).
     const holeHalfX = rampHole[2];
     const holeHalfZ = rampHole[3];
-    const holeSizeZ = holeHalfZ * 2;
     // Hole centre relative to the slab group origin.
     const ox = rampHole[0] - cx;
     const oz = rampHole[1] - cz;
@@ -812,32 +818,14 @@ const FloorSlab = memo(function FloorSlab({
       slabParts.push(makeBox(clampedSizeX, 0.5, topD, clampedCx, -0.25, (-d / 2 + holeMinZ) / 2));
     if (botD > 0.01)
       slabParts.push(makeBox(clampedSizeX, 0.5, botD, clampedCx, -0.25, (holeMaxZ + d / 2) / 2));
-    const slabGeo = mergeGeometries(slabParts, false) ?? new THREE.BufferGeometry();
-
-    // Hole edge trim — four thin bars framing the ramp opening, merged.
-    const holeTrim = [
-      makeBox(clampedSizeX, 0.06, 0.12, clampedCx, 0.02, holeMinZ),
-      makeBox(clampedSizeX, 0.06, 0.12, clampedCx, 0.02, holeMaxZ),
-      makeBox(0.12, 0.06, holeSizeZ, holeLeft, 0.02, oz),
-      makeBox(0.12, 0.06, holeSizeZ, holeRight, 0.02, oz),
-    ];
-    const holeTrimGeo = mergeGeometries(holeTrim, false) ?? new THREE.BufferGeometry();
-    return { slabGeo, perimTrimGeo, holeTrimGeo };
+    return mergeGeometries(slabParts, false) ?? new THREE.BufferGeometry();
   }, [w, d, cx, cz, rampHole]);
 
-  useEffect(() => {
-    return () => {
-      slabGeo.dispose();
-      perimTrimGeo.dispose();
-      holeTrimGeo?.dispose();
-    };
-  }, [slabGeo, perimTrimGeo, holeTrimGeo]);
+  useEffect(() => () => slabGeo.dispose(), [slabGeo]);
 
   return (
     <group position={[cx, y, cz]}>
       <mesh geometry={slabGeo} material={MAT_SLAB} receiveShadow castShadow />
-      <mesh geometry={perimTrimGeo} material={MAT_TRIM} />
-      {holeTrimGeo && <mesh geometry={holeTrimGeo} material={MAT_TRIM} />}
     </group>
   );
 });
