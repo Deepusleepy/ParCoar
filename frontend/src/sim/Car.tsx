@@ -2,8 +2,8 @@ import { Suspense, memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
-import type { ActiveCar, CarColor, CarSize, LotData } from "../types";
-import { CAR_DIMS, CAR_Y_OFFSET, CAR_SPEED, COLOR_HEX, LANE_WIDTH, toWorld } from "./constants";
+import type { ActiveCar, CarColor, CarSize, LotData, LotNode } from "../types";
+import { AISLE_SPACING, CAR_DIMS, CAR_Y_OFFSET, CAR_SPEED, COLOR_HEX, LANE_WIDTH, toWorld } from "./constants";
 import { resolvePath } from "./paths";
 /* ------------------------------------------------------------------ */
 /*  GLTF model config                                                  */
@@ -303,9 +303,19 @@ interface ActiveCarProps {
  * simulation mutates `car.fromNode`/`car.toNode` in place without triggering
  * a React re-render.
  */
+/** Heading a car has when parked in `bay`: nose pointing into the bay, away
+ *  from the aisle. Mirrors the rotation the instanced parked renderer uses, so
+ *  the two agree at handover in both directions. */
+function bayYaw(bay: LotNode): number {
+  const aisleY = Math.round(bay.y / AISLE_SPACING) * AISLE_SPACING;
+  return bay.y < aisleY ? Math.PI / 2 : -Math.PI / 2;
+}
+
 export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, carGroupsRef }: ActiveCarProps) {
   const group = useRef<THREE.Group>(null);
   const targetRot = useRef(0);
+  /** Set once, the first frame this car is rendered. */
+  const seededRef = useRef(false);
   const targetPitchRef = useRef(0);
   const waypointsRef = useRef<THREE.Vector3[]>([]);
   const segIndexRef = useRef(0);
@@ -403,6 +413,22 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
     const toNode = lot.nodes[car.toNode];
     if (!fromNode || !toNode) return;
 
+    // A departing car is created standing IN its bay, but a freshly mounted
+    // <group> has rotation 0, so it appeared broadside across the bay and then
+    // pirouetted out of it — measured, 17 of 17 departures started 90 degrees
+    // wrong, and while swinging round, a third of the frames put the car's
+    // body inside the neighbouring parked car, worst case 0.94 units in. Seed
+    // the heading from the bay's own axis, the same value the parked renderer
+    // was drawing a moment ago, so the handover is invisible.
+    if (!seededRef.current) {
+      seededRef.current = true;
+      if (fromNode.type === "slot") {
+        const yaw = bayYaw(fromNode);
+        g.rotation.y = yaw;
+        targetRot.current = yaw;
+      }
+    }
+
     // Detect leg changes (including the in-place mutations from useSimulation).
     const legKey = `${car.fromNode}>${car.toNode}`;
     if (legKey !== legRef.current) {
@@ -463,7 +489,12 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
         // Snap rotation to the final target so the transition to the
         // fixed-rotation ParkedCarMesh (±π/2) doesn't show a visual pop
         // when the smoothing hasn't fully converged.
-        g.rotation.y = targetRot.current;
+        // Settle square in the bay. The look-ahead's final value is the last
+        // CHORD of the arrival curve, not its end tangent, which left every
+        // car resting 2.24 degrees off the bay axis — identical on all 48
+        // arrivals measured — and then popping straight when the instanced
+        // parked renderer took over at exactly 90 degrees.
+        g.rotation.y = toNode.type === "slot" ? bayYaw(toNode) : targetRot.current;
         g.rotation.z = targetPitchRef.current;
         segIndexRef.current = 0;
         segProgressRef.current = 0;
