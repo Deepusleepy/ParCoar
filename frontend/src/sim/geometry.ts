@@ -128,9 +128,25 @@ export function rampPoints(
   }
   const total = cum[cum.length - 1] || 1;
 
-  return flat.map(
-    (p, i) => new THREE.Vector3(p.x, y0 + (y1 - y0) * (cum[i] / total), p.y),
-  );
+  // Resample at a fixed spacing. The corners come out dense and the straight
+  // runs come out as one enormous segment, and consumers assume the points are
+  // reasonably close together: DrivableCar keeps the player on the ramp by
+  // snapping to the nearest centreline POINT, so a 37-unit gap would yank a
+  // car sideways in the middle of the straight. Even spacing also gives the
+  // road ribbon and the guardrails a consistent look.
+  const step = 2;
+  const count = Math.max(2, Math.ceil(total / step));
+  const out: THREE.Vector3[] = [];
+  let seg = 1;
+  for (let i = 0; i <= count; i++) {
+    const d = (total * i) / count;
+    while (seg < cum.length - 1 && cum[seg] < d) seg++;
+    const segLen = cum[seg] - cum[seg - 1];
+    const t = segLen > 0 ? (d - cum[seg - 1]) / segLen : 0;
+    const p = new THREE.Vector2().lerpVectors(flat[seg - 1], flat[seg], t);
+    out.push(new THREE.Vector3(p.x, y0 + (y1 - y0) * (d / total), p.y));
+  }
+  return out;
 }
 
 /** Gradient of the ramp as a fraction (0.15 = 15%), for sanity checks. */
