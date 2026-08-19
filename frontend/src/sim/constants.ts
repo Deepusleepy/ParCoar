@@ -38,7 +38,8 @@ export const ROAD_WIDTH = LANE_WIDTH * 2;
  *  itself in the slab for its whole length: at 11 the ramp spanned x -14.5
  *  to -7.5 while the slab starts at -9.5, a 2-unit overlap along 51 units of
  *  run. 15 puts the ramp entirely outside, clear by 2 units. */
-export const RAMP_OUTSET = 15;
+export const RAMP_OUTSET = 19;
+
 
 /** Corner radius of the ramp's two 90-degree turns. Large enough that a car
  *  can drive through them without the road-edge clamp fighting the steering. */
@@ -219,3 +220,17 @@ export function nextCarId(): string {
 export function toWorld(x: number, y: number, floor: number): [number, number, number] {
   return [x * SCALE, floor * FLOOR_HEIGHT, y * SCALE];
 }
+
+/** How far the floor slab extends past the outermost graph node.
+ *
+ *  A 180-degree turn bulges AISLE_SPACING/2 beyond the turn node, and the road
+ *  is ROAD_WIDTH wide, so the tarmac reaches AISLE_SPACING/2 + ROAD_WIDTH/2
+ *  past it. The old padding of AISLE_SPACING/2 + 1 covered the centreline but
+ *  not the road, so every turn loop overhung the deck by 2.5 units and read as
+ *  a ribbon of road floating off the side of the building.
+ *
+ *  RAMP_OUTSET must stay clear of this: the ramp runs at -RAMP_OUTSET with its
+ *  own ROAD_WIDTH, so it needs RAMP_OUTSET > SLAB_PAD_X + ROAD_WIDTH/2. */
+export const SLAB_PAD_X = AISLE_SPACING / 2 + ROAD_WIDTH / 2 + 1.5;
+/** Slab padding across the aisles: bays plus a margin. */
+export const SLAB_PAD_Z = SLOT_DEPTH + 2;

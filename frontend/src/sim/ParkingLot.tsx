@@ -16,7 +16,8 @@ import {
   PILLAR_HEIGHT,
   RAMP_COLOR,
   ROAD_WIDTH,
-  SLOT_DEPTH,
+  SLAB_PAD_X,
+  SLAB_PAD_Z,
   SLOT_WIDTH,
   toWorld,
 } from "./constants";
@@ -565,7 +566,7 @@ function buildGeometry(lot: LotData) {
     if (node.type !== "ramp_in") continue;
     const pos = toWorld(node.x, node.y, node.floor);
     const halfZ = ROAD_WIDTH / 2 + 1; // 5.5 — covers ramp width
-    const halfX = 7; // covers ramp path through slab, doesn't extend far into road
+    const halfX = 9; // covers the ramp's approach under the widened slab
     const centerX = pos[0] - halfX; // hole right edge = pos[0] = road start (x=0)
     rampHoles.set(node.floor, [centerX, pos[2], halfX, halfZ]);
   }
@@ -647,10 +648,10 @@ function computeBounds(lot: LotData): Bounds {
   const xs = structural.map((n) => n.x);
   const ys = structural.map((n) => n.y);
   return {
-    minX: Math.min(...xs) - AISLE_SPACING / 2 - 1,
-    maxX: Math.max(...xs) + AISLE_SPACING / 2 + 1,
-    minZ: Math.min(...ys) - SLOT_DEPTH - 2,
-    maxZ: Math.max(...ys) + SLOT_DEPTH + 2,
+    minX: Math.min(...xs) - SLAB_PAD_X,
+    maxX: Math.max(...xs) + SLAB_PAD_X,
+    minZ: Math.min(...ys) - SLAB_PAD_Z,
+    maxZ: Math.max(...ys) + SLAB_PAD_Z,
   };
 }
 

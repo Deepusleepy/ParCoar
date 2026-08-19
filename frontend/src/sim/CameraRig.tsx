@@ -394,9 +394,15 @@ export function CameraRig({
         camera.lookAt(tmpLook.current);
       } else {
         // POV: driver's-eye position inside the cabin (right-hand drive).
-        const EYE_FWD = 0.3;
+        // Driver's eye. Sat at 0.3 forward, the eye was only 0.25 behind the
+        // steering wheel, so a 0.18-radius rim subtended about 70 degrees of a
+        // 45-degree lens and swallowed the whole frame with no road visible.
+        // Pulled back to roughly 0.6 behind the rim, which is the real
+        // eye-to-wheel distance, and dropped slightly so the sightline clears
+        // the dash top (about y=1.06) rather than skimming it.
+        const EYE_FWD = -0.05;
         const EYE_RIGHT = 0.42;
-        const EYE_UP = 1.22;
+        const EYE_UP = 1.19;
         tmpPos.current.set(EYE_FWD, EYE_UP, -EYE_RIGHT);
         tmpLook.current.set(EYE_FWD + 14, EYE_UP - 0.25, -EYE_RIGHT);
         tmpEuler.current.set(0, yaw, pitch, "XYZ");

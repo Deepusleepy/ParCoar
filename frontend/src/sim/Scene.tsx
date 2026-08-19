@@ -1,6 +1,6 @@
 import { memo, Suspense, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import { Canvas } from "@react-three/fiber";
-import { Environment, Html, Text } from "@react-three/drei";
+import { Billboard, Environment, Html, Text } from "@react-three/drei";
 import * as THREE from "three";
 import type { CarRosterEntry, NodeSign } from "../types";
 import {
@@ -279,9 +279,11 @@ export const Scene = memo(function Scene({
           label up to fill half the screen. In-world text scales the way
           everything else in the scene does. */}
       {FLOORS.map((f) => (
-        <Text
+        <Billboard
           key={`flabel${f}`}
           position={[LOT_CENTER_X, f * FLOOR_HEIGHT + 4.5, LOT_MIN_Z + 0.4]}
+        >
+        <Text
           fontSize={2.6}
           color="#ffffff"
           anchorX="center"
@@ -292,6 +294,7 @@ export const Scene = memo(function Scene({
         >
           {`FLOOR ${String.fromCharCode(65 + f)}`}
         </Text>
+        </Billboard>
       ))}
 
       {/* Dynamic content (cars, signboards, ...) injected by the app. */}
