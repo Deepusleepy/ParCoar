@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ActiveCar,
-  Direction,
-  CarColor,
   BoardCar,
+  CarColor,
   CarRoute,
+  Direction,
   InstructionSign,
   InstructionsMessage,
   LotData,
@@ -31,35 +31,13 @@ import {
 const WS_URL = "ws://127.0.0.1:8765";
 const ENTRY_NODE = "E0";
 const RECONNECT_DELAY_MS = 2000;
-
-/** How long a car that drove in stays parked before heading for the exit.
- *  Randomised per car so departures do not arrive in lockstep. A car leaving
- *  the ground floor can still spend about a minute and a half reaching the top
- *  exit. */
 const MIN_STAY_MS = 30_000;
-/** How often the dev-only inspection handle is refreshed, in ms. Anything
- *  built on top of it can only measure durations to this resolution. */
+const MAX_STAY_MS = 90_000;
 const DEV_PUBLISH_MS = 50;
-/** How many cars one signboard lists: one in the hero block plus two queued.
- *  Sampled over four minutes, a board had one car 80% of the time, two 19%,
- *  three 0.7% and four never, so a fourth row was only ever wasted height. */
 const BOARD_ROWS = 3;
 
-/* How full each storey starts, from its own entrance to its far end.
- *
- * The gradient must be per-STOREY, not global: a car that comes up the ramp
- * arrives at the far end of the building but at the START of that floor's own
- * run of bays. A single garage-wide gradient would leave every upper floor
- * empty right where cars enter it, so no upstairs board would ever light.
- *
- * Ground floor is close to full so arrivals are pushed upstairs; each floor
- * above starts fuller than it ends, so a car still has to drive its length.
- * The search itself stays a plain outward sweep to the nearest free bay. */
 export type GarageFill = "quiet" | "normal" | "busy";
 
-/** How full each storey starts, from its own entrance to its far end, per
- *  preset. "normal" is the shipping default. Emptier presets mean cars find a
- *  bay sooner and drive less; fuller ones push them upstairs. */
 const FILL_PRESETS: Record<GarageFill, Record<number, [number, number]>> = {
   quiet: {
     0: [0.7, 0.3],
@@ -77,35 +55,24 @@ const FILL_PRESETS: Record<GarageFill, Record<number, [number, number]>> = {
     2: [0.95, 0.4],
   },
 };
-/** Fallback for any storey a preset does not list. */
 const DEFAULT_FILL: [number, number] = [0.8, 0.1];
-const MAX_STAY_MS = 90_000;
 
 export interface ParkedCarData {
   key: string;
   slotNode: string;
   color: CarColor;
   plate: string;
-  size: "small" | "medium" | "large";
-  /** When this car parked (ms). Cars that drove in leave again after a while
-   *  so the garage reaches a steady state instead of filling up and jamming.
-   *  Undefined for the pre-parked decoration, which never leaves. */
+  /** Visual model only. It is not sent to Python or used for assignment. */
+  size: ActiveCar["size"];
   parkedAt?: number;
-  /** How long this car stays, in ms. Randomised so departures are staggered. */
   stayMs?: number;
 }
 
-/** Everything the on-screen controls can change while it runs. */
 export interface SimSettings {
-  /** How many arriving cars to keep on the road. */
   targetCars: number;
-  /** Seconds between spawns while below target. */
   spawnEverySec: number;
-  /** How many parked cars may be driving to the exit at once. */
   maxLeaving: number;
-  /** Time scale. 0 pauses everything. */
   speed: number;
-  /** How full the garage is when it is reset. */
   fill: GarageFill;
 }
 
@@ -120,6 +87,7 @@ export const DEFAULT_SETTINGS: SimSettings = {
 export interface SimulationState {
   lot: LotData | null;
   loading: boolean;
+  error: string | null;
   connected: boolean;
   activeCars: ActiveCar[];
   preParked: ParkedCarData[];
@@ -130,60 +98,50 @@ export interface SimulationState {
   onArrive: (carId: string, node: string) => void;
   settings: SimSettings;
   updateSettings: (patch: Partial<SimSettings>) => void;
-  /** Put one more car on the road right now, ignoring the target. */
   spawnNow: () => void;
-  /** Take every moving car off the road, leaving parked cars alone. */
   clearRoad: () => void;
-  /** Clear the road and re-fill the bays at the current fill level. */
   resetGarage: () => void;
 }
 
-/** The direction label on the edge the route takes out of `route[hop]`.
- *  Mirrors the backend's direction_along: a board shows the turn a driver
- *  must make when they get there, not where the car happens to be now. */
 function directionAt(lot: LotData, route: string[], hop: number): Direction {
   if (hop + 1 >= route.length) return "arrived";
-  const edge = lot.edges[route[hop]]?.find((e) => e.to === route[hop + 1]);
-  return edge ? edge.dir : "arrived";
+  const edge = lot.edges[route[hop]]?.find((candidate) => candidate.to === route[hop + 1]);
+  return edge?.dir ?? "arrived";
 }
 
-/** Real driven length of one leg, in world units, memoised per node pair.
- *
- *  Straight-line distance badly understates a curved leg: a 180-degree turn
- *  loop measures 17.2 point to point but is about 32 units of road, and the
- *  ramp measures 53 against 83 driven. The queueing maths below is all in
- *  "how far apart are these two cars", so it has to use the distance the car
- *  actually drives or it holds cars back for seconds at every turn. */
+/** Real path length used only by the frontend's collision/queue safety gate. */
 const legLengthCache = new Map<string, number>();
 function legLength(lot: LotData, fromId: string, toId: string): number {
   const key = `${fromId}>${toId}`;
   const cached = legLengthCache.get(key);
   if (cached !== undefined) return cached;
-  const a = lot.nodes[fromId];
-  const b = lot.nodes[toId];
-  let len = 0;
-  if (a && b) {
-    const pts = resolvePath(a, b, lot);
-    for (let i = 1; i < pts.length; i++) len += pts[i].distanceTo(pts[i - 1]);
+  const from = lot.nodes[fromId];
+  const to = lot.nodes[toId];
+  let length = 0;
+  if (from && to) {
+    const points = resolvePath(from, to, lot);
+    for (let index = 1; index < points.length; index += 1) {
+      length += points[index].distanceTo(points[index - 1]);
+    }
   }
-  if (!(len > 1e-6)) len = nodeGap(lot, fromId, toId);
-  legLengthCache.set(key, len);
-  return len;
+  if (!(length > 1e-6)) length = nodeGap(lot, fromId, toId);
+  legLengthCache.set(key, length);
+  return length;
 }
 
-/** Straight-line distance between two graph nodes, in world units. */
-function nodeGap(lot: LotData, a: string, b: string): number {
-  const A = lot.nodes[a];
-  const B = lot.nodes[b];
-  if (!A || !B) return Infinity;
-  return Math.hypot(A.x - B.x, A.y - B.y, (A.floor - B.floor) * FLOOR_HEIGHT);
+function nodeGap(lot: LotData, first: string, second: string): number {
+  const a = lot.nodes[first];
+  const b = lot.nodes[second];
+  if (!a || !b) return Infinity;
+  return Math.hypot(a.x - b.x, a.y - b.y, (a.floor - b.floor) * FLOOR_HEIGHT);
 }
 
-/** Which way this road leg runs relative to the original serpentine spine. */
 function roadDirection(lot: LotData, fromId: string, toId: string): 1 | -1 | null {
   const from = lot.nodes[fromId];
   const to = lot.nodes[toId];
-  if (!from || !to || fromId === toId || from.type === "slot" || to.type === "slot") return null;
+  if (!from || !to || fromId === toId || from.type === "slot" || to.type === "slot") {
+    return null;
+  }
 
   const turn = from.type === "turn" ? from : to.type === "turn" ? to : null;
   if (turn) {
@@ -201,13 +159,12 @@ function roadDirection(lot: LotData, fromId: string, toId: string): 1 | -1 | nul
   const dx = to.x - from.x;
   if (Math.abs(dx) > 0.01) {
     const aisle = Math.round(((from.y + to.y) / 2) / AISLE_SPACING);
-    const originalX = aisle % 2 === 0 ? 1 : -1;
-    return dx * originalX > 0 ? 1 : -1;
+    const originalDirection = aisle % 2 === 0 ? 1 : -1;
+    return dx * originalDirection > 0 ? 1 : -1;
   }
   return to.floor > from.floor ? 1 : -1;
 }
 
-/** Direction of a moving car, or its next instructed leg while it waits. */
 function carRoadDirection(
   lot: LotData,
   car: ActiveCar,
@@ -215,19 +172,17 @@ function carRoadDirection(
 ): 1 | -1 | null {
   let target = car.toNode;
   if (target === car.fromNode) {
-    const sign = instructions.get(car.id);
-    target = sign?.node === car.fromNode ? sign.path?.[1] ?? target : target;
+    const instruction = instructions.get(car.id);
+    target = instruction?.node === car.fromNode ? instruction.path[1] ?? target : target;
   }
   return roadDirection(lot, car.fromNode, target);
 }
 
-/** Is a road node held by same-direction traffic, or followed too closely?
- *
- * Cars in opposing lanes share graph nodes but are 3.5 units apart in the
- * scene, so they must not reserve against each other. Same-direction cars do
- * share a physical lane and still reserve the target plus one short node of
- * look-ahead. Bay nodes remain exclusive because there is only one bay. */
-function isNodeBusy(
+/**
+ * Traffic safety only: stop a car entering a physically occupied lane segment.
+ * This does not influence Python's bay selection or calculate alternate routes.
+ */
+function isRoadBlocked(
   lot: LotData,
   cars: ActiveCar[],
   self: ActiveCar,
@@ -240,39 +195,21 @@ function isNodeBusy(
     if (other === self || other.parked) return false;
     if (other.fromNode !== target && other.toNode !== target) return false;
     if (lot.nodes[target]?.type === "slot") return true;
-    // A car that has already LEFT `target` only blocks it until its tail is
-    // clear. Reserving the whole leg is right for a 2.6-unit aisle hop, where
-    // the car is still overhanging the node it left, and wrong for the ramp,
-    // which is a single leg tens of units long. nodeGap is straight-line and
-    // so understates the ramp's real path length, which only makes this more
-    // conservative.
+
     if (other.fromNode === target && other.toNode !== target) {
-      const len = legLength(lot, other.fromNode, other.toNode);
-      if (other.progress * len > CAR_LENGTH * 1.5) return false;
+      const length = legLength(lot, other.fromNode, other.toNode);
+      if (other.progress * length > CAR_LENGTH * 1.5) return false;
     }
-    // A car heading TOWARD `target` only holds it once it is genuinely about
-    // to arrive. On a long leg (the ramp is one 53-unit leg, a turn loop one
-    // 17-unit leg) reserving the far node for the whole traversal would stop
-    // every car behind at the foot of the ramp or the mouth of the turn.
-    // Two car lengths is far enough out that it still owns the node before
-    // anyone else can reach it, and on every aisle hop the leg is shorter
-    // than that, so short-range behaviour is unchanged.
+
     if (other.toNode === target && other.fromNode !== target) {
-      const len = legLength(lot, other.fromNode, other.toNode);
+      const length = legLength(lot, other.fromNode, other.toNode);
       if (other.fromNode === self.fromNode) {
-        // The other car is on the very leg we are about to start, ahead of
-        // us. What matters then is the gap BETWEEN us, which is how far it
-        // has already driven, not how far it still has to go. Measuring the
-        // remaining distance instead would hold a car at the mouth of a
-        // 180-degree turn until the leader is half way round the loop, even
-        // though the loop comfortably holds two cars.
-        if (other.progress * len > CAR_LENGTH * 1.6) return false;
-      } else if ((1 - other.progress) * len > CAR_LENGTH * 2) {
-        // Converging on the node from a different leg, and still far enough
-        // off that it has no claim on it yet.
+        if (other.progress * length > CAR_LENGTH * 1.6) return false;
+      } else if ((1 - other.progress) * length > CAR_LENGTH * 2) {
         return false;
       }
     }
+
     const otherDirection = carRoadDirection(lot, other, instructions);
     return direction === null || otherDirection === null || direction === otherDirection;
   };
@@ -284,31 +221,17 @@ function isNodeBusy(
   return cars.some((other) => blocks(other, beyond));
 }
 
-/** Find the destination node for a direction from a given node. */
 function nextNodeForDirection(
   lot: LotData,
   fromNode: string,
-  dir: LotEdge["dir"],
+  direction: LotEdge["dir"],
 ): string | null {
-  const edges = lot.edges[fromNode];
-  if (!edges) return null;
-  const edge = edges.find((e) => e.dir === dir);
-  return edge ? edge.to : null;
+  return lot.edges[fromNode]?.find((edge) => edge.dir === direction)?.to ?? null;
 }
 
-/** Generate the static pre-parked cars, size-matched to each bay.
- *  Fill follows a per-storey gradient (one of three presets) so the garage
- *  starts full near the entrance and empties toward the back, the condition
- *  that makes guidance worth having. A deterministic hash on each bay's rank
- *  keeps the same bays taken on every reload. Colors and plates are random
- *  for visual variety. When the backend assigns a slot to an active car, we
- *  remove any pre-parked car from that slot to avoid overlap. */
 function generatePreParked(lot: LotData, fillLevel: GarageFill = "normal"): ParkedCarData[] {
-  // Order every bay the way a driver actually meets it: floor by floor, aisle
-  // by aisle along the spine, and along each aisle in its travel direction.
-  // Position in this list is how deep into the garage a bay is.
   const slots = Object.entries(lot.nodes)
-    .filter(([, n]) => n.type === "slot" && n.size)
+    .filter(([, node]) => node.type === "slot")
     .sort(([, a], [, b]) => {
       if (a.floor !== b.floor) return a.floor - b.floor;
       const aisleA = Math.round(a.y / AISLE_SPACING);
@@ -319,39 +242,34 @@ function generatePreParked(lot: LotData, fillLevel: GarageFill = "normal"): Park
       return a.y - b.y;
     });
 
-  // Rank each bay within its own storey, so "depth" means how far into that
-  // floor's run of bays it is, counted from where cars enter that floor.
   const rankInFloor = new Map<string, number>();
-  const floorTotals = new Map<number, number>();
+  const totals = new Map<number, number>();
   for (const [id, node] of slots) {
-    const n = floorTotals.get(node.floor) ?? 0;
-    rankInFloor.set(id, n);
-    floorTotals.set(node.floor, n + 1);
+    const rank = totals.get(node.floor) ?? 0;
+    rankInFloor.set(id, rank);
+    totals.set(node.floor, rank + 1);
   }
 
-  const out: ParkedCarData[] = [];
-  for (let i = 0; i < slots.length; i++) {
-    const [id, node] = slots[i];
-    const total = floorTotals.get(node.floor) ?? 1;
+  const cars: ParkedCarData[] = [];
+  for (let index = 0; index < slots.length; index += 1) {
+    const [id, node] = slots[index];
+    const total = totals.get(node.floor) ?? 1;
     const depth = total > 1 ? (rankInFloor.get(id) ?? 0) / (total - 1) : 0;
     const [start, end] = FILL_PRESETS[fillLevel][node.floor] ?? DEFAULT_FILL;
     const fill = start + (end - start) * depth;
-    // Deterministic hash on the bay's rank, so the same bays are taken on
-    // every reload and the garage does not reshuffle itself mid-demo.
-    const noise = ((i * 2654435761) >>> 0) / 4294967296;
+    const noise = ((index * 2654435761) >>> 0) / 4294967296;
     if (noise >= fill) continue;
-    out.push({
+    cars.push({
       key: `pre-${id}`,
       slotNode: id,
       color: randomColor(),
       plate: randomPlate(),
-      size: node.size!,
+      size: randomSize(),
     });
   }
-  return out;
+  return cars;
 }
 
-/** Create a fresh active car at the entry node. */
 function spawnCar(): ActiveCar {
   return {
     id: nextCarId(),
@@ -369,77 +287,75 @@ function spawnCar(): ActiveCar {
   };
 }
 
-/** Put a parked car back on the road, heading for the exit.
- *  It gets a fresh id so the backend treats it as a new arrival with a new
- *  destination, rather than a parked car that mysteriously started moving. */
-function departCar(p: ParkedCarData, size: ActiveCar["size"]): ActiveCar {
+function departCar(car: ParkedCarData): ActiveCar {
   return {
     id: nextCarId(),
-    color: p.color,
-    plate: p.plate,
-    size,
-    fromNode: p.slotNode,
-    toNode: p.slotNode,
+    color: car.color,
+    plate: car.plate,
+    size: car.size,
+    fromNode: car.slotNode,
+    toNode: car.slotNode,
     progress: 0,
     slot: null,
     status: "routing",
     parked: false,
     leaving: true,
-    vacating: p.slotNode,
+    vacating: car.slotNode,
   };
 }
 
 export function useSimulation(): SimulationState {
-
   const [lot, setLot] = useState<LotData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [activeCars, setActiveCars] = useState<ActiveCar[]>([]);
   const [preParked, setPreParked] = useState<ParkedCarData[]>([]);
   const [parked, setParked] = useState<ParkedCarData[]>([]);
   const [lotFull, setLotFull] = useState(false);
   const [settings, setSettings] = useState<SimSettings>(DEFAULT_SETTINGS);
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
   const [nodeSigns, setNodeSigns] = useState<NodeSign[]>([]);
   const [carRoutes, setCarRoutes] = useState<CarRoute[]>([]);
 
-  // Refs for values needed inside stable callbacks / intervals.
+  const settingsRef = useRef(settings);
   const activeCarsRef = useRef<ActiveCar[]>([]);
   const lotRef = useRef<LotData | null>(null);
   const preParkedRef = useRef<ParkedCarData[]>([]);
   const parkedRef = useRef<ParkedCarData[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
-  const latestInstructionsRef = useRef<Map<string, InstructionSign>>(new Map());
+  const instructionsRef = useRef<Map<string, InstructionSign>>(new Map());
   const lastSpawnRef = useRef(0);
-  // Signature of the last nodeSigns array we committed to state, so we
-  // only call setNodeSigns when the set of active signs actually changes.
-  const lastSignSigRef = useRef("");
-  /** Latest board queues, for the DEV-only inspection handle below. */
+  const lastSignSignatureRef = useRef("");
+  const lastRouteSignatureRef = useRef("");
   const nodeSignsRef = useRef<NodeSign[]>([]);
-  const lastRouteSigRef = useRef("");
-  // Pending no_slot removal timers; cleared on unmount so a teardown
-  // mid-grace-period doesn't fire setActiveCars after the hook is gone.
-  const noSlotTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const removalTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
+  settingsRef.current = settings;
   activeCarsRef.current = activeCars;
   lotRef.current = lot;
   preParkedRef.current = preParked;
   parkedRef.current = parked;
 
-  // --- Load lot.json ---
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     fetch("/lot.json")
-      .then((r) => r.json() as Promise<LotData>)
+      .then((response) => {
+        if (!response.ok) throw new Error(`Failed to load garage layout (${response.status})`);
+        return response.json() as Promise<LotData>;
+      })
       .then((data) => {
         if (cancelled) return;
         setLot(data);
         setPreParked(generatePreParked(data));
+        setError(null);
         setLoading(false);
       })
-      .catch((err) => {
-        console.error("Failed to load lot.json", err);
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        const message = reason instanceof Error ? reason.message : "Failed to load garage layout";
+        console.error(message);
+        setError(message);
         setLoading(false);
       });
     return () => {
@@ -447,514 +363,411 @@ export function useSimulation(): SimulationState {
     };
   }, []);
 
-  // --- Clear pending no_slot timers on unmount ---
   useEffect(() => {
     return () => {
-      noSlotTimersRef.current.forEach(clearTimeout);
-      noSlotTimersRef.current.clear();
+      removalTimersRef.current.forEach(clearTimeout);
+      removalTimersRef.current.clear();
     };
   }, []);
 
-  // --- Send state to backend ---
   const sendState = useCallback(() => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const websocket = wsRef.current;
+    if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
+
     const cars = activeCarsRef.current
-      .filter((c) => !c.parked)
-      .map((c) => ({
-        id: c.id,
-        color: c.color,
-        plate: c.plate,
-        size: c.size,
-        node: c.fromNode,
-        leaving: c.leaving,
+      .filter((car) => !car.parked)
+      .map((car) => ({
+        id: car.id,
+        color: car.color,
+        plate: car.plate,
+        node: car.fromNode,
+        leaving: car.leaving,
+        assigned_slot: car.leaving ? null : car.slot,
+        vacating_slot: car.vacating,
       }));
-    // Tell the backend which slots already have a car so it never
-    // assigns an occupied slot to an active car. This covers pre-parked
-    // and parked cars, plus the slots active routing cars are heading
-    // toward — closing the gap where a just-parked car's slot briefly
-    // leaves routing_claimed before it appears in the frontend parked list.
+
+    // This is a simulated physical sensor snapshot. Active reservations are
+    // deliberately excluded because Python owns them.
     const occupiedSlots = new Set<string>();
-    for (const p of preParkedRef.current) occupiedSlots.add(p.slotNode);
-    for (const p of parkedRef.current) occupiedSlots.add(p.slotNode);
-    // Also include slots that active routing cars are heading toward.
-    for (const c of activeCarsRef.current) {
-      if (c.slot && !c.leaving) occupiedSlots.add(c.slot);
-      // A departing car still blocks its bay until it has physically pulled
-      // out of it. Releasing it on the first tick let an arriving car be sent
-      // straight into an occupied bay.
-      if (c.vacating && c.fromNode === c.vacating) occupiedSlots.add(c.vacating);
+    for (const car of preParkedRef.current) occupiedSlots.add(car.slotNode);
+    for (const car of parkedRef.current) occupiedSlots.add(car.slotNode);
+    for (const car of activeCarsRef.current) {
+      if (car.vacating && car.fromNode === car.vacating) occupiedSlots.add(car.vacating);
     }
-    const msg: StateMessage = {
+
+    const message: StateMessage = {
       type: "state",
       cars,
       occupied_slots: [...occupiedSlots],
     };
+
     try {
-      ws.send(JSON.stringify(msg));
+      websocket.send(JSON.stringify(message));
     } catch {
-      /* ignore send errors */
+      // onclose handles reconnecting.
     }
   }, []);
 
-  // --- Apply instructions to stationary cars ---
-  const applyInstructions = useCallback(
-    (signs: InstructionSign[]) => {
-      const lotData = lotRef.current;
-      if (!lotData) return;
+  const applyInstructions = useCallback((instructions: InstructionSign[]) => {
+    const lotData = lotRef.current;
+    if (!lotData) return;
 
-      // Store latest instruction per car.
-      const map = latestInstructionsRef.current;
-      for (const sign of signs) {
-        map.set(sign.car_id, sign);
+    const map = instructionsRef.current;
+    for (const instruction of instructions) map.set(instruction.car_id, instruction);
+
+    const cars = activeCarsRef.current;
+    let changed = false;
+    const newlyParked: ActiveCar[] = [];
+    const departed: string[] = [];
+
+    for (const car of cars) {
+      if (car.parked) continue;
+      const instruction = map.get(car.id);
+      if (!instruction) continue;
+      if (instruction.node !== car.fromNode || car.toNode !== car.fromNode) continue;
+
+      if (instruction.status === "no_slot" || instruction.status === "no_path") {
+        if (car.status === instruction.status) continue;
+        car.status = instruction.status;
+        const timer = setTimeout(() => {
+          removalTimersRef.current.delete(timer);
+          setActiveCars((current) => {
+            const existing = current.find((candidate) => candidate.id === car.id);
+            if (!existing || existing.status !== instruction.status) return current;
+            instructionsRef.current.delete(car.id);
+            return current.filter((candidate) => candidate.id !== car.id);
+          });
+        }, 3000);
+        removalTimersRef.current.add(timer);
+        changed = true;
+        continue;
       }
 
-      // Apply to cars that are stationary at the instructed node.
-      let changed = false;
-      const cars = activeCarsRef.current;
-      const parkedThisCall: ActiveCar[] = [];
-      const departedThisCall: string[] = [];
-      for (const car of cars) {
-        if (car.parked) continue;
-        const sign = map.get(car.id);
-        if (!sign) continue;
-        // Only act when the car is waiting at the sign's node.
-        if (sign.node !== car.fromNode || car.toNode !== car.fromNode) continue;
-
-        if (sign.status === "no_slot") {
-          if (car.status === "no_slot") continue; // already scheduled, don't re-schedule
-          car.status = "no_slot";
-          const t = setTimeout(() => {
-            noSlotTimersRef.current.delete(t);
-            setActiveCars((prev) => {
-              const c = prev.find((x) => x.id === car.id);
-              if (!c || c.status !== "no_slot") return prev; // recovered or gone
-              latestInstructionsRef.current.delete(car.id);
-              return prev.filter((x) => x.id !== car.id);
-            });
-          }, 3000);
-          noSlotTimersRef.current.add(t);
-          changed = true;
-          continue;
-        }
-
-        if (sign.status === "left") {
-          // Reached the exit. Drop it from the simulation entirely.
-          car.status = "left";
-          departedThisCall.push(car.id);
-          changed = true;
-          continue;
-        }
-
-        if (sign.status === "parked" || sign.direction === "arrived") {
-          // Car has reached its assigned slot.
-          car.status = "parked";
-          car.parked = true;
-          car.slot = sign.slot;
-          parkedThisCall.push(car);
-          changed = true;
-          continue;
-        }
-
-        // The direction label is no longer unique on a two-way road: both
-        // neighbours are "straight". Use the explicit BFS route, with the old
-        // direction lookup only as a fallback for older backend messages.
-        const routeIsCurrent = sign.path?.[0] === car.fromNode;
-        const next = routeIsCurrent
-          ? sign.path?.[1] ?? null
-          : nextNodeForDirection(lotData, car.fromNode, sign.direction);
-        const beyond = routeIsCurrent && sign.path?.[1] === next ? sign.path?.[2] : undefined;
-
-        if (next && isNodeBusy(lotData, cars, car, next, beyond, map)) continue;
-
-        if (next && next !== car.toNode) {
-          car.toNode = next;
-          car.status = "routing";
-          car.slot = sign.slot;
-          changed = true;
-        }
+      if (instruction.status === "left") {
+        car.status = "left";
+        departed.push(car.id);
+        changed = true;
+        continue;
       }
 
-      if (changed) {
-        // Collect slots that active cars are heading to (routing or parked).
-        const claimedSlots = new Set(
-          cars
-            .filter((c) => c.slot)
-            .map((c) => c.slot as string),
-        );
-        // Remove any pre-parked cars in those slots to avoid visual overlap.
-        if (claimedSlots.size > 0) {
-          setPreParked((prev) =>
-            prev.filter((p) => !claimedSlots.has(p.slotNode)),
-          );
-        }
+      if (instruction.status === "parked") {
+        car.status = "parked";
+        car.parked = true;
+        car.slot = instruction.slot ?? car.fromNode;
+        newlyParked.push(car);
+        changed = true;
+        continue;
+      }
 
-        // Migrate parked cars into the static parked list, then drop them
-        // from the active set. Both setStates are top-level (no nesting).
-        const now = Date.now();
-        const newlyParked = parkedThisCall.map((c) => ({
-          key: `parked-${c.id}`,
-          slotNode: c.slot || c.fromNode,
-          color: c.color,
-          plate: c.plate,
-          size: c.size,
+      const routeIsCurrent = instruction.path[0] === car.fromNode;
+      const next = routeIsCurrent
+        ? instruction.path[1] ?? null
+        : instruction.direction
+          ? nextNodeForDirection(lotData, car.fromNode, instruction.direction)
+          : null;
+      const beyond = routeIsCurrent && instruction.path[1] === next
+        ? instruction.path[2]
+        : undefined;
+
+      if (next && isRoadBlocked(lotData, cars, car, next, beyond, map)) continue;
+      if (next && next !== car.toNode) {
+        car.toNode = next;
+        car.status = "routing";
+        car.slot = instruction.slot;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      const claimed = new Set(
+        cars.flatMap((car) => (!car.leaving && car.slot ? [car.slot] : [])),
+      );
+      if (claimed.size > 0) {
+        setPreParked((current) => current.filter((car) => !claimed.has(car.slotNode)));
+      }
+
+      const now = Date.now();
+      if (newlyParked.length > 0) {
+        const additions: ParkedCarData[] = newlyParked.map((car) => ({
+          key: `parked-${car.id}`,
+          slotNode: car.slot ?? car.fromNode,
+          color: car.color,
+          plate: car.plate,
+          size: car.size,
           parkedAt: now,
           stayMs: MIN_STAY_MS + Math.random() * (MAX_STAY_MS - MIN_STAY_MS),
         }));
-        if (newlyParked.length > 0) {
-          // Replace any existing entries at the same slot (cleans up stale
-          // duplicates from pre-fix double-assignments) and dedupe the
-          // existing list, then append new arrivals that don't collide.
-          setParked((p) => {
-            const bySlot = new Map<string, (typeof p)[number]>();
-            for (const x of p) bySlot.set(x.slotNode, x);
-            for (const c of newlyParked) bySlot.set(c.slotNode, c);
-            return [...bySlot.values()];
-          });
-        }
-        const gone = new Set(departedThisCall);
-        setActiveCars((prev) =>
-          prev.some((c) => c.parked || gone.has(c.id))
-            ? prev.filter((c) => !c.parked && !gone.has(c.id))
-            : prev,
-        );
-      }
-
-      // Prune instructions for cars no longer in activeCars.
-      const activeIds = new Set(cars.map((c) => c.id));
-      for (const key of latestInstructionsRef.current.keys()) {
-        if (!activeIds.has(key)) latestInstructionsRef.current.delete(key);
-      }
-
-      // --- Compute what each permanent signboard shows ---
-      //
-      // A board exists at every turn and at the foot of every ramp. It shows
-      // a QUEUE, not a single car: a driver three cars back needs to know
-      // their own instruction, not watch the board talk to somebody else.
-      // The nearest car is the one being instructed now; the rest are told
-      // what is coming. As the leader passes the node it drops off its route
-      // and the next car becomes the leader on its own.
-      //
-      // Each car appears on exactly ONE board: the FIRST one on its route.
-      // That is the board it can actually see from the lane it is in, and it
-      // lights the moment the car enters that lane rather than when it
-      // arrives. Listing a car on every board along its whole route lit up
-      // signs two floors ahead for a car a minute away.
-      const queues = new Map<string, BoardCar[]>();
-      for (const car of cars) {
-        if (car.parked || car.status === "no_slot") continue;
-        const sign = map.get(car.id);
-        if (!sign) continue;
-        const route = sign.path ?? [sign.node];
-        // The backend's route BEGINS at the node the car is standing on, or
-        // has just left. Counting that node as an upcoming board was the bug
-        // behind "cars are passing but the board isn't working": a car that
-        // had already driven under a turn board and was going round the loop
-        // still had that board as hop 0 at distance 0, so the board kept it in
-        // the big hero block, reading NOW, for the whole 4.5-second traversal
-        // — while the car actually approaching was demoted to a small grey
-        // row. Measured, every single "NOW" on a board was a car that had
-        // already gone past it.
-        //
-        // So once a car is driving away from route[0], that node is behind it
-        // and the first board it can still reach is route[1] onward.
-        const movingOff = route.length > 1 && car.fromNode === route[0] && car.toNode === route[1];
-        const startHop = movingOff ? 1 : 0;
-        // How much of that first leg is left, so the distance shown counts
-        // from where the car actually is rather than from the node behind it.
-        let travelled = movingOff
-          ? (1 - car.progress) * nodeGap(lotData, route[0], route[1])
-          : 0;
-        for (let hop = startHop; hop < route.length; hop++) {
-          if (hop > startHop) travelled += nodeGap(lotData, route[hop - 1], route[hop]);
-          const node = lotData.nodes[route[hop]];
-          if (!node || (node.type !== "turn" && node.type !== "ramp_up")) continue;
-          const queue = queues.get(route[hop]) ?? [];
-          queue.push({
-            carId: car.id,
-            color: sign.color,
-            plate: sign.plate,
-            // The move to make AT that board, not the car's current one.
-            direction: directionAt(lotData, route, hop),
-            slot: sign.slot ?? "",
-            leaving: !!car.leaving,
-            distance: travelled,
-          });
-          queues.set(route[hop], queue);
-          break;
-        }
-      }
-      const nodeSignList: NodeSign[] = [...queues].map(([nodeId, queue]) => ({
-        nodeId,
-        floor: lotData.nodes[nodeId]?.floor ?? 0,
-        cars: queue.sort((a, b) => a.distance - b.distance).slice(0, BOARD_ROWS),
-      }));
-
-      // Only push to React state when what the boards actually display has
-      // changed, so a 5 Hz tick does not re-render 11 signboards every time.
-      // Distance is quantised because it changes continuously and would
-      // otherwise defeat the comparison entirely.
-      const sig = nodeSignList
-        .map(
-          (n) =>
-            n.nodeId +
-            ":" +
-            n.cars
-              .map((c) => `${c.plate}|${c.direction}|${c.slot}|${Math.round(c.distance)}`)
-              .join(","),
-        )
-        .join("|");
-      nodeSignsRef.current = nodeSignList;
-      if (sig !== lastSignSigRef.current) {
-        lastSignSigRef.current = sig;
-        setNodeSigns(nodeSignList);
-      }
-      // --- Routes for the 2D route panel ---
-      // Same instruction data the boards use, surfaced so the panel can draw
-      // the search result the backend produced. Gated on a signature so a
-      // 5 Hz tick does not redraw the schematic when nothing has moved.
-      const routes: CarRoute[] = [];
-      for (const car of cars) {
-        if (car.parked) continue;
-        const sign = map.get(car.id);
-        if (!sign) continue;
-        // A one-node path is a car sitting on its destination; there is no
-        // route to draw, and selecting it left the panel showing "0 hops".
-        if (!sign.path || sign.path.length < 2) continue;
-        routes.push({
-          carId: car.id,
-          plate: sign.plate,
-          color: sign.color,
-          slot: sign.slot ?? null,
-          path: sign.path ?? [],
-          floor: lotData.nodes[sign.node]?.floor ?? 0,
+        setParked((current) => {
+          const bySlot = new Map(current.map((car) => [car.slotNode, car]));
+          for (const car of additions) bySlot.set(car.slotNode, car);
+          return [...bySlot.values()];
         });
       }
-      const routeSig = routes.map((r) => `${r.carId}:${r.path[0]}:${r.path.length}`).join("|");
-      if (routeSig !== lastRouteSigRef.current) {
-        lastRouteSigRef.current = routeSig;
-        setCarRoutes(routes);
+
+      const gone = new Set(departed);
+      setActiveCars((current) =>
+        current.some((car) => car.parked || gone.has(car.id))
+          ? current.filter((car) => !car.parked && !gone.has(car.id))
+          : current,
+      );
+    }
+
+    const activeIds = new Set(cars.map((car) => car.id));
+    for (const id of map.keys()) {
+      if (!activeIds.has(id)) map.delete(id);
+    }
+
+    const queues = new Map<string, BoardCar[]>();
+    for (const car of cars) {
+      if (car.parked || car.status === "no_slot" || car.status === "no_path") continue;
+      const instruction = map.get(car.id);
+      if (!instruction) continue;
+      const route = instruction.path.length > 0 ? instruction.path : [instruction.node];
+      const movingOff = route.length > 1 && car.fromNode === route[0] && car.toNode === route[1];
+      const startHop = movingOff ? 1 : 0;
+      let travelled = movingOff
+        ? (1 - car.progress) * nodeGap(lotData, route[0], route[1])
+        : 0;
+
+      for (let hop = startHop; hop < route.length; hop += 1) {
+        if (hop > startHop) travelled += nodeGap(lotData, route[hop - 1], route[hop]);
+        const node = lotData.nodes[route[hop]];
+        if (!node || (node.type !== "turn" && node.type !== "ramp_up")) continue;
+        const queue = queues.get(route[hop]) ?? [];
+        queue.push({
+          carId: car.id,
+          color: instruction.color,
+          plate: instruction.plate,
+          direction: directionAt(lotData, route, hop),
+          slot: instruction.slot ?? "",
+          leaving: car.leaving,
+          distance: travelled,
+        });
+        queues.set(route[hop], queue);
+        break;
       }
+    }
 
-    },
-    [],
-  );
+    const signList: NodeSign[] = [...queues].map(([nodeId, queue]) => ({
+      nodeId,
+      floor: lotData.nodes[nodeId]?.floor ?? 0,
+      cars: queue.sort((a, b) => a.distance - b.distance).slice(0, BOARD_ROWS),
+    }));
+    const signSignature = signList
+      .map((sign) =>
+        `${sign.nodeId}:${sign.cars
+          .map((car) => `${car.plate}|${car.direction}|${car.slot}|${Math.round(car.distance)}`)
+          .join(",")}`,
+      )
+      .join("|");
+    nodeSignsRef.current = signList;
+    if (signSignature !== lastSignSignatureRef.current) {
+      lastSignSignatureRef.current = signSignature;
+      setNodeSigns(signList);
+    }
 
-  // --- Dev-only: publish sim state so an automated pass can see what a car
-  //     believes it is doing, rather than inferring it from pixels.
-  //
-  //     Refreshed every DEV_PUBLISH_MS, which is the finest duration anything
-  //     built on top of this can measure. Keep it well under the shortest
-  //     fault worth catching. ---
+    const routes: CarRoute[] = [];
+    for (const car of cars) {
+      if (car.parked) continue;
+      const instruction = map.get(car.id);
+      if (!instruction || instruction.path.length < 2) continue;
+      routes.push({
+        carId: car.id,
+        plate: instruction.plate,
+        color: instruction.color,
+        slot: instruction.slot,
+        path: instruction.path,
+        floor: lotData.nodes[instruction.node]?.floor ?? 0,
+        routeDistance: instruction.route_distance,
+        estimatedSeconds: instruction.estimated_seconds,
+        destinationType: instruction.destination_type,
+      });
+    }
+    const routeSignature = routes
+      .map((route) =>
+        `${route.carId}:${route.slot ?? "-"}:${route.routeDistance}:${route.path.join(">")}`,
+      )
+      .join("|");
+    if (routeSignature !== lastRouteSignatureRef.current) {
+      lastRouteSignatureRef.current = routeSignature;
+      setCarRoutes(routes);
+    }
+  }, []);
+
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    const id = setInterval(() => {
+    const interval = setInterval(() => {
       (window as unknown as Record<string, unknown>).__parcoarSim = {
-        cars: activeCarsRef.current.map((c) => ({
-          id: c.id,
-          size: c.size,
-          from: c.fromNode,
-          to: c.toNode,
-          slot: c.slot,
-          status: c.status,
-          leaving: c.leaving,
-          parked: c.parked,
-          // How far along the current leg, so a checker can tell a car that is
-          // standing still from one that is simply between two nodes.
-          progress: c.progress,
+        cars: activeCarsRef.current.map((car) => ({
+          id: car.id,
+          size: car.size,
+          from: car.fromNode,
+          to: car.toNode,
+          slot: car.slot,
+          status: car.status,
+          leaving: car.leaving,
+          parked: car.parked,
+          progress: car.progress,
         })),
-        signs: [...latestInstructionsRef.current.entries()].map(([k, v]) => ({
-          id: k,
-          node: v.node,
-          dir: v.direction,
-          slot: v.slot,
-          status: v.status,
-          hops: v.path?.length ?? 0,
-          path: v.path ?? [],
+        signs: [...instructionsRef.current.entries()].map(([id, instruction]) => ({
+          id,
+          node: instruction.node,
+          dir: instruction.direction,
+          slot: instruction.slot,
+          status: instruction.status,
+          path: instruction.path,
+          routeDistance: instruction.route_distance,
         })),
         boards: nodeSignsRef.current,
         parked: parkedRef.current.length,
       };
     }, DEV_PUBLISH_MS);
-    return () => clearInterval(id);
+    return () => clearInterval(interval);
   }, []);
 
-  // --- WebSocket connection with auto-reconnect ---
   useEffect(() => {
-    let reconnectTimer: ReturnType<typeof setTimeout>;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let disposed = false;
 
     const connect = () => {
       if (disposed) return;
-      let ws: WebSocket;
+      let websocket: WebSocket;
       try {
-        ws = new WebSocket(WS_URL);
+        websocket = new WebSocket(WS_URL);
       } catch {
         reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
         return;
       }
-      wsRef.current = ws;
+      wsRef.current = websocket;
 
-      ws.onopen = () => {
+      websocket.onopen = () => {
         setConnected(true);
         setLotFull(false);
+        sendState();
       };
-
-      ws.onmessage = (ev) => {
+      websocket.onmessage = (event) => {
         try {
-          const msg = JSON.parse(ev.data as string) as ServerMessage;
-          if (msg.type === "instructions") {
-            const signs = (msg as InstructionsMessage).signs ?? [];
-            const anyNoSlot = signs.some((s) => s.status === "no_slot");
-            setLotFull(anyNoSlot);
-            applyInstructions(signs);
-          }
+          const message = JSON.parse(event.data as string) as ServerMessage;
+          if (message.type !== "instructions") return;
+          const instructions = (message as InstructionsMessage).signs ?? [];
+          setLotFull(instructions.some((instruction) => instruction.status === "no_slot"));
+          applyInstructions(instructions);
         } catch {
-          /* ignore malformed messages */
+          // Ignore malformed server frames.
         }
       };
-
-      ws.onclose = () => {
-        // Only clear state if this is still the active connection.
-        // In React StrictMode, the first effect's WS may close after
-        // the second effect has already created a new one.
-        if (wsRef.current === ws) {
+      websocket.onclose = () => {
+        if (wsRef.current === websocket) {
+          wsRef.current = null;
           setConnected(false);
           setLotFull(false);
-          wsRef.current = null;
         }
-        if (!disposed) {
-          reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
-        }
+        if (!disposed) reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
       };
-
-      ws.onerror = () => {
-        // onclose will handle reconnect.
+      websocket.onerror = () => {
         try {
-          ws.close();
+          websocket.close();
         } catch {
-          /* ignore */
+          // onclose performs recovery.
         }
       };
     };
 
     connect();
-
     return () => {
       disposed = true;
-      clearTimeout(reconnectTimer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       try {
         wsRef.current?.close();
       } catch {
-        /* ignore */
+        // Already closed.
       }
       wsRef.current = null;
     };
-  }, [applyInstructions]);
+  }, [applyInstructions, sendState]);
 
-  // --- State tick (~200ms) ---
   useEffect(() => {
-    const id = setInterval(sendState, STATE_TICK_MS);
-    return () => clearInterval(id);
+    const interval = setInterval(sendState, STATE_TICK_MS);
+    return () => clearInterval(interval);
   }, [sendState]);
 
-  // --- Car arrival handler (called from Car useFrame) ---
-  const onArrive = useCallback(
-    (_carId: string, _node: string) => {
-      // The Car component already updated car.fromNode. Send state promptly
-      // so the backend responds with the next direction without waiting.
-      sendState();
-    },
-    [sendState],
-  );
+  const onArrive = useCallback(() => sendState(), [sendState]);
 
-  // Push the time scale down to the cars. See sim/simSpeed.ts for why this is
-  // a module value rather than a prop.
   useEffect(() => {
     setSpeedScale(settings.speed);
   }, [settings.speed]);
 
-  // --- Spawning: keep the road at the target number of arriving cars ---
   useEffect(() => {
     if (!lot) return;
-    const id = setInterval(() => {
+    const interval = setInterval(() => {
       const now = Date.now();
-      // Count arrivals only. A departing car occupies the road for a good 90
-      // seconds on its way to the top exit, and if it counted toward the cap
-      // a busy garage would stop admitting anyone.
-      const count = activeCarsRef.current.filter((c) => !c.leaving).length;
-      // Don't spawn if a car is still sitting at the entry node (fromNode === toNode === E0).
+      const incomingCount = activeCarsRef.current.filter((car) => !car.leaving).length;
       const entryBlocked = activeCarsRef.current.some(
-        (c) => c.fromNode === ENTRY_NODE && c.toNode === ENTRY_NODE,
+        (car) => car.fromNode === ENTRY_NODE && car.toNode === ENTRY_NODE,
       );
-      const { targetCars, spawnEverySec, speed } = settingsRef.current;
-      if (speed === 0) return;
-      if (count < targetCars && !entryBlocked && now - lastSpawnRef.current > spawnEverySec * 1000) {
+      const current = settingsRef.current;
+      if (current.speed === 0) return;
+      if (
+        incomingCount < current.targetCars &&
+        !entryBlocked &&
+        now - lastSpawnRef.current > current.spawnEverySec * 1000
+      ) {
         const car = spawnCar();
-        setActiveCars((prev) =>
-          prev.filter((c) => !c.leaving).length >= targetCars ? prev : [...prev, car],
+        setActiveCars((existing) =>
+          existing.filter((candidate) => !candidate.leaving).length >= current.targetCars
+            ? existing
+            : [...existing, car],
         );
         lastSpawnRef.current = now;
       }
     }, 400);
-    return () => clearInterval(id);
+    return () => clearInterval(interval);
   }, [lot]);
 
-  // --- Departures: parked cars leave again after their stay ---
-  // Only cars that actually drove in are eligible; the pre-parked decoration
-  // has no parkedAt and stays put. Without this the garage fills to capacity
-  // and then sits on LOT FULL forever.
   useEffect(() => {
     if (!lot) return;
-    const id = setInterval(() => {
-      // Leaving a ground-floor bay can still mean about 250 hops and a minute
-      // and a half of road time. Without a cap on how many do that at once, they
-      // accumulate: a soak run peaked at 34 cars on the road against an
-      // arrivals cap of 6.
-      if (settingsRef.current.speed === 0) return;
-      const leaving = activeCarsRef.current.filter((c) => c.leaving).length;
-      if (leaving >= settingsRef.current.maxLeaving) return;
+    const interval = setInterval(() => {
+      const current = settingsRef.current;
+      if (current.speed === 0) return;
+      const leavingCount = activeCarsRef.current.filter((car) => car.leaving).length;
+      if (leavingCount >= current.maxLeaving) return;
 
       const now = Date.now();
       const due = parkedRef.current.find(
-        (p) => p.parkedAt !== undefined && now - p.parkedAt > p.stayMs!,
+        (car) => car.parkedAt !== undefined && now - car.parkedAt > (car.stayMs ?? 0),
       );
       if (!due) return;
-      const size = lotRef.current?.nodes[due.slotNode]?.size ?? "medium";
-      setParked((prev) => prev.filter((p) => p.key !== due.key));
-      setActiveCars((prev) => [...prev, departCar(due, size)]);
+      setParked((existing) => existing.filter((car) => car.key !== due.key));
+      setActiveCars((existing) => [...existing, departCar(due)]);
     }, 2000);
-    return () => clearInterval(id);
+    return () => clearInterval(interval);
   }, [lot]);
 
-  // --- Seed initial cars once the lot is loaded ---
   useEffect(() => {
     if (!lot || activeCars.length > 0) return;
-    const initial = [spawnCar()];
-    setActiveCars(initial);
-    // Set lastSpawnRef so the interval spawner doesn't fire a 2nd car immediately.
+    setActiveCars([spawnCar()]);
     lastSpawnRef.current = Date.now();
   }, [lot, activeCars.length]);
 
   const updateSettings = useCallback((patch: Partial<SimSettings>) => {
-    setSettings((prev) => ({ ...prev, ...patch }));
+    setSettings((current) => ({ ...current, ...patch }));
   }, []);
 
   const spawnNow = useCallback(() => {
-    // Refuse only when a car is still standing on the entry node, or the new
-    // one would materialise inside it.
-    if (activeCarsRef.current.some((c) => c.fromNode === ENTRY_NODE && c.toNode === ENTRY_NODE)) {
+    if (
+      activeCarsRef.current.some(
+        (car) => car.fromNode === ENTRY_NODE && car.toNode === ENTRY_NODE,
+      )
+    ) {
       return;
     }
-    setActiveCars((prev) => [...prev, spawnCar()]);
+    setActiveCars((current) => [...current, spawnCar()]);
     lastSpawnRef.current = Date.now();
   }, []);
 
   const clearRoad = useCallback(() => {
-    // Parked cars stay where they are; only the moving ones go. Their claimed
-    // bays are released by the next state tick, which sends the backend the
-    // occupied set rather than a diff.
     setActiveCars([]);
+    instructionsRef.current.clear();
   }, []);
 
   const resetGarage = useCallback(() => {
@@ -963,12 +776,14 @@ export function useSimulation(): SimulationState {
     setActiveCars([]);
     setParked([]);
     setPreParked(generatePreParked(current, settingsRef.current.fill));
+    instructionsRef.current.clear();
     lastSpawnRef.current = Date.now();
   }, []);
 
   return {
     lot,
     loading,
+    error,
     connected,
     activeCars,
     preParked,

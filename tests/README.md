@@ -1,39 +1,33 @@
 # Tests
 
-Two suites, because there are two kinds of thing that can break.
-
-## `test_lot_graph.py`
-
-Checks the garage graph and the search that runs over it. Fast, no servers
-needed.
+## Backend and graph
 
 ```bash
-backend/.venv/bin/python -m unittest discover -s tests -t .
+python -m unittest discover -s tests -t . -v
 ```
 
-It asserts that every road can be driven both ways, that turns are labelled
-left and right correctly in both directions, that the search never routes
-*through* a parking bay on its way somewhere else, that a departing car can
-still reach the exit, and that bays get handed out on all three floors rather
-than piling onto the nearest one.
+These tests cover weighted edge costs, distance-based bay selection, identical
+bays, reservations, reconnect recovery, departures, stale-car cleanup and
+explicit `no_path` handling.
 
-## `simcheck/`
+## Frontend
 
-Checks how the cars behave. It opens the running simulator in a real browser,
-watches every car for a few minutes, and fails if anything a person would call
-broken happened. Slow, and both servers have to be up.
+```bash
+cd frontend
+npm run build
+npm test
+```
+
+The frontend tests cover layout geometry and the manually driven car's road
+centerlines.
+
+## Movement soak test
+
+With both servers running:
 
 ```bash
 node tests/simcheck/check.mjs
 ```
 
-See [simcheck/README.md](simcheck/README.md) for what it looks for and why the
-pause threshold is set where it is.
-
-## Which one to run
-
-Change the graph, the generator, or the search: run the Python tests.
-
-Change anything that moves a car (the queueing rules, path resolution, the
-curve generators): run simcheck. The Python tests will not notice, because a
-car can follow a perfectly valid route and still drive through a wall.
+This opens the simulator in a real browser and checks for stuck cars, overlaps,
+jumps, unexpected reversals, mid-route reassignment and missing guidance.

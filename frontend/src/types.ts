@@ -10,11 +10,9 @@ export type NodeType =
   | "exit"
   | "approach";
 
-export type SlotSize = "small" | "medium" | "large";
-
 export type Direction = "left" | "right" | "straight" | "up" | "down" | "arrived";
 
-export type CarStatus = "routing" | "parked" | "no_slot" | "left";
+export type CarStatus = "routing" | "parked" | "no_slot" | "no_path" | "left";
 
 export type CarColor =
   | "red"
@@ -27,19 +25,26 @@ export type CarColor =
   | "white"
   | "silver";
 
-/** A node in the lot graph, as defined in lot.json. */
+/** Compatibility marker for the renderer. All bays use the same value. */
+export type SlotSize = "standard";
+
+/** Visual vehicle model only. It has no effect on bay assignment. */
+export type CarSize = "small" | "medium" | "large";
+
 export interface LotNode {
   type: NodeType;
   floor: number;
   x: number;
   y: number;
+  /** Renderer compatibility only; never used by routing. */
   size?: SlotSize;
 }
 
-/** A directed edge from one node to another with a direction label. */
 export interface LotEdge {
   dir: Direction;
   to: string;
+  /** Physical distance driven along this directed edge. */
+  cost: number;
 }
 
 export interface LotData {
@@ -50,57 +55,55 @@ export interface LotData {
   junction_spacing: number;
   aisle_spacing: number;
   slot_offset: number;
-  /** Full driving-road width across both lanes (mirrors constants.ROAD_WIDTH). */
   road_width?: number;
-  /** Parking bay depth perpendicular to the aisle (mirrors constants.SLOT_DEPTH). */
   slot_depth?: number;
+  ramp_outset?: number;
+  ramp_corner_radius?: number;
   nodes: Record<string, LotNode>;
   edges: Record<string, LotEdge[]>;
 }
 
-// --- WebSocket messages (must match shared/spec.md exactly) ---
+// --- WebSocket messages (must match shared/spec.md) -----------------
 
 export interface StateCar {
   id: string;
   color: CarColor;
   plate: string;
-  size: SlotSize;
   node: string;
-  /** True once the car has finished parking and is driving to the exit. The
-   *  backend routes it to the exit node instead of a bay. This was being sent
-   *  on every car and drives the whole departure feature, but was missing from
-   *  this type; it only typechecked because the object comes from a .map(),
-   *  which skips excess-property checking. */
   leaving: boolean;
+  /** Existing reservation, sent so a reconnect can resume it. */
+  assigned_slot: string | null;
+  /** Bay still physically occupied while a departing car reverses out. */
+  vacating_slot: string | null;
 }
 
 export interface StateMessage {
   type: "state";
   cars: StateCar[];
-  /** Slot node IDs that already have a car (pre-parked + parked). */
+  /** Physical bay-sensor snapshot: pre-parked, parked, and currently vacating. */
   occupied_slots: string[];
 }
+
+export type DestinationType = "bay" | "exit" | null;
 
 export interface InstructionSign {
   car_id: string;
   color: CarColor;
   plate: string;
   node: string;
-  direction: Direction;
-  slot: string;
-  slot_floor: number;
+  direction: Direction | null;
+  destination: string | null;
+  destination_type: DestinationType;
+  destination_floor: number | null;
+  /** Parking bay only. Null while leaving or when no bay exists. */
+  slot: string | null;
   status: CarStatus;
-  /** Next node on the car's BFS path to its slot (look-ahead for signboards).
-   *  The frontend lights up the signboard at this node BEFORE the car arrives,
-   *  so the driver sees the direction in advance. null when the car is one
-   *  step from its slot or already parked. */
-  next_node?: string | null;
-  /** Direction to take at `next_node`. null when `next_node` is null. */
-  next_direction?: Direction | null;
-  /** The car's whole remaining route, current node first, slot last.
-   *  Signboards anywhere along this route light up as soon as the car is
-   *  heading their way, rather than only once it has arrived underneath. */
-  path?: string[];
+  next_node: string | null;
+  next_direction: Direction | null;
+  path: string[];
+  /** Remaining physical driving distance in lot units. */
+  route_distance: number;
+  estimated_seconds: number;
 }
 
 export interface InstructionsMessage {
@@ -110,79 +113,46 @@ export interface InstructionsMessage {
 
 export type ServerMessage = InstructionsMessage;
 
-// --- Runtime car model (frontend-side) ---
+// --- Runtime car model (frontend-side) ------------------------------
 
-export type CarSize = SlotSize;
-
-/** A car that exists in the simulation (active, moving). */
 export interface ActiveCar {
   id: string;
   color: CarColor;
   plate: string;
+  /** Visual model/body dimensions only; Python never receives this. */
   size: CarSize;
-  /** Current graph node the car is at or just left. */
   fromNode: string;
-  /** Node the car is travelling toward (equals fromNode when stationary). */
   toNode: string;
-  /** Interpolation progress 0..1 between fromNode and toNode. */
   progress: number;
-  /** Assigned slot node id, once known. */
   slot: string | null;
-  /** Latest status from the backend. */
   status: CarStatus;
-  /** True once the car has settled into its slot and should stop updating. */
   parked: boolean;
-  /** The bay this car is reversing out of, until it has actually left it.
-   *  A departing car releases its bay the moment it starts moving, which let
-   *  the backend hand that bay to an arriving car while the old one was still
-   *  physically sitting in it, so two cars ended up parked on top of each
-   *  other. Held until the car is no longer standing on the bay node. */
   vacating: string | null;
-  /** True when this car has finished its stay and is driving to the exit.
-   *  Leaving cars are routed to the exit node instead of to a bay, and are
-   *  removed from the simulation once they get there. */
   leaving: boolean;
 }
 
-/** One active car's current route, for the 2D route panel. This is the same
- *  data the signboards use, surfaced so the panel can draw the search result
- *  the Python backend produced. */
 export interface CarRoute {
   carId: string;
   plate: string;
   color: CarColor;
-  /** Where it is heading: a bay, or the exit if it is on its way out. */
   slot: string | null;
-  /** Whole remaining route, current node first. */
   path: string[];
-  /** Floor the car is on right now. */
   floor: number;
+  routeDistance: number;
+  estimatedSeconds: number;
+  destinationType: DestinationType;
 }
 
-/** One car queued for a signboard: a single row on the screen.
- *
- *  A car appears on exactly ONE board — the next one on its route — because
- *  that is the board it can actually see from the lane it is in. Listing it
- *  on every board along its whole route lit up signs two floors ahead for a
- *  car that would not arrive for a minute. */
 export interface BoardCar {
   carId: string;
   color: CarColor;
   plate: string;
-  /** What this car must do AT this board. */
   direction: Direction;
-  /** Bay it is heading for, e.g. "S2_5". Empty while a car is leaving. */
   slot: string;
-  /** True when the car is on its way out rather than to a bay. */
   leaving: boolean;
-  /** Road distance from the car to this board, in world units. */
   distance: number;
 }
 
-/** Everything one permanent signboard displays: the queue of cars heading
- *  for its node, nearest first. The nearest is the one being instructed
- *  right now; the rest are told what is coming so a driver three cars back
- *  already knows their turn. */
 export interface NodeSign {
   nodeId: string;
   floor: number;

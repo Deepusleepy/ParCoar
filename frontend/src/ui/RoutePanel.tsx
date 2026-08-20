@@ -1,34 +1,24 @@
 import { memo, useMemo, type JSX } from "react";
-import type { LotData, LotNode, NodeType } from "../types";
+import type { DestinationType, LotData, LotNode, NodeType } from "../types";
 import { bayLabel } from "../sim/constants";
 
-/** One car's view-model for the route panel. `color` is already a hex string. */
 export interface RoutePanelCar {
   carId: string;
   plate: string;
   color: string;
   slot: string | null;
   path: string[];
-  /** Floor the car is on right now. */
   floor: number;
+  routeDistance: number;
+  estimatedSeconds: number;
+  destinationType: DestinationType;
 }
 
 const VIEW_W = 360;
 const VIEW_H = 232;
 const MARGIN = 10;
-
 const FLOOR_LABEL = ["A", "B", "C"];
 
-/** Node id to the label painted on the floor and shown on every board:
- *  "S0_4" -> "A4". Anything that is not a bay (the exit, say) is passed
- *  through unchanged so it still reads sensibly. */
-function bayName(id: string | null): string {
-  return id ? bayLabel(id) : "no bay";
-}
-
-/** Radius and opacity per node type, tuned so 160 bays per floor do not
- *  overwhelm the schematic. Bays are tiny and dim; structure nodes are
- *  larger and brighter. */
 const NODE_STYLE: Record<NodeType, { r: number; fill: string; opacity: number }> = {
   slot: { r: 1.1, fill: "#52525b", opacity: 0.55 },
   junction: { r: 1.6, fill: "#a1a1aa", opacity: 0.7 },
@@ -40,19 +30,28 @@ const NODE_STYLE: Record<NodeType, { r: number; fill: string; opacity: number }>
   approach: { r: 2.2, fill: "#d4d4d8", opacity: 0.85 },
 };
 
-/** Linear fit from lot (x, y) to SVG coordinates. Uses a uniform scale so
- *  the garage keeps its real proportions, centered in the viewBox. */
-function makeProjection(nodesOnFloor: LotNode[]) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const n of nodesOnFloor) {
-    if (n.x < minX) minX = n.x;
-    if (n.y < minY) minY = n.y;
-    if (n.x > maxX) maxX = n.x;
-    if (n.y > maxY) maxY = n.y;
+function destinationName(car: RoutePanelCar): string {
+  if (car.destinationType === "exit") return "Exit";
+  return car.slot ? bayLabel(car.slot) : "No bay";
+}
+
+function makeProjection(nodes: LotNode[]) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const node of nodes) {
+    minX = Math.min(minX, node.x);
+    minY = Math.min(minY, node.y);
+    maxX = Math.max(maxX, node.x);
+    maxY = Math.max(maxY, node.y);
   }
   const spanX = Math.max(maxX - minX, 1);
   const spanY = Math.max(maxY - minY, 1);
-  const scale = Math.min((VIEW_W - 2 * MARGIN) / spanX, (VIEW_H - 2 * MARGIN) / spanY);
+  const scale = Math.min(
+    (VIEW_W - 2 * MARGIN) / spanX,
+    (VIEW_H - 2 * MARGIN) / spanY,
+  );
   const offX = MARGIN + ((VIEW_W - 2 * MARGIN) - spanX * scale) / 2;
   const offY = MARGIN + ((VIEW_H - 2 * MARGIN) - spanY * scale) / 2;
   return (x: number, y: number): [number, number] => [
@@ -72,23 +71,22 @@ export const RoutePanel = memo(function RoutePanel({
   selectedCarId: string | null;
   onSelectCar: (id: string | null) => void;
 }): JSX.Element | null {
-  if (!lot || !lot.nodes || Object.keys(lot.nodes).length === 0) return null;
-
-  const selectedCar = selectedCarId
-    ? cars.find((c) => c.carId === selectedCarId) ?? null
+  if (Object.keys(lot.nodes).length === 0) return null;
+  const selected = selectedCarId
+    ? cars.find((car) => car.carId === selectedCarId) ?? null
     : null;
-  const floor = selectedCar ? selectedCar.floor : 0;
-  const floorLabel = FLOOR_LABEL[floor] ?? String(floor);
+  const floor = selected?.floor ?? 0;
 
   return (
     <div className="pointer-events-auto absolute bottom-14 left-4 w-[360px] rounded-lg border border-neutral-800 bg-black/80 p-3 backdrop-blur-sm">
-      <CarChips
-        cars={cars}
-        selectedCarId={selectedCarId}
-        onSelectCar={onSelectCar}
+      <CarChips cars={cars} selectedCarId={selectedCarId} onSelectCar={onSelectCar} />
+      <Schematic
+        lot={lot}
+        floor={floor}
+        floorLabel={FLOOR_LABEL[floor] ?? String(floor)}
+        car={selected}
       />
-      <Schematic lot={lot} floor={floor} floorLabel={floorLabel} car={selectedCar} />
-      <Readout car={selectedCar} />
+      <Readout car={selected} />
     </div>
   );
 });
@@ -107,13 +105,13 @@ function CarChips({
   }
   return (
     <div className="mb-2 flex flex-wrap gap-1.5">
-      {cars.map((c) => {
-        const active = c.carId === selectedCarId;
+      {cars.map((car) => {
+        const active = car.carId === selectedCarId;
         return (
           <button
-            key={c.carId}
+            key={car.carId}
             type="button"
-            onClick={() => onSelectCar(active ? null : c.carId)}
+            onClick={() => onSelectCar(active ? null : car.carId)}
             className={
               "flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[11px] font-medium tabular-nums transition-colors " +
               (active
@@ -121,13 +119,10 @@ function CarChips({
                 : "border-neutral-700 text-neutral-300 hover:border-neutral-500 hover:text-white")
             }
           >
-            <span
-              className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: c.color }}
-            />
-            <span>{c.plate}</span>
+            <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: car.color }} />
+            <span>{car.plate}</span>
             <span className="text-neutral-500">·</span>
-            <span className="text-neutral-400">{bayName(c.slot)}</span>
+            <span className="text-neutral-400">{destinationName(car)}</span>
           </button>
         );
       })}
@@ -146,125 +141,92 @@ function Schematic({
   floorLabel: string;
   car: RoutePanelCar | null;
 }) {
-  // Base graph (edges + nodes) for this floor. Memoised on lot + floor so
-  // only the highlighted route re-renders on a sim tick.
   const base = useMemo(() => {
-    const nodeIdsOnFloor: string[] = [];
-    const nodesOnFloor: LotNode[] = [];
-    for (const id of Object.keys(lot.nodes)) {
-      const n = lot.nodes[id];
-      if (n && n.floor === floor) {
-        nodeIdsOnFloor.push(id);
-        nodesOnFloor.push(n);
-      }
-    }
-    const project = makeProjection(nodesOnFloor);
-
-    const edgeEls: JSX.Element[] = [];
+    const nodeIds = Object.keys(lot.nodes).filter((id) => lot.nodes[id]?.floor === floor);
+    const nodes = nodeIds.map((id) => lot.nodes[id]);
+    const project = makeProjection(nodes);
     const seen = new Set<string>();
-    for (const id of nodeIdsOnFloor) {
-      const outs = lot.edges[id];
-      if (!outs) continue;
-      const a = lot.nodes[id];
-      for (const e of outs) {
-        const b = lot.nodes[e.to];
-        if (!b || b.floor !== floor) continue;
-        // Undirected dedupe so each segment draws once.
-        const key = id < e.to ? `${id}|${e.to}` : `${e.to}|${id}`;
+    const edges: JSX.Element[] = [];
+
+    for (const id of nodeIds) {
+      const from = lot.nodes[id];
+      for (const edge of lot.edges[id] ?? []) {
+        const to = lot.nodes[edge.to];
+        if (!to || to.floor !== floor) continue;
+        const key = id < edge.to ? `${id}|${edge.to}` : `${edge.to}|${id}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const [ax, ay] = project(a.x, a.y);
-        const [bx, by] = project(b.x, b.y);
-        edgeEls.push(
-          <line
-            key={key}
-            x1={ax} y1={ay} x2={bx} y2={by}
-            stroke="#4b5566" strokeWidth={1.1}
-          />
+        const [x1, y1] = project(from.x, from.y);
+        const [x2, y2] = project(to.x, to.y);
+        edges.push(
+          <line key={key} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#4b5566" strokeWidth={1.1} />,
         );
       }
     }
 
-    const nodeEls: JSX.Element[] = nodeIdsOnFloor.map((id) => {
-      const n = lot.nodes[id];
-      const [x, y] = project(n.x, n.y);
-      const s = NODE_STYLE[n.type];
-      return (
-        <circle
-          key={id}
-          cx={x} cy={y} r={s.r}
-          fill={s.fill} opacity={s.opacity}
-        />
-      );
+    const circles = nodeIds.map((id) => {
+      const node = lot.nodes[id];
+      const [x, y] = project(node.x, node.y);
+      const style = NODE_STYLE[node.type];
+      return <circle key={id} cx={x} cy={y} r={style.r} fill={style.fill} opacity={style.opacity} />;
     });
-
-    return { project, nodeIdsOnFloor, edgeEls, nodeEls };
+    return { project, edges, circles };
   }, [lot, floor]);
 
-  // Highlighted route for the selected car. Recomputed each render (cheap:
-  // a handful of segments), so a sim tick only touches this layer.
-  const routeEls: JSX.Element[] = [];
+  const routeElements: JSX.Element[] = [];
   let continuesElsewhere = false;
   if (car && car.path.length > 0) {
-    const { project } = base;
-    const pts: [number, number][] = [];
+    const points: [number, number][] = [];
     for (const id of car.path) {
-      const n = lot.nodes[id];
-      if (!n) continue;
-      if (n.floor !== floor) {
+      const node = lot.nodes[id];
+      if (!node) continue;
+      if (node.floor !== floor) {
         continuesElsewhere = true;
-        // Stop the polyline at the first node that leaves this floor; the
-        // rest is described in text instead of drawn.
         break;
       }
-      pts.push(project(n.x, n.y));
+      points.push(base.project(node.x, node.y));
     }
-    if (pts.length >= 2) {
-      routeEls.push(
-        <>
-          {/* Dark casing under the route, so it separates from the graph even
-              where the two are the same value. The graph is drawn in greys up
-              to #d4d4d8, and two of the nine car colours are silver #94a3b8
-              and white #f8fafc: a silver car's route drawn in its own colour
-              is invisible against the junctions it runs along. */}
-          <polyline
-            key="route-casing"
-            points={pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ")}
-            fill="none"
-            stroke="#09090b"
-            strokeWidth={5.2}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-          <polyline
-            key="route"
-            points={pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ")}
-            fill="none"
-            stroke={car.color}
-            strokeWidth={2.6}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-        </>
+
+    if (points.length >= 2) {
+      const serialized = points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+      routeElements.push(
+        <polyline
+          key="route-casing"
+          points={serialized}
+          fill="none"
+          stroke="#09090b"
+          strokeWidth={5.2}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />,
+        <polyline
+          key="route"
+          points={serialized}
+          fill="none"
+          stroke={car.color}
+          strokeWidth={2.6}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />,
       );
     }
-    // Current position marker (path[0]) if it is on this floor.
-    if (pts.length > 0) {
-      const [cx, cy] = pts[0];
-      routeEls.push(
-        <circle key="cur" cx={cx} cy={cy} r={3.2} fill={car.color} stroke="#000" strokeWidth={0.6} />
+
+    if (points.length > 0) {
+      const [x, y] = points[0];
+      routeElements.push(
+        <circle key="current" cx={x} cy={y} r={3.2} fill={car.color} stroke="#000" strokeWidth={0.6} />,
       );
     }
-    // Destination marker (last path element) if it is on this floor.
-    const lastId = car.path[car.path.length - 1];
-    const lastNode = lastId ? lot.nodes[lastId] : undefined;
-    if (lastNode && lastNode.floor === floor && pts.length > 0) {
-      const last = pts[pts.length - 1];
-      routeEls.push(
-        <g key="dest">
-          <circle cx={last[0]} cy={last[1]} r={4} fill="none" stroke={car.color} strokeWidth={1.2} />
-          <circle cx={last[0]} cy={last[1]} r={1.2} fill={car.color} />
-        </g>
+
+    const destinationId = car.path.at(-1);
+    const destination = destinationId ? lot.nodes[destinationId] : undefined;
+    if (destination?.floor === floor && points.length > 0) {
+      const [x, y] = points.at(-1)!;
+      routeElements.push(
+        <g key="destination">
+          <circle cx={x} cy={y} r={4} fill="none" stroke={car.color} strokeWidth={1.2} />
+          <circle cx={x} cy={y} r={1.2} fill={car.color} />
+        </g>,
       );
     }
   }
@@ -276,9 +238,9 @@ function Schematic({
         className="block w-full rounded border border-neutral-800 bg-[#08090c]"
         shapeRendering="geometricPrecision"
       >
-        {base.edgeEls}
-        {base.nodeEls}
-        {routeEls}
+        {base.edges}
+        {base.circles}
+        {routeElements}
       </svg>
       <div className="pointer-events-none absolute left-2 top-1.5 text-[11px] font-semibold tracking-[0.18em] text-neutral-400">
         FLOOR {floorLabel}
@@ -294,20 +256,19 @@ function Schematic({
 
 function Readout({ car }: { car: RoutePanelCar | null }) {
   if (!car) {
-    return (
-      <div className="mt-2 text-[11px] text-neutral-500">
-        Select a car to see its route
-      </div>
-    );
+    return <div className="mt-2 text-[11px] text-neutral-500">Select a car to see its route</div>;
   }
-  const hops = Math.max(car.path.length - 1, 0);
   return (
-    <div className="mt-2 flex items-center justify-between text-[11px]">
+    <div className="mt-2 flex items-center justify-between gap-3 text-[11px]">
       <span className="text-neutral-400">
-        Bay <span className="font-semibold text-neutral-100">{bayName(car.slot)}</span>
+        {car.destinationType === "exit" ? "Destination" : "Bay"}{" "}
+        <span className="font-semibold text-neutral-100">{destinationName(car)}</span>
       </span>
-      <span className="text-neutral-400">
-        <span className="font-semibold tabular-nums text-neutral-100">{hops}</span> {hops === 1 ? "hop" : "hops"} left
+      <span className="text-right text-neutral-400">
+        <span className="font-semibold tabular-nums text-neutral-100">
+          {car.routeDistance.toFixed(1)}
+        </span>{" "}
+        units · ~{car.estimatedSeconds.toFixed(1)}s
       </span>
     </div>
   );
