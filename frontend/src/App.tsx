@@ -85,7 +85,10 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [overlays.routeMap, sim]);
+    // Depend on the specific values used, not on `sim`. useSimulation returns
+    // a fresh object literal every render, so depending on it tore the
+    // listener down and re-added it several times a second.
+  }, [overlays.routeMap, sim.updateSettings, sim.settings.speed]);
 
   const lot = sim.lot;
 

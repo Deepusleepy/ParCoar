@@ -221,15 +221,31 @@ function Schematic({
     }
     if (pts.length >= 2) {
       routeEls.push(
-        <polyline
-          key="route"
-          points={pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ")}
-          fill="none"
-          stroke={car.color}
-          strokeWidth={1.8}
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
+        <>
+          {/* Dark casing under the route, so it separates from the graph even
+              where the two are the same value. The graph is drawn in greys up
+              to #d4d4d8, and two of the nine car colours are silver #94a3b8
+              and white #f8fafc: a silver car's route drawn in its own colour
+              is invisible against the junctions it runs along. */}
+          <polyline
+            key="route-casing"
+            points={pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ")}
+            fill="none"
+            stroke="#09090b"
+            strokeWidth={5.2}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+          <polyline
+            key="route"
+            points={pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ")}
+            fill="none"
+            stroke={car.color}
+            strokeWidth={2.6}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+        </>
       );
     }
     // Current position marker (path[0]) if it is on this floor.

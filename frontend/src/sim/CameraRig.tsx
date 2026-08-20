@@ -76,9 +76,12 @@ const MOUSE_LOOK_SENSITIVITY = 0.0011;
 const PITCH_LIMIT = Math.PI / 2 - 0.05;
 
 /** Default vantage for Reset View: a high 3/4 aerial over the lot. */
+/** Where "Reset View" puts you: the same opening shot the app starts on. Keep
+ *  this in step with `cameraPos` in Scene.tsx, or resetting moves you
+ *  somewhere you have never been. */
 const DEFAULT_VANTAGE = {
-  pos: new THREE.Vector3(LOT_CENTER_X + 35, 65, LOT_CENTER_Z + 65),
-  look: new THREE.Vector3(LOT_CENTER_X, FLOOR_HEIGHT, LOT_CENTER_Z),
+  pos: new THREE.Vector3(LOT_CENTER_X - 96, 72, LOT_CENTER_Z - 104),
+  look: new THREE.Vector3(LOT_CENTER_X, (3 * FLOOR_HEIGHT) / 2, LOT_CENTER_Z),
 };
 
 /** Predefined camera framings for the preset (teleport) modes.

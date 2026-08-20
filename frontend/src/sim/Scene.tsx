@@ -243,10 +243,19 @@ export const Scene = memo(function Scene({
   carGroupsRef?: React.MutableRefObject<Map<string, THREE.Group>>;
   nodeSigns?: NodeSign[];
 }) {
-  // Camera framing: the lot spans roughly x[0,45], z[-16,88], y[0,45].
-  // We start high and to the front-left for a 3/4 aerial view; the free-fly
-  // rig reorients to face the lot centre on mount.
-  const cameraPos: [number, number, number] = [42, 78, -58];
+  // Opening shot: high and to the south-west for a three-quarter aerial view.
+  // The free-fly rig reorients to face the lot centre on mount.
+  //
+  // Far enough back that all three decks and the ramp fit the frame. The
+  // slabs span x -13.5 to 68.1 and z -13 to 64, and the building is 32 tall,
+  // so a closer vantage put the ground floor off the bottom of the viewport
+  // and the first thing anyone saw was a three-storey building with two
+  // storeys visible.
+  const cameraPos: [number, number, number] = [
+    LOT_CENTER_X - 96,
+    72,
+    LOT_CENTER_Z - 104,
+  ];
   const target: [number, number, number] = [LOT_CENTER_X, (3 * FLOOR_HEIGHT) / 2, LOT_CENTER_Z];
 
   // Target object for the skylight so its shadow frustum is centred on the
