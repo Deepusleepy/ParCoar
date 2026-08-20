@@ -1,243 +1,310 @@
-import json, os
-from collections import deque
-from websockets.sync.server import serve
+"""Small WebSocket backend for the ParCoar parking simulator."""
 
-# Load the lot layout (nodes and edges) from shared/lot.json.
-HERE = os.path.dirname(os.path.abspath(__file__))
-with open(os.path.join(HERE, "..", "shared", "lot.json")) as f:
-    lot = json.load(f)
+import heapq
+import json
+from websockets.sync.server import serve
+from generate_lot import build_lot
+
+lot = build_lot()
+
 nodes = lot["nodes"]
 edges = lot["edges"]
+all_slots = {node_id for node_id, node in nodes.items() if node["type"] == "slot"}
+EXIT_NODE = next(node_id for node_id, node in nodes.items() if node["type"] == "exit")
+CAR_SPEED = 7.0
 
-# Size rank: a car fits in a slot of equal or larger size (small=0, medium=1, large=2).
-SIZE_RANK = {"small": 0, "medium": 1, "large": 2}
 
-# All slot node ids in the lot.
-all_slots = [n for n, d in nodes.items() if d["type"] == "slot"]
-
-# The one exit node. Cars that have finished parking are routed here.
-EXIT_NODE = next(n for n, d in nodes.items() if d["type"] == "exit")
-
-# Per-connection state. A Session holds one client's view, so two concurrent
-# clients cannot prune or reassign one another's cars.
 class Session:
-    def __init__(self):
-        # Bays that already have a car: pre-parked, parked, and bays this
-        # client's routing cars are heading for.
-        self.occupied = set()
-        # Cars we are tracking for this client:
-        # id -> {color, plate, size, node, slot, status, leaving}
-        self.cars = {}
+    """Independent logical garage state for one browser connection."""
 
-def bfs(start, goal):
-    """Shortest path (list of node ids) from start to goal, or None.
+    def __init__(self) -> None:
+        # Physical occupancy reported by the simulated bay sensors.
+        self.occupied: set[str] = set()
+        # Server-owned reservations: car id -> assigned bay.
+        self.reservations: dict[str, str] = {}
+        # id -> {id, color, plate, node, slot, status, leaving}
+        self.cars: dict[str, dict] = {}
 
-    Breadth-first search, so the first route that reaches the goal is the one
-    with the fewest hops. Parking bays are dead ends on purpose: a bay has an
-    edge back to its aisle so a parked car can leave, but we never let a route
-    pass *through* a bay, or cars would cut across the parking to save a hop.
-    """
+
+def _edge_cost(edge: dict) -> float:
+    cost = float(edge.get("cost", 1.0))
+    return cost if cost > 0 else 1.0
+
+
+def shortest_path(start: str, goal: str):
+    """Return (path, total distance), or None when the goal is unreachable."""
+    if start not in nodes or goal not in nodes:
+        return None
     if start == goal:
-        return [start]
-    seen = {start}
-    queue = deque([[start]])
+        return [start], 0.0
+
+    distances = {start: 0.0}
+    previous: dict[str, str] = {}
+    queue = [(0.0, start)]
+
     while queue:
-        path = queue.popleft()
-        for e in edges.get(path[-1], []):
-            nxt = e["to"]
-            if nxt in seen:
+        distance, current = heapq.heappop(queue)
+        if distance != distances.get(current):
+            continue
+        if current == goal:
+            path = [goal]
+            while path[-1] != start:
+                path.append(previous[path[-1]])
+            path.reverse()
+            return path, distance
+
+        for edge in edges.get(current, []):
+            neighbour = edge["to"]
+            # Bays are destinations, never shortcuts through the graph.
+            if nodes[neighbour]["type"] == "slot" and neighbour != goal:
                 continue
-            if nxt == goal:
-                return path + [nxt]
-            seen.add(nxt)
-            # A bay is only ever a destination, never a shortcut.
-            if nodes[nxt]["type"] == "slot":
+            candidate = distance + _edge_cost(edge)
+            if candidate >= distances.get(neighbour, float("inf")):
                 continue
-            queue.append(path + [nxt])
+            distances[neighbour] = candidate
+            previous[neighbour] = current
+            heapq.heappush(queue, (candidate, neighbour))
+
     return None
 
 
-# A floor with this many cars already heading to it counts as busy, and an
-# arriving car is sent further up instead. This is what keeps all three
-# storeys in use rather than piling every car onto the nearest one.
-BUSY_FLOOR = 3
+def unavailable_slots(session: Session, exclude_car: str | None = None) -> set[str]:
+    reserved = {
+        slot
+        for car_id, slot in session.reservations.items()
+        if car_id != exclude_car
+    }
+    return session.occupied | reserved
 
 
-def nearest_free_slot(session, car_node, car_size):
-    """Nearest free bay the car fits in, spreading load away from busy floors.
-
-    One breadth-first sweep outward from the car. BFS visits nodes in order of
-    distance, so `found` comes out sorted nearest-first for free, and we can
-    just walk it. The whole garage is a few hundred nodes, so sweeping all of
-    it costs well under a millisecond; stopping early would only ever see the
-    nearest floor and could never offer an alternative.
-    """
-    found = []
-    seen = {car_node}
-    queue = deque([car_node])
-    while queue:
-        for e in edges.get(queue.popleft(), []):
-            nxt = e["to"]
-            if nxt in seen:
-                continue
-            seen.add(nxt)
-            if nodes[nxt]["type"] == "slot":
-                # Bays are destinations, not through-routes, so never enqueue
-                # one. Keep it only if it is free and big enough for this car.
-                if nxt not in session.occupied and SIZE_RANK[car_size] <= SIZE_RANK[nodes[nxt]["size"]]:
-                    found.append(nxt)
-            else:
-                queue.append(nxt)
-    if not found:
+def nearest_free_slot(session: Session, start: str, car_id: str):
+    """Return the physically closest unoccupied, unreserved bay using Dijkstra."""
+    if start not in nodes:
         return None
-    # Count how many cars are already heading to each floor.
-    floor_count = {}
-    for c in session.cars.values():
-        if c["status"] == "routing" and c["slot"]:
-            fl = nodes[c["slot"]]["floor"]
-            floor_count[fl] = floor_count.get(fl, 0) + 1
-    # Take the nearest bay on a floor that is not already busy.
-    for s in found:
-        if floor_count.get(nodes[s]["floor"], 0) < BUSY_FLOOR:
-            return s
-    # Every floor is busy: fall back to the nearest bay of all.
-    return found[0]
+
+    blocked = unavailable_slots(session, exclude_car=car_id)
+    distances = {start: 0.0}
+    previous: dict[str, str] = {}
+    queue = [(0.0, start)]
+
+    while queue:
+        distance, current = heapq.heappop(queue)
+        if distance != distances.get(current):
+            continue
+
+        if nodes[current]["type"] == "slot":
+            if current not in blocked:
+                path = [current]
+                while path[-1] != start:
+                    path.append(previous[path[-1]])
+                path.reverse()
+                return current, path, distance
+            continue
+
+        for edge in edges.get(current, []):
+            neighbour = edge["to"]
+            if nodes[neighbour]["type"] == "slot" and neighbour in blocked:
+                continue
+            candidate = distance + _edge_cost(edge)
+            if candidate >= distances.get(neighbour, float("inf")):
+                continue
+            distances[neighbour] = candidate
+            previous[neighbour] = current
+            heapq.heappush(queue, (candidate, neighbour))
+
+    return None
 
 
-def assign_slot(session, car):
-    """Assign a free bay to a new car and mark that bay occupied."""
-    slot = nearest_free_slot(session, car["node"], car["size"])
-    if slot is None:
+def release_reservation(session: Session, car_id: str) -> None:
+    session.reservations.pop(car_id, None)
+
+
+def adopt_slot(session: Session, car: dict, slot: str | None) -> bool:
+    """Restore a frontend-known reservation after a WebSocket reconnect."""
+    if slot not in all_slots:
+        return False
+    if slot in unavailable_slots(session, exclude_car=car["id"]):
+        return False
+    session.reservations[car["id"]] = slot
+    car["slot"] = slot
+    car["status"] = "routing"
+    return True
+
+
+def assign_slot(session: Session, car: dict) -> None:
+    """Reserve the closest available bay for a car."""
+    release_reservation(session, car["id"])
+    result = nearest_free_slot(session, car["node"], car["id"])
+    if result is None:
         car["slot"] = None
         car["status"] = "no_slot"
         return
+
+    slot, _, _ = result
+    session.reservations[car["id"]] = slot
     car["slot"] = slot
     car["status"] = "routing"
-    session.occupied.add(slot)
 
 
-def direction_along(path, step):
-    """Direction label for hop `step` of a path, e.g. "left" or "straight".
-
-    A path is a list of node ids. The direction of a hop is the label on the
-    edge joining two consecutive nodes, which is exactly what a signboard
-    needs to display.
-    """
-    if not path or len(path) < step + 2:
+def direction_along(path: list[str], step: int):
+    """Return the direction label for one hop of a path."""
+    if len(path) < step + 2:
         return None
-    for e in edges.get(path[step], []):
-        if e["to"] == path[step + 1]:
-            return e["dir"]
+    source = path[step]
+    target = path[step + 1]
+    for edge in edges.get(source, []):
+        if edge["to"] == target:
+            return edge["dir"]
     return None
 
 
-def handle_message(session, msg):
-    """Process an incoming state message and build the instructions reply."""
-    # Sync occupied slots from the frontend. It sends ALL occupied slots:
-    # pre-parked, parked, and slots routing cars are heading toward, so the
-    # backend never reassigns a slot a car is already committed to.
-    frontend_occupied = set(msg.get("occupied_slots", []))
-    session.occupied.clear()
-    session.occupied.update(frontend_occupied)
-    # Re-add every backend-tracked car's slot after the sync. The frontend's
-    # occupied list can briefly omit a just-parked car's slot during a re-render
-    # or after a reload; keeping parked cars' slots too means a stale parked car
-    # that vanished from the message does not free its slot until the prune
-    # step below removes it from `cars`.
-    for c in session.cars.values():
-        if c["slot"] and not c.get("leaving"):
-            session.occupied.add(c["slot"])
+def _new_car(payload: dict) -> dict:
+    required = ("id", "color", "plate", "node")
+    missing = [key for key in required if key not in payload]
+    if missing:
+        raise KeyError(", ".join(missing))
+    if payload["node"] not in nodes:
+        raise ValueError(f"unknown node {payload['node']}")
+    return {
+        "id": str(payload["id"]),
+        "color": payload["color"],
+        "plate": payload["plate"],
+        "node": payload["node"],
+        "slot": None,
+        "status": "routing",
+        "leaving": bool(payload.get("leaving")),
+    }
 
-    # Track which car ids appear in this message so we can prune stale cars
-    # from the backend's tracking dict (cars that vanished, e.g. after a
-    # page reload or no_slot timeout).
-    seen_this_message = {c["id"] for c in msg.get("cars", [])}
 
-    signs = []
-    for c in msg.get("cars", []):
-        cid = c["id"]
-        # A car is either looking for a bay, or on its way back out.
-        leaving = bool(c.get("leaving"))
-        # New car: record it and assign a bay.
-        if cid not in session.cars:
-            session.cars[cid] = {"color": c["color"], "plate": c["plate"], "size": c["size"],
-                         "node": c["node"], "slot": None, "status": "routing",
-                         "leaving": leaving}
+def _instruction(car: dict, path: list[str], distance: float, status: str) -> dict:
+    leaving = car["leaving"]
+    destination = EXIT_NODE if leaving else car["slot"]
+    destination_type = "exit" if leaving else ("bay" if destination else None)
+    slot = None if leaving else car["slot"]
+    direction = "arrived" if status in {"parked", "left"} else direction_along(path, 0)
+    next_node = path[1] if len(path) > 2 else None
+    next_direction = direction_along(path, 1) if next_node else None
+
+    return {
+        "car_id": car["id"],
+        "color": car["color"],
+        "plate": car["plate"],
+        "node": car["node"],
+        "direction": direction,
+        "destination": destination,
+        "destination_type": destination_type,
+        "destination_floor": nodes[destination]["floor"] if destination else None,
+        "slot": slot,
+        "status": status,
+        "next_node": next_node,
+        "next_direction": next_direction,
+        "path": path,
+        "route_distance": round(distance, 3),
+        "estimated_seconds": round(distance / CAR_SPEED, 1),
+    }
+
+
+def handle_message(session: Session, message: dict) -> dict:
+    """Apply one sensor/vehicle snapshot and return routing instructions."""
+    if message.get("type", "state") != "state":
+        raise ValueError("expected a state message")
+
+    # This is the physical bay-sensor snapshot. Reservations are kept
+    # separately by Python and are not accepted from the browser.
+    session.occupied = {
+        slot for slot in message.get("occupied_slots", []) if slot in all_slots
+    }
+
+    payloads = message.get("cars", [])
+    seen = {str(payload["id"]) for payload in payloads if "id" in payload}
+    instructions = []
+
+    for payload in payloads:
+        car_id = str(payload["id"])
+        leaving = bool(payload.get("leaving"))
+        assigned_slot = payload.get("assigned_slot")
+
+        if car_id not in session.cars:
+            car = _new_car(payload)
+            session.cars[car_id] = car
             if not leaving:
-                assign_slot(session, session.cars[cid])
+                if not adopt_slot(session, car, assigned_slot):
+                    assign_slot(session, car)
         else:
-            # Existing car: just update where it is now.
-            session.cars[cid]["node"] = c["node"]
-            session.cars[cid]["leaving"] = leaving
-            # If a previously-parked car reappears at a different node
-            # (e.g. page reload reuses the same car ID), re-route it.
-            if session.cars[cid]["status"] == "parked" and session.cars[cid]["node"] != session.cars[cid].get("slot"):
-                session.cars[cid]["status"] = "routing"
-        car = session.cars[cid]
-        # A car that stops leaving needs a bay again. Without this it keeps a
-        # slot of None and the reply below crashes looking up its floor.
-        if not car["leaving"] and car["slot"] is None and car["status"] != "no_slot":
+            car = session.cars[car_id]
+            if payload.get("node") not in nodes:
+                raise ValueError(f"unknown node {payload.get('node')}")
+            was_leaving = car["leaving"]
+            car["node"] = payload["node"]
+            car["color"] = payload.get("color", car["color"])
+            car["plate"] = payload.get("plate", car["plate"])
+            car["leaving"] = leaving
+
+            if leaving and not was_leaving:
+                release_reservation(session, car_id)
+                car["slot"] = None
+                car["status"] = "routing"
+            elif not leaving and car["slot"] is None:
+                if not adopt_slot(session, car, assigned_slot):
+                    assign_slot(session, car)
+
+        # A sensor says the reserved bay is now physically occupied by
+        # something else. Pick a replacement rather than guiding into it.
+        if (
+            not car["leaving"]
+            and car["slot"] is not None
+            and car["slot"] in session.occupied
+            and car["node"] != car["slot"]
+        ):
             assign_slot(session, car)
-        # A leaving car heads for the exit instead of a bay. Same search, a
-        # different destination, so nothing else in here has to change.
-        target = EXIT_NODE if car["leaving"] else car["slot"]
-        # No suitable slot anywhere: report lot full.
-        if car["status"] == "no_slot":
-            signs.append({"car_id": cid, "color": car["color"], "plate": car["plate"],
-                          "node": car["node"], "direction": "arrived", "slot": None,
-                          "slot_floor": None, "status": "no_slot"})
+
+        destination = EXIT_NODE if car["leaving"] else car["slot"]
+        if destination is None:
+            car["status"] = "no_slot"
+            instructions.append(_instruction(car, [car["node"]], 0.0, "no_slot"))
             continue
-        # Car reached where it was going: parked in its bay, or out of the lot.
-        if car["node"] == target:
-            car["status"] = "left" if car["leaving"] else "parked"
-            path = [target]
-            direction = "arrived"
-            next_node = None
-            next_dir = None
-        else:
-            # ONE search per car per tick. Everything the frontend needs is
-            # derived from this single route rather than searching again for
-            # each field.
-            path = bfs(car["node"], target) or [car["node"]]
-            direction = direction_along(path, 0) or "arrived"
-            next_node = path[1] if len(path) > 2 else None
-            next_dir = direction_along(path, 1)
-        signs.append({"car_id": cid, "color": car["color"], "plate": car["plate"],
-                      "node": car["node"], "direction": direction, "slot": target,
-                      "slot_floor": nodes[target]["floor"], "status": car["status"],
-                      "next_node": next_node, "next_direction": next_dir,
-                      # The full remaining route. Signboards along it light up
-                      # as soon as the car is heading their way, instead of
-                      # only when it has already arrived underneath them.
-                      "path": path})
 
-    # Prune stale cars: those we track that didn't appear in this message.
-    for cid in list(session.cars.keys()):
-        if cid not in seen_this_message:
-            del session.cars[cid]
+        if car["node"] == destination:
+            status = "left" if car["leaving"] else "parked"
+            car["status"] = status
+            release_reservation(session, car_id)
+            if status == "parked":
+                session.occupied.add(destination)
+            instructions.append(_instruction(car, [destination], 0.0, status))
+            continue
 
-    return {"type": "instructions", "signs": signs}
+        result = shortest_path(car["node"], destination)
+        if result is None:
+            car["status"] = "no_path"
+            instructions.append(_instruction(car, [car["node"]], 0.0, "no_path"))
+            continue
+
+        path, distance = result
+        car["status"] = "routing"
+        instructions.append(_instruction(car, path, distance, "routing"))
+
+    for car_id in list(session.cars):
+        if car_id in seen:
+            continue
+        release_reservation(session, car_id)
+        del session.cars[car_id]
+
+    return {"type": "instructions", "signs": instructions}
 
 
-def handler(ws):
-    """One connection. Each client gets its own Session, so two open tabs
-    cannot delete each other's cars."""
+def handler(websocket) -> None:
     session = Session()
-    for message in ws:
-        # One bad frame should cost that frame, not the connection. Without
-        # this, malformed JSON or a car missing a field closes the socket and
-        # the client has to reconnect.
+    for raw_message in websocket:
         try:
-            reply = handle_message(session, json.loads(message))
-        except Exception as exc:
-            print(f"ignored a bad message: {exc}")
+            reply = handle_message(session, json.loads(raw_message))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            print(f"ignored a bad message: {error}")
             continue
-        ws.send(json.dumps(reply))
+        websocket.send(json.dumps(reply))
 
 
-def main():
-    """Start the WebSocket server on localhost:8765 and serve forever."""
-    with serve(handler, "localhost", 8765) as server:
+def main() -> None:
+    with serve(handler, "127.0.0.1", 8765) as server:
         server.serve_forever()
 
 

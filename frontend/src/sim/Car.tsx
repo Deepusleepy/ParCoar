@@ -3,12 +3,17 @@ import { useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import type { ActiveCar, CarColor, CarSize, LotData, LotNode } from "../types";
-import { AISLE_SPACING, CAR_DIMS, CAR_Y_OFFSET, CAR_SPEED, COLOR_HEX, LANE_WIDTH, toWorld } from "./constants";
+import {
+  AISLE_SPACING,
+  CAR_DIMS,
+  CAR_Y_OFFSET,
+  CAR_SPEED,
+  COLOR_HEX,
+  LANE_WIDTH,
+  toWorld,
+} from "./constants";
 import { resolvePath } from "./paths";
 import { getSpeedScale } from "./simSpeed";
-/* ------------------------------------------------------------------ */
-/*  GLTF model config                                                  */
-/* ------------------------------------------------------------------ */
 
 const MODEL_PATHS: Record<CarSize, string> = {
   small: "/models/car_sport.glb",
@@ -16,60 +21,44 @@ const MODEL_PATHS: Record<CarSize, string> = {
   large: "/models/car_suv.glb",
 };
 
-/** Natural model length along Z (from bounding box). */
 const MODEL_LENGTH: Record<CarSize, number> = {
   small: 3.93,
   medium: 4.22,
   large: 4.16,
 };
 
-/** Uniform scale so the model length matches CAR_DIMS[size].length. */
 const MODEL_SCALE: Record<CarSize, number> = {
   small: CAR_DIMS.small.length / MODEL_LENGTH.small,
   medium: CAR_DIMS.medium.length / MODEL_LENGTH.medium,
   large: CAR_DIMS.large.length / MODEL_LENGTH.large,
 };
 
-/** GLTF cars face +Z; the sim expects +X as forward. Rotate π/2 around Y. */
 const FORWARD_ROT = Math.PI / 2;
-
-/** Material names that are NOT body paint (keep as-is from the GLTF). */
 const NON_BODY = new Set(["Windows", "Black", "Grey", "Headlights", "TailLights"]);
 
-// Preload all three models so they're cached before first render.
 useGLTF.preload(MODEL_PATHS.small);
 useGLTF.preload(MODEL_PATHS.medium);
 useGLTF.preload(MODEL_PATHS.large);
 
-/* ------------------------------------------------------------------ */
-/*  CarModel — loads a GLTF, clones it, recolors the body              */
-/* ------------------------------------------------------------------ */
-
 interface CarModelProps {
   color: CarColor;
   size: CarSize;
-  /** When true (active cars) use MeshPhysicalMaterial with clearcoat + glass.
-   *  When false (parked cars) use cheaper MeshStandardMaterial to cut fragment
-   *  cost for the many static decorations. */
   highQuality?: boolean;
-  /** Called with the cloned scene root after material replacement. */
-  onLoad?: (obj: THREE.Object3D) => void;
+  onLoad?: (object: THREE.Object3D) => void;
 }
 
 function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProps) {
   const { scene } = useGLTF(MODEL_PATHS[size]);
   const hex = COLOR_HEX[color];
 
-  const { bodyMat, glassMat, scene: cloned } = useMemo(() => {
-    const s = scene.clone();
-
-    // Body paint: glossy clearcoat for active cars, plain standard for parked.
+  const { bodyMaterial, glassMaterial, cloned } = useMemo(() => {
+    const object = scene.clone();
     const body: THREE.MeshStandardMaterial = highQuality
       ? new THREE.MeshPhysicalMaterial({
           color: new THREE.Color(hex),
           metalness: 0.6,
           roughness: 0.35,
-          clearcoat: 1.0,
+          clearcoat: 1,
           clearcoatRoughness: 0.08,
           envMapIntensity: 1.2,
         })
@@ -78,11 +67,10 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
           metalness: 0.5,
           roughness: 0.4,
         });
-    // Glass: tinted transparent for active cars, opaque for parked.
     const glass: THREE.MeshStandardMaterial = highQuality
       ? new THREE.MeshPhysicalMaterial({
           color: new THREE.Color("#0a0e14"),
-          metalness: 0.0,
+          metalness: 0,
           roughness: 0.05,
           transparent: true,
           opacity: 0.5,
@@ -93,38 +81,34 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
           color: new THREE.Color("#1a1d24"),
           metalness: 0.3,
           roughness: 0.1,
-          transparent: false,
-          opacity: 1,
         });
 
-    s.traverse((obj) => {
-      if (!(obj instanceof THREE.Mesh)) return;
-      obj.castShadow = true;
-      obj.receiveShadow = true;
-      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-      const replaced = mats.map((m) => {
-        if (!(m instanceof THREE.Material)) return m;
-        if (m.name === "Windows") return glass;
-        if (NON_BODY.has(m.name)) return m; // keep trim / lights / tires
-        return body; // everything else = body paint
+    object.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      child.castShadow = true;
+      child.receiveShadow = true;
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      const replaced = materials.map((material) => {
+        if (!(material instanceof THREE.Material)) return material;
+        if (material.name === "Windows") return glass;
+        if (NON_BODY.has(material.name)) return material;
+        return body;
       });
-      obj.material = replaced.length === 1 ? replaced[0] : replaced;
+      child.material = replaced.length === 1 ? replaced[0] : replaced;
     });
 
-    return { bodyMat: body, glassMat: glass, scene: s };
+    return { bodyMaterial: body, glassMaterial: glass, cloned: object };
   }, [scene, hex, highQuality]);
 
-  // Dispose GPU materials when the model unmounts.
   useEffect(() => {
     return () => {
-      bodyMat.dispose();
-      glassMat.dispose();
+      bodyMaterial.dispose();
+      glassMaterial.dispose();
     };
-  }, [bodyMat, glassMat]);
+  }, [bodyMaterial, glassMaterial]);
 
-  // Notify parent of the cloned scene for wheel collection.
   useEffect(() => {
-    if (onLoad) onLoad(cloned);
+    onLoad?.(cloned);
   }, [cloned, onLoad]);
 
   return (
@@ -132,16 +116,11 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
   );
 }
 
-/** Core car model component (wrapped in Suspense for GLTF loading). */
 export const CarModel = (props: CarModelProps) => (
   <Suspense fallback={null}>
     <CarModelInner {...props} />
   </Suspense>
 );
-
-/* ------------------------------------------------------------------ */
-/*  Existing exports used by Scene.tsx / App.tsx                       */
-/* ------------------------------------------------------------------ */
 
 interface StaticCarProps {
   color: CarColor;
@@ -150,18 +129,12 @@ interface StaticCarProps {
   rotationY: number;
 }
 
-/** A non-moving car placed at a fixed world transform. */
 export const StaticCar = ({ color, size, position, rotationY }: StaticCarProps) => (
   <group position={position} rotation={[0, rotationY, 0]}>
     <CarModel color={color} size={size} highQuality={false} />
   </group>
 );
 
-/* ------------------------------------------------------------------ */
-/*  ParkedCarField — instanced renderer for all static parked cars     */
-/* ------------------------------------------------------------------ */
-
-/** A single parked car's placement, precomputed in world space. */
 export interface ParkedCarInstance {
   slotNode: string;
   color: CarColor;
@@ -170,17 +143,17 @@ export interface ParkedCarInstance {
   rotationY: number;
 }
 
-/** Instanced renderer for every parked car (pre-parked + newly parked).
- *  Walks each of the three GLTF models once and builds one InstancedMesh per
- *  mesh in the model, so ~96 cars draw in ~18 calls. Body paint uses
- *  per-instance colour via setColorAt; trim (windows, lights, tires) shares
- *  one material per mesh with no per-instance colour. */
 export function ParkedCarField({ cars }: { cars: ParkedCarInstance[] }) {
   const bySize = useMemo(() => {
-    const groups: Record<CarSize, ParkedCarInstance[]> = { small: [], medium: [], large: [] };
-    for (const c of cars) groups[c.size].push(c);
+    const groups: Record<CarSize, ParkedCarInstance[]> = {
+      small: [],
+      medium: [],
+      large: [],
+    };
+    for (const car of cars) groups[car.size].push(car);
     return groups;
   }, [cars]);
+
   return (
     <>
       <ParkedCarSizeGroup size="small" cars={bySize.small} />
@@ -190,17 +163,11 @@ export function ParkedCarField({ cars }: { cars: ParkedCarInstance[] }) {
   );
 }
 
-/** Upper bound on parked cars of one size. The garage has 480 bays in total,
- *  so this can never be exceeded, and allocating once means a car arriving or
- *  leaving never reallocates a buffer. */
 const PARKED_CAPACITY = 512;
 
 function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInstance[] }) {
   const { scene } = useGLTF(MODEL_PATHS[size]);
 
-  // Build the instanced meshes ONCE per model, at full capacity. Rebuilding on
-  // every change to `cars` would tear down and reallocate ~18 InstancedMeshes
-  // per arrival and departure, so only the instance buffers are updated below.
   const built = useMemo(() => {
     scene.updateMatrixWorld(true);
     const scale = MODEL_SCALE[size];
@@ -208,65 +175,73 @@ function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInst
       .makeRotationY(FORWARD_ROT)
       .multiply(new THREE.Matrix4().makeScale(scale, scale, scale));
 
-    // White base so per-instance colour multiplies through to the car colour.
-    const bodyMat = new THREE.MeshStandardMaterial({
+    const bodyMaterial = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       metalness: 0.5,
       roughness: 0.4,
     });
-    const glassMat = new THREE.MeshStandardMaterial({
+    const glassMaterial = new THREE.MeshStandardMaterial({
       color: new THREE.Color("#1a1d24"),
       metalness: 0.3,
       roughness: 0.1,
     });
 
-    const meshes: { mesh: THREE.InstancedMesh; isBody: boolean; local: THREE.Matrix4 }[] = [];
-    scene.traverse((obj) => {
-      if (!(obj instanceof THREE.Mesh)) return;
-      const srcMat = (Array.isArray(obj.material) ? obj.material[0] : obj.material) as
-        | THREE.Material
-        | undefined;
-      if (!srcMat) return;
-      const isBody = !NON_BODY.has(srcMat.name);
-      const material = isBody ? bodyMat : srcMat.name === "Windows" ? glassMat : srcMat;
-      const im = new THREE.InstancedMesh(obj.geometry, material, PARKED_CAPACITY);
-      im.castShadow = true;
-      im.receiveShadow = true;
-      im.count = 0;
-      im.frustumCulled = false;
+    const meshes: {
+      mesh: THREE.InstancedMesh;
+      isBody: boolean;
+      local: THREE.Matrix4;
+    }[] = [];
+
+    scene.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const sourceMaterial = (
+        Array.isArray(object.material) ? object.material[0] : object.material
+      ) as THREE.Material | undefined;
+      if (!sourceMaterial) return;
+      const isBody = !NON_BODY.has(sourceMaterial.name);
+      const material = isBody
+        ? bodyMaterial
+        : sourceMaterial.name === "Windows"
+          ? glassMaterial
+          : sourceMaterial;
+      const mesh = new THREE.InstancedMesh(object.geometry, material, PARKED_CAPACITY);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.count = 0;
+      mesh.frustumCulled = false;
       meshes.push({
-        mesh: im,
+        mesh,
         isBody,
-        local: new THREE.Matrix4().copy(base).multiply(obj.matrixWorld),
+        local: new THREE.Matrix4().copy(base).multiply(object.matrixWorld),
       });
     });
-    return { meshes, bodyMat, glassMat };
+
+    return { meshes, bodyMaterial, glassMaterial };
   }, [scene, size]);
 
   useEffect(() => {
     return () => {
-      for (const m of built.meshes) m.mesh.dispose();
-      built.bodyMat.dispose();
-      built.glassMat.dispose();
+      for (const { mesh } of built.meshes) mesh.dispose();
+      built.bodyMaterial.dispose();
+      built.glassMaterial.dispose();
     };
   }, [built]);
 
-  // Write transforms and colours in place whenever the parked set changes.
-  // No allocation, no mesh churn: just a buffer update and a count.
   useEffect(() => {
-    const tmp = new THREE.Matrix4();
-    const ry = new THREE.Matrix4();
-    const col = new THREE.Color();
-    const n = Math.min(cars.length, PARKED_CAPACITY);
+    const transform = new THREE.Matrix4();
+    const rotation = new THREE.Matrix4();
+    const color = new THREE.Color();
+    const count = Math.min(cars.length, PARKED_CAPACITY);
+
     for (const { mesh, isBody, local } of built.meshes) {
-      for (let i = 0; i < n; i++) {
-        const car = cars[i];
-        tmp.makeTranslation(car.position[0], car.position[1], car.position[2]);
-        tmp.multiply(ry.makeRotationY(car.rotationY)).multiply(local);
-        mesh.setMatrixAt(i, tmp);
-        if (isBody) mesh.setColorAt(i, col.set(COLOR_HEX[car.color]));
+      for (let index = 0; index < count; index++) {
+        const car = cars[index];
+        transform.makeTranslation(car.position[0], car.position[1], car.position[2]);
+        transform.multiply(rotation.makeRotationY(car.rotationY)).multiply(local);
+        mesh.setMatrixAt(index, transform);
+        if (isBody) mesh.setColorAt(index, color.set(COLOR_HEX[car.color]));
       }
-      mesh.count = n;
+      mesh.count = count;
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.computeBoundingSphere();
@@ -275,8 +250,8 @@ function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInst
 
   return (
     <group>
-      {built.meshes.map((m, i) => (
-        <primitive key={i} object={m.mesh} />
+      {built.meshes.map(({ mesh }, index) => (
+        <primitive key={index} object={mesh} />
       ))}
     </group>
   );
@@ -286,72 +261,52 @@ interface ActiveCarProps {
   car: ActiveCar;
   lot: LotData;
   onArrive: (carId: string, node: string) => void;
-  /** Shared map (id -> Group) that the camera rig reads to follow/POV cars. */
   carGroupsRef?: React.MutableRefObject<Map<string, THREE.Group>>;
 }
 
-/**
- * An active car that animates along resolved waypoints between graph nodes.
- * Waypoints follow the actual road geometry (aisle lane offset, turn
- * semicircles, ramp spiral curves) instead of cutting straight from A to B.
- * Calls onArrive when it reaches the final waypoint of a leg.
- *
- * Leg changes are detected inside useFrame (not useEffect) because the
- * simulation mutates `car.fromNode`/`car.toNode` in place without triggering
- * a React re-render.
- */
-/** Heading a car has when parked in `bay`: nose pointing into the bay, away
- *  from the aisle. Mirrors the rotation the instanced parked renderer uses, so
- *  the two agree at handover in both directions. */
 function bayYaw(bay: LotNode): number {
   const aisleY = Math.round(bay.y / AISLE_SPACING) * AISLE_SPACING;
   return bay.y < aisleY ? Math.PI / 2 : -Math.PI / 2;
 }
 
-export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, carGroupsRef }: ActiveCarProps) {
+export const ActiveCarMesh = memo(function ActiveCarMesh({
+  car,
+  lot,
+  onArrive,
+  carGroupsRef,
+}: ActiveCarProps) {
   const group = useRef<THREE.Group>(null);
-  const targetRot = useRef(0);
-  /** Set once, the first frame this car is rendered. */
-  const seededRef = useRef(false);
-  const targetPitchRef = useRef(0);
-  const waypointsRef = useRef<THREE.Vector3[]>([]);
-  const segIndexRef = useRef(0);
-  const segProgressRef = useRef(0);
-  const legRef = useRef<string>("");
-  const wheelMeshesRef = useRef<THREE.Object3D[]>([]);
-  const tmpLookAhead = useRef(new THREE.Vector3());
+  const targetRotation = useRef(0);
+  const targetPitch = useRef(0);
+  const seeded = useRef(false);
+  const waypoints = useRef<THREE.Vector3[]>([]);
+  const segmentIndex = useRef(0);
+  const segmentProgress = useRef(0);
+  const currentLeg = useRef("");
+  const wheelMeshes = useRef<THREE.Object3D[]>([]);
+  const clonedWheelGeometries = useRef<Set<THREE.BufferGeometry>>(new Set());
+  const lookAheadPoint = useRef(new THREE.Vector3());
 
-  // Publish this car's group so the camera rig (follow/POV) can read its
-  // live transform. Cleared on unmount so stale entries don't linger.
   useEffect(() => {
     return () => {
       carGroupsRef?.current.delete(car.id);
+      // Wheel centring clones GLTF geometries per active car. Dispose those
+      // clones when the car parks/leaves so long-running traffic does not grow
+      // renderer.info.memory.geometries forever.
+      for (const geometry of clonedWheelGeometries.current) geometry.dispose();
+      clonedWheelGeometries.current.clear();
     };
   }, [car.id, carGroupsRef]);
 
-  // Collect wheel meshes from the GLTF model and re-center them so they spin
-  // in place. GLTF wheel nodes carry no transform; the mesh vertices sit at
-  // the actual wheel location, offset from the node's origin (the car center).
-  // Rotating such a node swings the wheel in a giant arc around the car center,
-  // so we translate the geometry to centre it on the node origin and move the
-  // node to compensate. scene.clone() shares geometries across all instances of
-  // a model, so each geometry MUST be cloned before translating, or the first
-  // car shifts the shared geometry for every car after it.
-  const handleModelLoad = useCallback((obj: THREE.Object3D) => {
-    // Collect the TOPMOST node of each wheel and spin only that. A GLTF wheel
-    // is often a Group holding two mesh primitives (tyre and rim), and every
-    // one of those nodes has "wheel" in its name, so matching on the name
-    // alone would collect the group AND its children. Centring each primitive
-    // on its own bounding box would also pull the tyre and rim apart, because
-    // their boxes differ, so the combined bounds of the whole wheel are used.
-    const isWheelName = (n: string) => {
-      const s = n.toLowerCase();
-      return s.includes("wheel") || s.includes("tire") || s.includes("rim");
+  const handleModelLoad = useCallback((object: THREE.Object3D) => {
+    const isWheelName = (name: string) => {
+      const lower = name.toLowerCase();
+      return lower.includes("wheel") || lower.includes("tire") || lower.includes("rim");
     };
+
     const roots: THREE.Object3D[] = [];
-    obj.traverse((child) => {
+    object.traverse((child) => {
       if (!isWheelName(child.name)) return;
-      // Only the highest matching node in each chain.
       if (child.parent && isWheelName(child.parent.name)) return;
       roots.push(child);
     });
@@ -359,212 +314,161 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
     for (const root of roots) {
       if (root.userData.wheelCentred) continue;
       root.userData.wheelCentred = true;
-
-      // Combined bounds of every mesh under this wheel, in the wheel's own
-      // parent space, so tyre and rim stay together.
       const box = new THREE.Box3();
-      root.traverse((c) => {
-        if (!(c instanceof THREE.Mesh)) return;
-        c.geometry.computeBoundingBox();
-        const b = c.geometry.boundingBox!.clone();
-        // Meshes sit at the wheel root's origin in these models, but respect
-        // any local offset rather than assuming none.
-        b.translate(c.position);
-        box.union(b);
+      root.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        child.geometry.computeBoundingBox();
+        const bounds = child.geometry.boundingBox?.clone();
+        if (!bounds) return;
+        bounds.translate(child.position);
+        box.union(bounds);
       });
       if (box.isEmpty()) continue;
       const centre = box.getCenter(new THREE.Vector3());
 
-      // Shift every primitive so the wheel's centre lands on the root origin,
-      // then move the root to compensate. Now rotating the root spins the whole
-      // wheel about its own axle, and nothing orbits.
-      root.traverse((c) => {
-        if (!(c instanceof THREE.Mesh)) return;
-        c.geometry = c.geometry.clone();
-        c.geometry.translate(-centre.x, -centre.y, -centre.z);
+      root.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        const geometry = child.geometry.clone();
+        geometry.translate(-centre.x, -centre.y, -centre.z);
+        child.geometry = geometry;
+        clonedWheelGeometries.current.add(geometry);
       });
       root.position.add(centre);
     }
-    wheelMeshesRef.current = roots;
+
+    wheelMeshes.current = roots;
   }, []);
 
   useFrame((_, delta) => {
     const dt = Math.min(delta, 1 / 30);
-    const g = group.current;
-    if (!g) return;
+    const object = group.current;
+    if (!object) return;
 
-    // Register the group every frame (cheap) so the rig always has a handle.
-    if (carGroupsRef) carGroupsRef.current.set(car.id, g);
-    // Name the group after the car so anything walking the scene graph, the
-    // camera rig or the movement gate, can tell which car it is looking at.
-    if (g.name !== car.id) g.name = car.id;
+    if (carGroupsRef) carGroupsRef.current.set(car.id, object);
+    if (object.name !== car.id) object.name = car.id;
 
     const fromNode = lot.nodes[car.fromNode];
     const toNode = lot.nodes[car.toNode];
     if (!fromNode || !toNode) return;
 
-    // A departing car is created standing IN its bay, but a freshly mounted
-    // <group> has rotation 0, so it would start broadside across the bay and
-    // swing into the neighbouring parked car. Seed the heading from the bay's
-    // own axis, the same value the parked renderer was drawing a moment ago, so
-    // the handover is invisible.
-    if (!seededRef.current) {
-      seededRef.current = true;
+    if (!seeded.current) {
+      seeded.current = true;
       if (fromNode.type === "slot") {
         const yaw = bayYaw(fromNode);
-        g.rotation.y = yaw;
-        targetRot.current = yaw;
+        object.rotation.y = yaw;
+        targetRotation.current = yaw;
       }
     }
 
-    // Detect leg changes (including the in-place mutations from useSimulation).
     const legKey = `${car.fromNode}>${car.toNode}`;
-    if (legKey !== legRef.current) {
-      legRef.current = legKey;
-      segIndexRef.current = 0;
-      segProgressRef.current = 0;
-      waypointsRef.current =
-        car.fromNode !== car.toNode ? resolvePath(fromNode, toNode, lot) : [];
+    if (legKey !== currentLeg.current) {
+      currentLeg.current = legKey;
+      segmentIndex.current = 0;
+      segmentProgress.current = 0;
+      waypoints.current = car.fromNode !== car.toNode
+        ? resolvePath(fromNode, toNode, lot)
+        : [];
     }
 
-    const wps = waypointsRef.current;
-
-    // Stationary: sit at the current node.
-    //
-    // On a ROAD node the car waits in the driving lane, offset from the
-    // centreline, because that is where the travelling path put it; without
-    // the offset it would flick sideways for one frame on arrival.
-    //
-    // On a BAY it must sit exactly on the node: a bay is a destination, not a
-    // lane, and the path into it ends on the node itself. Applying the lane
-    // offset here would snap the car sideways on arrival and back again at
-    // handover to the parked renderer.
-    if (wps.length < 2) {
-      const w = toWorld(fromNode.x, fromNode.y, fromNode.floor);
-      const onBay = fromNode.type === "slot";
-      const yaw = g.rotation.y;
-      // Right vector of the heading is (sin(yaw), 0, cos(yaw)); the lane sits
-      // to the left of travel, hence the subtraction.
-      const off = onBay ? 0 : LANE_WIDTH / 2;
-      g.position.set(
-        w[0] - Math.sin(yaw) * off,
-        w[1] + CAR_Y_OFFSET,
-        w[2] - Math.cos(yaw) * off,
+    const points = waypoints.current;
+    if (points.length < 2) {
+      const world = toWorld(fromNode.x, fromNode.y, fromNode.floor);
+      const offset = fromNode.type === "slot" ? 0 : LANE_WIDTH / 2;
+      const yaw = object.rotation.y;
+      object.position.set(
+        world[0] - Math.sin(yaw) * offset,
+        world[1] + CAR_Y_OFFSET,
+        world[2] - Math.cos(yaw) * offset,
       );
       return;
     }
 
-    const segCount = wps.length - 1;
-
-    // Advance along the current segment (frame-rate independent).
-    const i = segIndexRef.current;
-    const a = wps[i];
-    const b = wps[i + 1];
-    const segLen = a.distanceTo(b);
-    // Speed scale is the settings panel's speed slider; 0 pauses everything.
+    const segmentCount = points.length - 1;
+    const index = segmentIndex.current;
+    const first = points[index];
+    const second = points[index + 1];
+    const segmentLength = first.distanceTo(second);
     const speed = CAR_SPEED * getSpeedScale();
-    const step = (speed * dt) / Math.max(segLen, 0.001);
-    segProgressRef.current += step;
+    segmentProgress.current += (speed * dt) / Math.max(segmentLength, 0.001);
 
-    while (segProgressRef.current >= 1) {
-      const oldLen = wps[segIndexRef.current].distanceTo(wps[segIndexRef.current + 1]);
-      segProgressRef.current -= 1;
-      segIndexRef.current++;
-      // Arrived at the final waypoint: complete the leg.
-      if (segIndexRef.current >= segCount) {
-        const last = wps[segCount];
-        g.position.set(last.x, last.y + CAR_Y_OFFSET, last.z);
-        // Snap rotation to the final target so the transition to the
-        // fixed-rotation ParkedCarMesh (±π/2) doesn't show a visual pop
-        // when the smoothing hasn't fully converged. The look-ahead's final
-        // value is the last CHORD of the arrival curve, not its end tangent,
-        // so without this snap the car would rest slightly off the bay axis
-        // and pop straight when the parked renderer takes over.
-        g.rotation.y = toNode.type === "slot" ? bayYaw(toNode) : targetRot.current;
-        g.rotation.z = targetPitchRef.current;
-        segIndexRef.current = 0;
-        segProgressRef.current = 0;
-        waypointsRef.current = [];
+    while (segmentProgress.current >= 1) {
+      const oldLength = points[segmentIndex.current].distanceTo(points[segmentIndex.current + 1]);
+      segmentProgress.current -= 1;
+      segmentIndex.current++;
+
+      if (segmentIndex.current >= segmentCount) {
+        const last = points[segmentCount];
+        object.position.set(last.x, last.y + CAR_Y_OFFSET, last.z);
+        object.rotation.y = toNode.type === "slot" ? bayYaw(toNode) : targetRotation.current;
+        object.rotation.z = targetPitch.current;
+        segmentIndex.current = 0;
+        segmentProgress.current = 0;
+        waypoints.current = [];
         car.progress = 0;
         car.fromNode = car.toNode;
         onArrive(car.id, car.toNode);
         return;
       }
-      // Rescale the leftover progress to the new segment length so speed
-      // stays frame-rate independent across segment boundaries.
-      const newLen = wps[segIndexRef.current].distanceTo(wps[segIndexRef.current + 1]);
-      if (newLen > 0.001) segProgressRef.current *= oldLen / newLen;
+
+      const newLength = points[segmentIndex.current].distanceTo(points[segmentIndex.current + 1]);
+      if (newLength > 0.001) segmentProgress.current *= oldLength / newLength;
     }
 
-    // Interpolate position along the current segment.
-    const ii = segIndexRef.current;
-    const aa = wps[ii];
-    const bb = wps[ii + 1];
-    const p = segProgressRef.current;
-    // Publish how far along this leg the car is. The real progress lives in
-    // refs here; without mirroring it onto car.progress the queueing logic in
-    // useSimulation would see every car as still sitting on the node it just
-    // left, which blocks the ramp (one long leg) until the car ahead clears it.
-    car.progress = segCount > 0 ? (ii + p) / segCount : 0;
-    g.position.set(
-      aa.x + (bb.x - aa.x) * p,
-      aa.y + (bb.y - aa.y) * p + CAR_Y_OFFSET,
-      aa.z + (bb.z - aa.z) * p,
+    const activeIndex = segmentIndex.current;
+    const a = points[activeIndex];
+    const b = points[activeIndex + 1];
+    const progress = segmentProgress.current;
+    car.progress = segmentCount > 0 ? (activeIndex + progress) / segmentCount : 0;
+    object.position.set(
+      a.x + (b.x - a.x) * progress,
+      a.y + (b.y - a.y) * progress + CAR_Y_OFFSET,
+      a.z + (b.z - a.z) * progress,
     );
 
-    // Face a look-ahead point on the path instead of the current segment
-    // direction. This makes the target rotation change continuously through
-    // curves (rather than jumping at each waypoint), eliminating the angular
-    // velocity oscillation that caused turning jitter.
-    const LOOK_AHEAD = 3.0;
+    const LOOK_AHEAD = 3;
     let remaining = LOOK_AHEAD;
-    let laIdx = segIndexRef.current;
-    let laP = segProgressRef.current;
-    while (remaining > 0 && laIdx < segCount) {
-      const cur = wps[laIdx];
-      const next = wps[laIdx + 1];
-      const segRem = (1 - laP) * cur.distanceTo(next);
-      if (segRem <= remaining) {
-        remaining -= segRem;
-        laIdx++;
-        laP = 0;
+    let lookIndex = segmentIndex.current;
+    let lookProgress = segmentProgress.current;
+    while (remaining > 0 && lookIndex < segmentCount) {
+      const current = points[lookIndex];
+      const next = points[lookIndex + 1];
+      const remainder = (1 - lookProgress) * current.distanceTo(next);
+      if (remainder <= remaining) {
+        remaining -= remainder;
+        lookIndex++;
+        lookProgress = 0;
       } else {
-        laP += remaining / cur.distanceTo(next);
+        lookProgress += remaining / current.distanceTo(next);
         remaining = 0;
       }
     }
-    const laPoint = laIdx < segCount
-      ? tmpLookAhead.current.set(
-          wps[laIdx].x + (wps[laIdx + 1].x - wps[laIdx].x) * laP,
-          wps[laIdx].y + (wps[laIdx + 1].y - wps[laIdx].y) * laP,
-          wps[laIdx].z + (wps[laIdx + 1].z - wps[laIdx].z) * laP,
-        )
-      : wps[wps.length - 1];
-    const dx = laPoint.x - g.position.x;
-    const dy = laPoint.y - (g.position.y - CAR_Y_OFFSET);
-    const dz = laPoint.z - g.position.z;
-    const horiz = Math.hypot(dx, dz);
-    if (horiz > 1e-4) {
-      targetRot.current = Math.atan2(-dz, dx);
-      targetPitchRef.current = Math.atan2(dy, horiz);
-    }
-    let diff = targetRot.current - g.rotation.y;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    g.rotation.y += diff * Math.min(1, dt * 10);
-    const pitchDiff = targetPitchRef.current - g.rotation.z;
-    g.rotation.z += pitchDiff * Math.min(1, dt * 6);
 
-    // Spin wheels (GLTF wheel meshes rotate about their local axle axis).
-    // The axle direction varies by model; most GLTF cars use X or Z.
-    // We rotate about X which is the most common axle for car wheels.
-    // Angular velocity = v / r. GLB wheel radius is 0.28 in model space,
-    // scaled by MODEL_SCALE[size] to world units.
+    const target = lookIndex < segmentCount
+      ? lookAheadPoint.current.set(
+          points[lookIndex].x + (points[lookIndex + 1].x - points[lookIndex].x) * lookProgress,
+          points[lookIndex].y + (points[lookIndex + 1].y - points[lookIndex].y) * lookProgress,
+          points[lookIndex].z + (points[lookIndex + 1].z - points[lookIndex].z) * lookProgress,
+        )
+      : points[points.length - 1];
+
+    const dx = target.x - object.position.x;
+    const dy = target.y - (object.position.y - CAR_Y_OFFSET);
+    const dz = target.z - object.position.z;
+    const horizontal = Math.hypot(dx, dz);
+    if (horizontal > 1e-4) {
+      targetRotation.current = Math.atan2(-dz, dx);
+      targetPitch.current = Math.atan2(dy, horizontal);
+    }
+
+    let rotationDifference = targetRotation.current - object.rotation.y;
+    while (rotationDifference > Math.PI) rotationDifference -= Math.PI * 2;
+    while (rotationDifference < -Math.PI) rotationDifference += Math.PI * 2;
+    object.rotation.y += rotationDifference * Math.min(1, dt * 10);
+    object.rotation.z += (targetPitch.current - object.rotation.z) * Math.min(1, dt * 6);
+
     const wheelRadius = 0.28 * MODEL_SCALE[car.size];
     const wheelSpin = ((CAR_SPEED * getSpeedScale()) / wheelRadius) * dt;
-    for (const wheel of wheelMeshesRef.current) {
-      wheel.rotation.x += wheelSpin;
-    }
+    for (const wheel of wheelMeshes.current) wheel.rotation.x += wheelSpin;
   });
 
   return (

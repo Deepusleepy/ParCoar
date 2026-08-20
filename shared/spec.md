@@ -1,113 +1,32 @@
-# ParCoar — Message Contract & Shared Spec
+# ParCoar message contract
 
-This file defines the communication protocol between the 3D simulator
-(frontend) and the parking guidance backend (Python). Both sides must follow
-this exactly.
+The browser simulates cars and bay sensors. The Python server owns bay
+reservations and calculates routes. Each WebSocket connection has independent
+state, so separate browser tabs do not share a garage.
 
 ## Transport
 
-- WebSocket on `ws://127.0.0.1:8765` (use 127.0.0.1 explicitly, not localhost, to avoid IPv6 issues)
-- Messages are JSON text frames
-- Each connection gets its own independent state, so two browser tabs run
-  two separate garages rather than fighting over one
+- WebSocket: `ws://127.0.0.1:8765`
+- JSON text frames
+- Frontend sends a state snapshot about five times per second
 
-## Lot Layout
+## Layout
 
-Both sides load `shared/lot.json` (or `public/lot.json` in the frontend).
-The lot is a 3-floor parking garage with 4 two-way aisles per floor,
-20 bays per aisle side, 2 sides per aisle = 160 slots per floor, 480 slots
-total. A serpentine spine of 180° curved turns connects the aisles. An L-shaped
-ramp running along the outside of the west face connects each floor to the next.
+Both sides use `lot.json`. The garage has three floors and 480 identical bays.
+Every directed graph edge has:
 
-A parking bay has one outgoing edge, back to its own aisle junction, so a
-parked car can leave. The backend never routes *through* a bay, only to one.
-
-Top-level fields in lot.json:
 ```json
-{
-  "floors": 3,
-  "floor_height": 15,
-  "aisles_per_floor": 4,
-  "junctions_per_aisle": 20,
-  "junction_spacing": 2.6,
-  "aisle_spacing": 17,
-  "slot_offset": 6,
-  "road_width": 7,
-  "slot_depth": 5,
-  "nodes": { ... },
-  "edges": { ... }
-}
+{"to": "J0_0_2", "dir": "straight", "cost": 2.6}
 ```
 
-- `junction_spacing`: x-distance between junctions, which is also one bay pitch
-- `aisle_spacing`: y-distance between aisle centrelines
-- `slot_offset`: y-distance from an aisle centre to a slot centre
-- `road_width`: full driving-road width across both lanes (±3.5 of centre)
-- `slot_depth`: parking bay depth (perpendicular to the aisle)
+`cost` is physical driving distance. Long curved turns and ramps therefore cost
+more than a short aisle step. Bays are dead ends and can never be used as a
+shortcut through the graph.
 
-Node shape:
-```json
-{
-  "J0_0_1":   {"type": "junction", "floor": 0, "x": 2.6, "y": 0},
-  "S0_1":     {"type": "slot", "floor": 0, "x": 2.6, "y": -6, "size": "large"},
-  "T0_0":     {"type": "turn", "floor": 0, "x": 54.6, "y": 0},
-  "R0_up":    {"type": "ramp_up", "floor": 0, "x": 0, "y": 51},
-  "R1_in":    {"type": "ramp_in", "floor": 1, "x": 0, "y": 0},
-  "E0":       {"type": "entry", "floor": 0, "x": 0, "y": 0},
-  "EXIT2":    {"type": "exit", "floor": 2, "x": 0, "y": 51},
-  "ENTRY_ROAD": {"type": "approach", "floor": 0, "x": -15, "y": 0},
-  "EXIT_ROAD":  {"type": "approach", "floor": 2, "x": -15, "y": 51}
-}
-```
+Vehicle models may look different in the 3D scene, but model dimensions are not
+part of allocation. Any car can use any free bay.
 
-Edge shape (adjacency list, directed):
-```json
-{
-  "J0_0_1": [
-    {"dir": "left", "to": "S0_1"},
-    {"dir": "right", "to": "S0_9"},
-    {"dir": "straight", "to": "J0_0_2"}
-  ],
-  "T0_0": [
-    {"dir": "right", "to": "J0_1_20"},
-    {"dir": "left", "to": "J0_0_20"}
-  ],
-  "R0_up": [{"dir": "up", "to": "R1_in"}],
-  "ENTRY_ROAD": [{"dir": "straight", "to": "E0"}],
-  "EXIT2": [{"dir": "straight", "to": "EXIT_ROAD"}],
-  "S0_1": [{"dir": "straight", "to": "J0_0_1"}]
-}
-```
-
-Node types: `entry`, `junction`, `slot`, `turn`, `ramp_up`, `ramp_in`, `exit`, `approach`
-Slot sizes: `small`, `medium`, `large`
-Direction labels: `left`, `right`, `straight`, `up`, `down`, `arrived`
-
-Node ID convention:
-- Junctions: `J{floor}_{aisle}_{number}` (e.g. `J0_0_1` = floor 0, aisle 0, junction 1)
-- Slots: `S{floor}_{global_number}` (e.g. `S0_1` = floor 0, slot 1). Numbers are
-  assigned side-by-side per aisle: each aisle side is a contiguous run in travel
-  order (s_pos 0 = the -y side, s_pos 1 = the +y side), and aisles chain
-  contiguously (aisle 0 = 1..40, aisle 1 = 41..80, etc.).
-- Turns: `T{floor}_{aisle}` (e.g. `T0_0` = floor 0, turn after aisle 0)
-- Ramps: `R{floor}_up` (foot of ramp) and `R{floor}_in` (head of ramp, = entry to that floor)
-- Entry: `E0` (floor 0 only)
-- Exit: `EXIT{floor}` (top floor only)
-- Approach roads: `ENTRY_ROAD` (west of E0) and `EXIT_ROAD` (west of the exit).
-  These are outside the lot footprint and are not part of the routing graph the
-  backend uses for slot assignment — they only exist so the frontend can render
-  the road leading into/out of the garage. `ENTRY_ROAD` has one edge to `E0`;
-  the exit node has one edge to `EXIT_ROAD`.
-
-Every road is two-way. The original serpentine direction is even aisles to
-the right and odd aisles to the left; the mirrored edges allow the opposite
-travel direction on the second lane. Turn labels reverse hand in the reverse
-direction. The graph remains a directed adjacency list with one edge recorded
-for each travel direction. Bay edges are not mirrored.
-
-## Message: Frontend -> Backend (state update)
-
-Sent every ~200ms while cars are moving:
+## Frontend to backend
 
 ```json
 {
@@ -117,33 +36,24 @@ Sent every ~200ms while cars are moving:
       "id": "C1",
       "color": "red",
       "plate": "ABC-123",
-      "size": "medium",
       "node": "J0_0_1",
-      "leaving": false
+      "leaving": false,
+      "assigned_slot": "S1_84",
+      "vacating_slot": null
     }
   ],
-  "occupied_slots": ["S0_1", "S0_3", "S1_2"]
+  "occupied_slots": ["S0_1", "S0_2"]
 }
 ```
 
-- `id`: unique car identifier (string)
-- `color`: car color for signboard display
-- `plate`: license plate for signboard display
-- `size`: "small" | "medium" | "large" — must fit in slot size (car can park
-  in a slot of equal or larger size, not smaller)
-- `node`: the graph node the car is currently at
-- `leaving`: true when the car has finished parking and is driving to the
-  exit. The backend routes it to the exit node instead of a bay. A car that
-  goes from `leaving: true` back to `leaving: false` is given a new bay
-- `occupied_slots`: slot node IDs that already have a car (pre-parked + parked).
-  The backend uses this to avoid assigning occupied slots to active cars.
+- `occupied_slots` is a physical sensor snapshot: pre-parked cars, parked cars,
+  and a bay still occupied while a departing car reverses out.
+- Active reservations are not included. Python owns them.
+- `assigned_slot` lets a new server session restore an existing route after a
+  WebSocket reconnect. Python accepts it only when the bay is still safe.
+- `vacating_slot` identifies the bay a departing car has not physically cleared.
 
-If a car is new (backend hasn't seen it), the backend assigns it a slot.
-If a car has reached its assigned slot node, it's parked.
-
-## Message: Backend -> Frontend (instructions)
-
-Sent in response to each state update:
+## Backend to frontend
 
 ```json
 {
@@ -154,77 +64,42 @@ Sent in response to each state update:
       "color": "red",
       "plate": "ABC-123",
       "node": "J0_0_1",
-      "direction": "left",
-      "slot": "S0_1",
-      "slot_floor": 0,
+      "direction": "straight",
+      "destination": "S1_84",
+      "destination_type": "bay",
+      "destination_floor": 1,
+      "slot": "S1_84",
       "status": "routing",
-      "next_node": "S0_1",
-      "next_direction": "arrived",
-      "path": ["J0_0_1", "S0_1"]
+      "next_node": "J0_0_2",
+      "next_direction": "straight",
+      "path": ["J0_0_1", "J0_0_2", "...", "S1_84"],
+      "route_distance": 138.4,
+      "estimated_seconds": 19.8
     }
   ]
 }
 ```
 
-- `car_id`: which car this instruction is for
-- `color`, `plate`: echoed back for the signboard display
-- `node`: the node where this signboard is shown (the car's current node)
-- `direction`: "left" | "right" | "straight" | "up" | "down" | "arrived"
-- `slot`: the assigned slot node id
-- `slot_floor`: which floor the slot is on
-- `next_node`: the next node on the car's BFS path to its slot (look-ahead).
-  The frontend lights up the signboard at this node BEFORE the car arrives,
-  so the driver sees the direction in advance. null when the car is one step
-  from its slot or already parked.
-- `next_direction`: the direction to take at `next_node`. null when
-  `next_node` is null.
-- `path`: the car's whole remaining route as a list of node ids, current node
-  first, assigned slot last. The frontend lights up the permanent signboard at
-  every turn and ramp along this route, so a driver sees the board from the
-  moment they enter an aisle rather than when they are already underneath it.
-  Each board shows the direction to take *at that board*, and how many hops
-  away the car still is.
-- `status`: "routing" | "parked" | "no_slot" | "left"
-  - `left` means the car has reached the exit and the frontend can drop it
+Statuses:
 
-If `status` is "parked", `direction` is "arrived" — the frontend should
-stop the car and show it parked in its slot.
+- `routing`: follow `path`
+- `parked`: the car reached its assigned bay
+- `left`: the car reached the exit
+- `no_slot`: every bay is occupied or reserved
+- `no_path`: the destination exists but cannot be reached
 
-If `status` is "no_slot", the lot is full for this car's size.
+`direction` is `arrived` only for `parked` or `left`. A routing failure is never
+reported as arrival.
 
-## Slot Assignment Rules
+## Assignment rules
 
-The backend assigns slots considering, in order:
-1. **Size match**: car can only use a slot of equal or larger size
-2. **Distance**: nearest free slot by BFS hop count from the car's current node.
-   One breadth-first sweep outward finds it; because BFS visits nodes in order
-   of distance, the first free bay it reaches is the closest one.
-3. **Load spread**: if the nearest floor already has 3+ cars routing to it,
-   prefer the next nearest slot on a different floor
+1. Treat physically occupied and server-reserved bays as unavailable.
+2. Run Dijkstra from the car's current node using edge `cost`.
+3. Reserve the first free bay finalized by the search.
+4. Preserve that reservation until the car parks, leaves, disappears, or a bay
+   sensor reports a conflict.
 
-## Pre-parked Cars
-
-At startup the frontend fills a share of the 480 bays with static cars, chosen
-deterministically so the same bays are taken on every reload. These cars never
-move; only cars that drive in during the run leave again.
-
-Occupancy is a gradient per storey, from that storey's own entrance to its far
-end, at one of three levels (`quiet`, `normal`, `busy`, chosen in the controls
-drawer). Normal starts the ground floor at 99% by the entrance falling to 93%
-at the far end, floor B at 98% falling to 30%, and floor C at 75% falling to
-5%.
-
-The gradient is the point, not decoration. The backend routes a car to its
-nearest free bay, so a garage that is half empty everywhere parks every car
-within seconds of arrival and no car ever reaches a guidance board. Measured
-on a flat 50% fill, 18 of 26 cars had a route that never passed a board and
-six of the eleven boards were lit less than 2% of the time. With the gradient,
-every car passes at least one.
-
-It is per storey rather than garage-wide because a car arriving by ramp enters
-at the *start* of that floor's run of bays. One gradient across the whole
-building leaves every upper floor empty exactly where cars come in.
-
-The frontend reports all occupied bays (pre-parked, parked, and the ones
-active cars are heading for) in `occupied_slots` on every state message, so
-the backend never assigns a bay that already has a car in it.
+There is no congestion-routing or floor-load rule. The road graph has one route
+between locations, so traffic cannot create a meaningful alternate path. The
+frontend still prevents cars from entering an occupied lane segment; that is
+collision safety, not route selection.
