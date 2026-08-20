@@ -29,13 +29,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r backend/requirements.txt
-      - run: python -m unittest backend.test_lot_graph -v
+      - run: python -m unittest discover -s tests -t . -v
       # The graph is generated, and both copies are committed. If regenerating
       # changes either of them, someone edited lot.json by hand or changed the
       # generator without re-running it.
       - run: python backend/generate_lot.py
       - run: git diff --exit-code shared/lot.json frontend/public/lot.json
 
-# simcheck is not run here. It needs a real browser, a live backend and a
-# couple of minutes of simulated traffic, which is a different kind of job to
-# a build check. Run it locally: node tools/simcheck/check.mjs
+# tests/simcheck is not run here. It needs a real browser, a live backend and
+# a couple of minutes of simulated traffic, which is a different kind of job to
+# a build check. Run it locally: node tests/simcheck/check.mjs

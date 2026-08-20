@@ -6,7 +6,7 @@
  * after touching anything that moves a car: the queueing rules, the path
  * resolution, the curve generators, or the backend graph.
  *
- *   node tools/simcheck/check.mjs [url] [seconds]
+ *   node tests/simcheck/check.mjs [url] [seconds]
  *
  * Exit code 0 means every invariant held. Non-zero means at least one broke,
  * and the offending samples are printed.

@@ -12,8 +12,8 @@ preview).
 ```
 python3 backend/server.py &          # or backend/.venv/bin/python
 cd frontend && npm run dev &
-node tools/simcheck/check.mjs                                 # 180s, localhost:5180
-node tools/simcheck/check.mjs http://localhost:5180/ 300      # longer run
+node tests/simcheck/check.mjs                                 # 180s, localhost:5180
+node tests/simcheck/check.mjs http://localhost:5180/ 300      # longer run
 ```
 
 Exit code 0 means every invariant held. Non-zero prints what broke.
