@@ -1,0 +1,63 @@
+name: Apply ParCoar simplification
+
+on:
+  push:
+    branches:
+      - work/parcoar-simplify
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Apply changes and verify
+        shell: bash
+        run: |
+          set +e
+          LOG="$RUNNER_TEMP/parcoar-refactor.log"
+          : > "$LOG"
+
+          run_step() {
+            echo "\n$ $*" | tee -a "$LOG"
+            "$@" >> "$LOG" 2>&1
+            status=$?
+            if [ $status -ne 0 ]; then
+              cp "$LOG" REFACTOR_FAILURE.txt
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add REFACTOR_FAILURE.txt
+              git commit -m "chore: record ParCoar refactor failure"
+              git push origin HEAD
+              exit $status
+            fi
+          }
+
+          run_step python tools/refactor_payload.py
+          run_step python backend/generate_lot.py
+          run_step python -m pip install -r backend/requirements.txt
+          run_step python -m unittest discover -s tests -t . -v
+          run_step npm ci --prefix frontend
+          run_step npm run build --prefix frontend
+          run_step npm test --prefix frontend
+
+          printf 'Refactor, backend tests, frontend build, and frontend tests passed.\n' > REFACTOR_RESULT.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "refactor: simplify routing and parking state"
+          git push origin HEAD
