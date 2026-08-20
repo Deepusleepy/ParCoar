@@ -2,10 +2,10 @@
 
 A 3D multi-storey parking guidance simulator.
 
-Cars enter a three-floor, 480-bay garage. A small Python server reserves the
-closest free bay by real driving distance, calculates the route, and sends it
-to the browser. Overhead boards identify each car and show the turn it should
-take. You can also inspect the route graph or drive a car yourself.
+Cars enter a three-floor, 480-bay garage. A small Python server assigns the
+closest free bay by driving distance, calculates the route, and sends it to
+the browser. Overhead boards identify each car and show where to turn. You can
+also inspect the route graph or drive a car yourself.
 
 ![The garage, all three floors and the ramp](docs/images/garage.png)
 
@@ -48,39 +48,39 @@ Open `http://localhost:5180`.
 - `shared/lot.json`
 - `frontend/public/lot.json`
 
-The graph contains 480 identical bay nodes plus junctions, turns, ramps,
-entry and exit nodes. Roads are two-way. Bays are dead ends, so a route may
-finish in one or start from one, but cannot cut through one.
+The graph contains 480 identical bay nodes, along with junctions, turns,
+ramps, and entry, exit and approach nodes. Roads are two-way. Bays are dead
+ends, so a route may finish in one or start from one, but cannot cut through
+one.
 
-Every directed edge stores its real driving cost. A 2.6-unit aisle step costs
-2.6, while turns and ramps use their curved physical length.
+Every directed edge has a distance cost. A 2.6-unit aisle step costs 2.6,
+while turns and ramps use the length of the path the car follows.
 
 ### Routing
 
-The Python server runs Dijkstra's algorithm. The first available bay finalized
-by the search is the bay with the shortest real driving distance.
+The Python server uses Dijkstra's algorithm. The first free bay finalized by
+the search is the one with the shortest driving distance.
 
-There is no congestion-routing or hard floor-spreading rule. This garage graph
-has one road path between locations, so pretending to choose an alternate route
-would add complexity without changing the route. Cars still wait behind traffic
-in the frontend so they cannot overlap.
+The graph has only one road route between any two locations, so congestion
+routing would not change the route. The frontend still handles queues and
+prevents cars from overlapping.
 
 ### State ownership
 
-The browser simulates bay sensors and reports physical occupancy. Python owns:
+The browser simulates movement and bay sensors, then reports car positions and
+occupied bays. Python:
 
-- active cars
-- bay reservations
-- assigned destinations
-- route calculations
+- tracks active cars
+- owns bay reservations and assignments
+- calculates routes
 
-The browser includes its existing assignment when reconnecting, so the server
-can restore it instead of sending a moving car to a different bay.
+The browser sends the current assignment after reconnecting, so a moving car
+keeps its bay.
 
 ### WebSocket
 
 The frontend sends state to `ws://127.0.0.1:8765` about five times per second.
-The backend replies with the destination, route, direction, remaining physical
+The backend replies with the destination, route, direction, remaining route
 distance and estimated driving time. See [`shared/spec.md`](shared/spec.md).
 
 ### Frontend
@@ -111,5 +111,5 @@ node tests/simcheck/check.mjs   # both servers must already be running
 
 ## Licence
 
-MIT. Car models are from Quaternius and released under CC0. See
-`frontend/public/models/CREDITS.md`.
+MIT. The car models are credited to Quaternius under CC0. See
+`frontend/public/models/CREDITS.md` for identification details.
