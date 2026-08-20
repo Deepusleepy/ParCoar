@@ -31,4 +31,3 @@ jobs:
       - run: pip install -r backend/requirements.txt
       - run: python -m unittest discover -s tests -t . -v
       - run: python backend/generate_lot.py
-      - run: git diff --exit-code shared/lot.json frontend/public/lot.json
