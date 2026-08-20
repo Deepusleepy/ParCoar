@@ -210,14 +210,20 @@ def main() -> None:
     }
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    output_paths = [
-        os.path.join(project_root, "shared", "lot.json"),
-        os.path.join(project_root, "frontend", "public", "lot.json"),
-    ]
-    for output_path in output_paths:
+    shared_path = os.path.join(project_root, "shared", "lot.json")
+    frontend_path = os.path.join(project_root, "frontend", "public", "lot.json")
+
+    # ParkingLot.tsx still accepts a single uniform renderer marker. It is not
+    # a bay category and is never sent to or used by the routing backend.
+    frontend_lot = json.loads(json.dumps(lot))
+    for node in frontend_lot["nodes"].values():
+        if node["type"] == "slot":
+            node["size"] = "standard"
+
+    for output_path, payload in [(shared_path, lot), (frontend_path, frontend_lot)]:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as file:
-            json.dump(lot, file, separators=(",", ":"))
+            json.dump(payload, file, separators=(",", ":"))
             file.write("\n")
         print(f"Generated {output_path}")
 
