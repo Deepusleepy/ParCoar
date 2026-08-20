@@ -8,7 +8,8 @@ this exactly.
 
 - WebSocket on `ws://127.0.0.1:8765` (use 127.0.0.1 explicitly, not localhost, to avoid IPv6 issues)
 - Messages are JSON text frames
-- Frontend connects, backend accepts one persistent connection
+- Each connection gets its own independent state, so two browser tabs run
+  two separate garages rather than fighting over one
 
 ## Lot Layout
 
@@ -80,7 +81,7 @@ Edge shape (adjacency list, directed):
 
 Node types: `entry`, `junction`, `slot`, `turn`, `ramp_up`, `ramp_in`, `exit`, `approach`
 Slot sizes: `small`, `medium`, `large`
-Direction labels: `left`, `right`, `straight`, `up`, `arrived`
+Direction labels: `left`, `right`, `straight`, `up`, `down`, `arrived`
 
 Node ID convention:
 - Junctions: `J{floor}_{aisle}_{number}` (e.g. `J0_0_1` = floor 0, aisle 0, junction 1)
@@ -117,7 +118,8 @@ Sent every ~200ms while cars are moving:
       "color": "red",
       "plate": "ABC-123",
       "size": "medium",
-      "node": "J0_0_1"
+      "node": "J0_0_1",
+      "leaving": false
     }
   ],
   "occupied_slots": ["S0_1", "S0_3", "S1_2"]
@@ -130,6 +132,9 @@ Sent every ~200ms while cars are moving:
 - `size`: "small" | "medium" | "large" — must fit in slot size (car can park
   in a slot of equal or larger size, not smaller)
 - `node`: the graph node the car is currently at
+- `leaving`: true when the car has finished parking and is driving to the
+  exit. The backend routes it to the exit node instead of a bay. A car that
+  goes from `leaving: true` back to `leaving: false` is given a new bay
 - `occupied_slots`: slot node IDs that already have a car (pre-parked + parked).
   The backend uses this to avoid assigning occupied slots to active cars.
 
@@ -164,7 +169,7 @@ Sent in response to each state update:
 - `car_id`: which car this instruction is for
 - `color`, `plate`: echoed back for the signboard display
 - `node`: the node where this signboard is shown (the car's current node)
-- `direction`: "left" | "right" | "straight" | "up" | "arrived"
+- `direction`: "left" | "right" | "straight" | "up" | "down" | "arrived"
 - `slot`: the assigned slot node id
 - `slot_floor`: which floor the slot is on
 - `next_node`: the next node on the car's BFS path to its slot (look-ahead).
@@ -179,7 +184,8 @@ Sent in response to each state update:
   moment they enter an aisle rather than when they are already underneath it.
   Each board shows the direction to take *at that board*, and how many hops
   away the car still is.
-- `status`: "routing" | "parked" | "no_slot"
+- `status`: "routing" | "parked" | "no_slot" | "left"
+  - `left` means the car has reached the exit and the frontend can drop it
 
 If `status` is "parked", `direction` is "arrived" — the frontend should
 stop the car and show it parked in its slot.

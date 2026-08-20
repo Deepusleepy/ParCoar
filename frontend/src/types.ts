@@ -66,6 +66,12 @@ export interface StateCar {
   plate: string;
   size: SlotSize;
   node: string;
+  /** True once the car has finished parking and is driving to the exit. The
+   *  backend routes it to the exit node instead of a bay. This was being sent
+   *  on every car and drives the whole departure feature, but was missing from
+   *  this type; it only typechecked because the object comes from a .map(),
+   *  which skips excess-property checking. */
+  leaving: boolean;
 }
 
 export interface StateMessage {

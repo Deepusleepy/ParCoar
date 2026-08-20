@@ -189,6 +189,10 @@ def handle_message(session, msg):
             if session.cars[cid]["status"] == "parked" and session.cars[cid]["node"] != session.cars[cid].get("slot"):
                 session.cars[cid]["status"] = "routing"
         car = session.cars[cid]
+        # A car that stops leaving needs a bay again. Without this it keeps a
+        # slot of None and the reply below crashes looking up its floor.
+        if not car["leaving"] and car["slot"] is None and car["status"] != "no_slot":
+            assign_slot(session, car)
         # A leaving car heads for the exit instead of a bay. Same search, a
         # different destination, so nothing else in here has to change.
         target = EXIT_NODE if car["leaving"] else car["slot"]
@@ -235,7 +239,14 @@ def handler(ws):
     cannot delete each other's cars."""
     session = Session()
     for message in ws:
-        reply = handle_message(session, json.loads(message))
+        # One bad frame should cost that frame, not the connection. Without
+        # this, malformed JSON or a car missing a field closes the socket and
+        # the client has to reconnect.
+        try:
+            reply = handle_message(session, json.loads(message))
+        except Exception as exc:
+            print(f"ignored a bad message: {exc}")
+            continue
         ws.send(json.dumps(reply))
 
 

@@ -37,6 +37,9 @@ const RECONNECT_DELAY_MS = 2000;
  *  the ground floor can still spend about a minute and a half reaching the top
  *  exit. */
 const MIN_STAY_MS = 30_000;
+/** How often the dev-only inspection handle is refreshed, in ms. Anything
+ *  built on top of it can only measure durations to this resolution. */
+const DEV_PUBLISH_MS = 50;
 /** How many cars one signboard lists: one in the hero block plus two queued.
  *  Sampled over four minutes, a board had one car 80% of the time, two 19%,
  *  three 0.7% and four never, so a fourth row was only ever wasted height. */
@@ -757,7 +760,15 @@ export function useSimulation(): SimulationState {
   );
 
   // --- Dev-only: publish sim state so an automated pass can see what a car
-  //     believes it is doing, rather than inferring it from pixels. ---
+  //     believes it is doing, rather than inferring it from pixels.
+  //
+  //     Refreshed every DEV_PUBLISH_MS. This used to be 500, which quietly
+  //     capped the resolution of everything built on it: the movement gate
+  //     measures how long a car stands still, and every duration it reported
+  //     came out a multiple of half a second, so a real 1.2-second halt read
+  //     as 1000ms. That gate exists because a 3.4-second halt slipped past a
+  //     5-second threshold, so it of all things must not be quantised coarser
+  //     than the faults it hunts. ---
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     const id = setInterval(() => {
@@ -770,6 +781,9 @@ export function useSimulation(): SimulationState {
           status: c.status,
           leaving: c.leaving,
           parked: c.parked,
+          // How far along the current leg, so a checker can tell a car that is
+          // standing still from one that is simply between two nodes.
+          progress: c.progress,
         })),
         signs: [...latestInstructionsRef.current.entries()].map(([k, v]) => ({
           id: k,
@@ -783,7 +797,7 @@ export function useSimulation(): SimulationState {
         boards: nodeSignsRef.current,
         parked: parkedRef.current.length,
       };
-    }, 500);
+    }, DEV_PUBLISH_MS);
     return () => clearInterval(id);
   }, []);
 

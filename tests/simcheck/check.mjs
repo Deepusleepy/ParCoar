@@ -34,8 +34,18 @@ const SECONDS = Number(process.argv[3] ?? 180);
  *  either of the next two nodes on its route at any point during the wait.
  *  Normal following and the websocket handshake both settle inside a second. */
 const MAX_PAUSE_MS = 1500;
-/** Closest two car centres may come, in world units. Bodies are 4.5 long. */
-const MIN_CAR_GAP = 2.8;
+/* Car bodies are 4.5 long and 1.8 wide. Two cars are interpenetrating when
+ * they are close along BOTH axes of one of them, which is not the same thing
+ * as their centres being close: opposing lanes sit 3.5 apart and pass each
+ * other safely all day.
+ *
+ * A single centre-to-centre threshold cannot express that. The previous
+ * version used 2.8, low enough not to fire on passing traffic, which meant
+ * two cars nose to tail at 2.8 overlapped by 1.7 units and the check passed.
+ * That is the same mistake as a pause threshold set above the pause: a number
+ * picked to avoid false alarms, sitting below the size of the fault. */
+const CAR_BODY_LENGTH = 4.5;
+const CAR_BODY_WIDTH = 1.8;
 /** Top speed is 7 units/s. Anything this fast over a real distance is a jump,
  *  not driving. Both conditions are needed: two animation frames a couple of
  *  milliseconds apart give a huge apparent speed off a 7cm step. */
@@ -89,7 +99,11 @@ await page.evaluate((secs) => {
   window.__stateId = setInterval(() => {
     const s = window.__parcoarSim;
     if (s) window.__states.push({ t: Date.now(), cars: JSON.parse(JSON.stringify(s.cars)), signs: s.signs.map((x) => ({ id: x.id, path: x.path })) });
-  }, 100);
+    // The page refreshes __parcoarSim every 50ms. Sample at that rate and no
+    // faster: sampling more often than the source updates only invents
+    // duplicate readings, and every measured duration comes out a multiple of
+    // the publish interval regardless.
+  }, 50);
   setTimeout(() => { cancelAnimationFrame(window.__raf); clearInterval(window.__stateId); }, secs * 1000);
 }, SECONDS);
 
@@ -137,21 +151,38 @@ for (const [id, pts] of byCar) {
   }
 }
 
-// Physical: two cars too close on the same level.
+// Physical: two car bodies occupying the same space.
+//
+// Project the vector between the two centres onto one car's own heading and
+// onto the axis across it. If both fall inside the body, the other car is
+// inside this one. Checked both ways round, so a car being T-boned counts as
+// well as one being rear-ended.
 const overlaps = [];
 const seenPair = new Set();
+const insideBody = (a, b) => {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const fx = Math.cos(a.yaw);
+  const fz = -Math.sin(a.yaw);
+  const along = Math.abs(dx * fx + dz * fz);
+  const across = Math.abs(dx * -fz + dz * fx);
+  return along < CAR_BODY_LENGTH && across < CAR_BODY_WIDTH;
+};
 for (const { frame } of frames) {
   for (let i = 0; i < frame.length; i++) {
     for (let j = i + 1; j < frame.length; j++) {
       const a = frame[i];
       const b = frame[j];
       if (Math.abs(a.y - b.y) > 2) continue;
-      const d = Math.hypot(a.x - b.x, a.z - b.z);
-      if (d >= MIN_CAR_GAP) continue;
+      if (!insideBody(a, b) && !insideBody(b, a)) continue;
       const key = [a.id, b.id].sort().join("|");
       if (seenPair.has(key)) continue;
       seenPair.add(key);
-      overlaps.push({ pair: key, gap: +d.toFixed(2), at: [+a.x.toFixed(1), +a.z.toFixed(1)] });
+      overlaps.push({
+        pair: key,
+        gap: +Math.hypot(a.x - b.x, a.z - b.z).toFixed(2),
+        at: [+a.x.toFixed(1), +a.z.toFixed(1)],
+      });
     }
   }
 }
@@ -217,7 +248,7 @@ if (longPauses.length) {
     `${longPauses.length} times, worst ${worst.ms}ms at ${worst.node}` +
     (boardNodes.has(worst.node) ? " (a guidance board node)" : ""));
 }
-if (overlaps.length) note("cars overlapped", `${overlaps.length} pairs, closest ${Math.min(...overlaps.map((o) => o.gap))}`);
+if (overlaps.length) note("car bodies overlapped", `${overlaps.length} pairs, closest centres ${Math.min(...overlaps.map((o) => o.gap))}`);
 if (jumps.length) note("cars jumped", `${jumps.length} times, furthest ${Math.max(...jumps.map((j) => j.dist))}`);
 if (verticals.length) note("cars changed height abruptly", `${verticals.length} times`);
 if (reversals.length) note("cars drove backwards on the road", `${reversals.length} times`);
@@ -238,7 +269,7 @@ console.log(JSON.stringify({
   medianPauseMs: pauseMs.length ? pauseMs[Math.floor(pauseMs.length / 2)] : 0,
   pausesOverThresholdWithClearRoad: longPauses.length,
   pausesOverThresholdQueuedBehindAnother: queuedPauses.length,
-  closestCarGap: overlaps.length ? Math.min(...overlaps.map((o) => o.gap)) : null,
+  overlappingPairs: overlaps.length,
   carsWithGuidancePercent: +(guidanceFraction * 100).toFixed(0),
 }, null, 2));
 

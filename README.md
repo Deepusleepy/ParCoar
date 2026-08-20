@@ -11,7 +11,7 @@ You can also take a car and drive it yourself.
 
 ## Run it
 
-You need Python 3.11 or newer and Node 20 or newer. Open two terminals.
+You need Python 3.11 or newer and Node 22 or newer. Open two terminals.
 
 ```bash
 # Terminal 1: the server that decides where cars park
@@ -115,18 +115,17 @@ one. Quiet, normal and busy are selectable in the controls.
 
 React, TypeScript and three.js, through `@react-three/fiber`.
 
-A garage is mostly repetition: 480 parked cars, thousands of painted lines,
-hundreds of space numbers. Three things keep that cheap.
+A garage is mostly repetition: hundreds of parked cars, thousands of painted
+lines, hundreds of space numbers. Three things keep that cheap.
 
 Every flat marking on a floor is drawn once into a single canvas texture and
 laid on one plane, so road lines, space outlines, numbers and lane arrows cost
-one draw call per floor instead of thousands. Parked cars are instanced, one
-mesh per model and size rather than one per car. Guardrails, kerbs, signs and
-pillars are each merged into a single geometry.
+one draw call per floor instead of thousands. Parked cars are instanced: 3,819
+of them render from 41 instanced meshes. Guardrails, kerbs, signs and pillars
+are each merged into a single geometry.
 
-That comes to roughly 356 draw calls and 88,000 triangles for the whole
-building, holding 120fps at 4.5 million pixels. Before that work it was 3,808
-draw calls and 604,000 triangles.
+Measured from `renderer.info` on an M-series Mac at 1440x900: about 575 draw
+calls and 2.1 million triangles a frame, holding the 120Hz cap.
 
 ## Layout
 
@@ -147,15 +146,26 @@ reads the graph once at startup.
 backend/.venv/bin/python backend/generate_lot.py
 ```
 
+One catch worth knowing before you try it. The frontend does not read the
+layout numbers out of `lot.json`; it mirrors them as constants in
+`frontend/src/sim/constants.ts`. Changing the number of bays, or moving nodes
+around within the existing spacing, works on its own. Changing a spacing
+(`JUNCTION_SPACING`, `AISLE_SPACING`, `SLOT_OFFSET`, `ROAD_WIDTH`) or the
+number of floors means changing it in `constants.ts` to match, or the 3D
+garage will be built to different dimensions than the graph the cars are
+driving. `frontend/src/sim/constants.test.ts` pins the relationships between
+those constants, but nothing checks them against `lot.json`.
+
 ## Checks
 
 ```bash
 cd frontend && npm run build                              # types and build
+cd frontend && npm test                                   # unit tests
 backend/.venv/bin/python -m unittest discover -s tests -t .
 node tests/simcheck/check.mjs                             # both servers up
 ```
 
-The first two are fast. The third opens the running garage in a real browser
+The first three are fast. The last one opens the running garage in a real browser
 and watches the cars for a few minutes. It fails if a car stops with clear
 road ahead, if two cars end up inside each other, if a car jumps or drops, if
 a car is sent to a different space halfway through its journey, or if cars

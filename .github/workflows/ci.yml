@@ -20,6 +20,8 @@ jobs:
       # noUnusedParameters, so this catches dead code as well as type errors.
       - run: npm run build
         working-directory: frontend
+      - run: npm test
+        working-directory: frontend
 
   backend:
     runs-on: ubuntu-latest
