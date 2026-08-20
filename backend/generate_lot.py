@@ -1,194 +1,180 @@
-"""
-Lot layout generator for the ParCoar parking guidance system.
+"""Generate the graph used by the ParCoar parking simulator.
 
-Produces shared/lot.json and frontend/public/lot.json, a 3-floor garage whose two-way aisles
-follow a serpentine spine through 180° curved turns. Slots line both sides of
-every aisle. Ramps connect floors.
-
-Layout per floor (top view), 4 aisles x 20 bays x 2 sides = 160 slots:
-
-    Aisle 1 (→):  J1 → J2 → ... → J20 → [Turn1]
-                                          ↓
-    Aisle 2 (←): [Turn2] ← J20 ← J19 ← ... ← J1
-                    ↓
-    Aisle 3 (→):  J1 → J2 → ... → J20 → [Turn3]
-                                          ↓
-    Aisle 4 (←): [Turn4] ← J20 ← J19 ← ... ← J1
-                    ↓
-                [Ramp up to next floor]
-
-3 floors x 160 slots = 480 total slots.
-
-Run:  python backend/generate_lot.py
-Output: shared/lot.json and frontend/public/lot.json
+The output is written to both shared/lot.json and frontend/public/lot.json.
+All bays are identical. Directed edges carry a physical driving cost so the
+backend can choose the genuinely closest free bay instead of counting hops.
 """
 
 import json
+import math
 import os
-import random
 
 FLOORS = 3
 AISLES_PER_FLOOR = 4
 JUNCTIONS_PER_AISLE = 20
-SLOTS_PER_JUNCTION = 2  # left + right
-JUNCTION_SPACING = 2.6  # x-distance between junctions = one parking bay pitch
-AISLE_SPACING = 17      # y-distance between aisle centrelines (road + a bay each side)
-SLOT_OFFSET = 6         # y-distance from aisle centre to slot centre
-ROAD_WIDTH = 7          # full driving-road width across both lanes (±3.5 of centre)
-SLOT_DEPTH = 5          # parking bay depth (perpendicular to the aisle)
-SLOT_SIZES = ["small", "medium", "large"]
-FLOOR_HEIGHT = 15       # z-distance between floors (used by frontend only)
-APPROACH_OFFSET = 15    # x-distance of entry/exit approach roads west of the lot
+SLOTS_PER_JUNCTION = 2
+JUNCTION_SPACING = 2.6
+AISLE_SPACING = 17
+SLOT_OFFSET = 6
+ROAD_WIDTH = 7
+SLOT_DEPTH = 5
+FLOOR_HEIGHT = 15
+APPROACH_OFFSET = 15
+
+# These mirror the rendered ramp geometry. They are included in lot.json so
+# routing and rendering can share the same dimensions.
+RAMP_OUTSET = 19
+RAMP_CORNER_RADIUS = 7
 
 
-def slot_number(aisle, j_idx, s_pos):
-    """Sequential per-side slot number within a floor.
-
-    Each aisle holds JUNCTIONS_PER_AISLE junctions, each with two slots
-    (s_pos 0 = the -y side, s_pos 1 = the +y side). Numbers are assigned
-    side-by-side rather than interleaved per junction, so every *side* of
-    an aisle is a contiguous, predictable run (e.g. A1..A20 on one side,
-    A21..A40 on the other), in travel order. Aisles chain contiguously:
-    aisle 0 = 1..40, aisle 1 = 41..80, etc.
-    """
+def slot_number(aisle: int, junction_index: int, side: int) -> int:
+    """Return the sequential bay number within a floor."""
     per_aisle = JUNCTIONS_PER_AISLE * SLOTS_PER_JUNCTION
-    return aisle * per_aisle + s_pos * JUNCTIONS_PER_AISLE + j_idx + 1
+    return aisle * per_aisle + side * JUNCTIONS_PER_AISLE + junction_index + 1
 
 
-def main():
-    random.seed(42)
+def edge_cost(nodes: dict, source: str, target: str) -> float:
+    """Approximate the real distance driven along one directed graph edge."""
+    a = nodes[source]
+    b = nodes[target]
+    dx = b["x"] - a["x"]
+    dy = b["y"] - a["y"]
+    dz = (b["floor"] - a["floor"]) * FLOOR_HEIGHT
 
-    nodes = {}
-    edges = {}
+    # The long side of a 180-degree turn is a semicircle plus the short
+    # approach from the turn node to the junction. The near side is straight.
+    if a["type"] == "turn" or b["type"] == "turn":
+        turn = a if a["type"] == "turn" else b
+        other = b if a["type"] == "turn" else a
+        aisle_gap = abs(other["y"] - turn["y"])
+        if aisle_gap > 1e-9:
+            return math.pi * (aisle_gap / 2) + abs(other["x"] - turn["x"])
+
+    # The rendered inter-floor ramp leaves the slab, rounds two corners, runs
+    # along the outside wall, and returns to the next floor. Its horizontal
+    # centreline is two straight approaches, a middle run, and two quarter arcs.
+    if {a["type"], b["type"]} == {"ramp_up", "ramp_in"}:
+        floor_run = abs(b["y"] - a["y"])
+        horizontal = (
+            2 * (RAMP_OUTSET - RAMP_CORNER_RADIUS)
+            + max(0, floor_run - 2 * RAMP_CORNER_RADIUS)
+            + math.pi * RAMP_CORNER_RADIUS
+        )
+        return math.hypot(horizontal, dz)
+
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+
+def main() -> None:
+    nodes: dict[str, dict] = {}
+    edges: dict[str, list[dict]] = {}
 
     for floor in range(FLOORS):
-        f = floor
-
-        # Entry / ramp-in for this floor
         if floor == 0:
             entry_id = "E0"
-            nodes[entry_id] = {"type": "entry", "floor": f, "x": 0, "y": 0}
+            nodes[entry_id] = {"type": "entry", "floor": floor, "x": 0, "y": 0}
         else:
-            entry_id = f"R{f}_in"
-            nodes[entry_id] = {"type": "ramp_in", "floor": f, "x": 0, "y": 0}
+            entry_id = f"R{floor}_in"
+            nodes[entry_id] = {"type": "ramp_in", "floor": floor, "x": 0, "y": 0}
 
-        # Build aisles — serpentine pattern (alternating direction)
-        prev_node = entry_id  # chain aisles together
+        previous = entry_id
 
         for aisle in range(AISLES_PER_FLOOR):
             y = aisle * AISLE_SPACING
-            going_right = (aisle % 2 == 0)  # even aisles go right, odd go left
+            going_right = aisle % 2 == 0
 
             junction_ids = []
-            for j in range(1, JUNCTIONS_PER_AISLE + 1):
-                jid = f"J{f}_{aisle}_{j}"
-                jx = j * JUNCTION_SPACING
-                nodes[jid] = {"type": "junction", "floor": f, "x": jx, "y": y}
-                junction_ids.append(jid)
+            for number in range(1, JUNCTIONS_PER_AISLE + 1):
+                junction_id = f"J{floor}_{aisle}_{number}"
+                nodes[junction_id] = {
+                    "type": "junction",
+                    "floor": floor,
+                    "x": number * JUNCTION_SPACING,
+                    "y": y,
+                }
+                junction_ids.append(junction_id)
 
-            # If going left, reverse the junction order for edge-building
             if not going_right:
-                junction_ids = list(reversed(junction_ids))
+                junction_ids.reverse()
 
-            # --- Slots branching off each junction ---
-            for j_idx, jid in enumerate(junction_ids):
-                jx = nodes[jid]["x"]
-                for s_pos in range(SLOTS_PER_JUNCTION):
-                    sid = f"S{f}_{slot_number(aisle, j_idx, s_pos)}"
-                    sy = y + (-SLOT_OFFSET if s_pos == 0 else SLOT_OFFSET)
-                    size = random.choice(SLOT_SIZES)
-                    nodes[sid] = {"type": "slot", "floor": f, "x": jx, "y": sy, "size": size}
+            for junction_index, junction_id in enumerate(junction_ids):
+                x = nodes[junction_id]["x"]
+                for side in range(SLOTS_PER_JUNCTION):
+                    slot_id = f"S{floor}_{slot_number(aisle, junction_index, side)}"
+                    slot_y = y + (-SLOT_OFFSET if side == 0 else SLOT_OFFSET)
+                    nodes[slot_id] = {
+                        "type": "slot",
+                        "floor": floor,
+                        "x": x,
+                        "y": slot_y,
+                    }
 
-            # --- Chain: previous node → first junction of this aisle ---
-            first_j = junction_ids[0]
-            if prev_node not in edges:
-                edges[prev_node] = []
-            # The turn is right after a +x aisle and left after a -x aisle.
-            direction = ("left" if going_right else "right") if prev_node.startswith("T") else "straight"
-            edges[prev_node].append({"dir": direction, "to": first_j})
+            first_junction = junction_ids[0]
+            edges.setdefault(previous, [])
+            direction = ("left" if going_right else "right") if previous.startswith("T") else "straight"
+            edges[previous].append({"dir": direction, "to": first_junction})
 
-            # --- Edges along the aisle: each junction → its slots + next junction ---
-            for j_idx, jid in enumerate(junction_ids):
-                edge_list = []
-                # Slots — s_pos 0 is the -y side ("left"), s_pos 1 the +y side ("right").
-                left_slot = f"S{f}_{slot_number(aisle, j_idx, 0)}"
-                right_slot = f"S{f}_{slot_number(aisle, j_idx, 1)}"
-                edge_list.append({"dir": "left", "to": left_slot})
-                edge_list.append({"dir": "right", "to": right_slot})
-                # Next junction along the aisle
-                if j_idx < len(junction_ids) - 1:
-                    edge_list.append({"dir": "straight", "to": junction_ids[j_idx + 1]})
-                edges[jid] = edge_list
+            for junction_index, junction_id in enumerate(junction_ids):
+                outgoing = [
+                    {"dir": "left", "to": f"S{floor}_{slot_number(aisle, junction_index, 0)}"},
+                    {"dir": "right", "to": f"S{floor}_{slot_number(aisle, junction_index, 1)}"},
+                ]
+                if junction_index < len(junction_ids) - 1:
+                    outgoing.append({"dir": "straight", "to": junction_ids[junction_index + 1]})
+                edges[junction_id] = outgoing
 
-            # --- Turn node at the end of the aisle (180° curve to next aisle) ---
+            last_junction = junction_ids[-1]
             if aisle < AISLES_PER_FLOOR - 1:
-                last_j = junction_ids[-1]
-                turn_id = f"T{f}_{aisle}"
-                turn_x = (JUNCTIONS_PER_AISLE + 1) * JUNCTION_SPACING
-                if not going_right:
-                    turn_x = 0  # turn at the left end if going left
-                nodes[turn_id] = {"type": "turn", "floor": f, "x": turn_x, "y": y}
-                # last junction → turn
-                edges[last_j].append({"dir": "straight", "to": turn_id})
-                # turn → first junction of next aisle (will be chained in next iteration)
-                edges[turn_id] = []  # will be set when next aisle starts
-                prev_node = turn_id
+                turn_id = f"T{floor}_{aisle}"
+                turn_x = (JUNCTIONS_PER_AISLE + 1) * JUNCTION_SPACING if going_right else 0
+                nodes[turn_id] = {"type": "turn", "floor": floor, "x": turn_x, "y": y}
+                edges[last_junction].append({"dir": "straight", "to": turn_id})
+                edges[turn_id] = []
+                previous = turn_id
+            elif floor < FLOORS - 1:
+                ramp_id = f"R{floor}_up"
+                ramp_x = (JUNCTIONS_PER_AISLE + 1) * JUNCTION_SPACING if going_right else 0
+                nodes[ramp_id] = {"type": "ramp_up", "floor": floor, "x": ramp_x, "y": y}
+                edges[last_junction].append({"dir": "straight", "to": ramp_id})
+                edges[ramp_id] = [{"dir": "up", "to": f"R{floor + 1}_in"}]
             else:
-                # Last aisle: connect to ramp up or exit
-                last_j = junction_ids[-1]
-                if floor < FLOORS - 1:
-                    ramp_id = f"R{f}_up"
-                    ramp_x = (JUNCTIONS_PER_AISLE + 1) * JUNCTION_SPACING
-                    if not going_right:
-                        ramp_x = 0
-                    nodes[ramp_id] = {"type": "ramp_up", "floor": f, "x": ramp_x, "y": y}
-                    edges[last_j].append({"dir": "straight", "to": ramp_id})
-                    # Ramp up → ramp_in of next floor
-                    next_floor = floor + 1
-                    ramp_in_next = f"R{next_floor}_in"
-                    edges[ramp_id] = [{"dir": "up", "to": ramp_in_next}]
-                else:
-                    # Top floor: exit
-                    exit_id = f"EXIT{f}"
-                    exit_x = (JUNCTIONS_PER_AISLE + 1) * JUNCTION_SPACING
-                    if not going_right:
-                        exit_x = 0
-                    nodes[exit_id] = {"type": "exit", "floor": f, "x": exit_x, "y": y}
-                    edges[last_j].append({"dir": "straight", "to": exit_id})
-                    edges[exit_id] = []
-                prev_node = None  # end of chain
+                exit_id = f"EXIT{floor}"
+                exit_x = (JUNCTIONS_PER_AISLE + 1) * JUNCTION_SPACING if going_right else 0
+                nodes[exit_id] = {"type": "exit", "floor": floor, "x": exit_x, "y": y}
+                edges[last_junction].append({"dir": "straight", "to": exit_id})
+                edges[exit_id] = []
 
-    # --- Entry / exit approach roads (road segments outside the lot) ---
-    # Entry approach: cars arrive from the west and enter at E0 (floor 0).
-    nodes["ENTRY_ROAD"] = {"type": "approach", "floor": 0, "x": -APPROACH_OFFSET, "y": nodes["E0"]["y"]}
+    nodes["ENTRY_ROAD"] = {
+        "type": "approach",
+        "floor": 0,
+        "x": -APPROACH_OFFSET,
+        "y": nodes["E0"]["y"],
+    }
     edges["ENTRY_ROAD"] = [{"dir": "straight", "to": "E0"}]
 
-    # Exit approach: cars leave EXIT2 (top floor) and drive away to the west.
     exit_id = f"EXIT{FLOORS - 1}"
     exit_node = nodes[exit_id]
-    nodes["EXIT_ROAD"] = {"type": "approach", "floor": FLOORS - 1, "x": -APPROACH_OFFSET, "y": exit_node["y"]}
+    nodes["EXIT_ROAD"] = {
+        "type": "approach",
+        "floor": FLOORS - 1,
+        "x": -APPROACH_OFFSET,
+        "y": exit_node["y"],
+    }
     edges[exit_id].append({"dir": "straight", "to": "EXIT_ROAD"})
     edges["EXIT_ROAD"] = []
 
-    # --- Slots lead back to their own junction, so a parked car can leave ---
-    # A slot sits directly beside one junction (same x, offset in y), so the
-    # only way out of a bay is to reverse into that junction. The server's
-    # search refuses to pass *through* a slot, so these edges are only ever
-    # used by a car that starts parked in one.
-    junctions_by_pos = {
-        (n["floor"], n["x"], n["y"]): nid
-        for nid, n in nodes.items()
-        if n["type"] == "junction"
+    junctions_by_position = {
+        (node["floor"], node["x"], node["y"]): node_id
+        for node_id, node in nodes.items()
+        if node["type"] == "junction"
     }
-    for nid, node in nodes.items():
+    for node_id, node in nodes.items():
         if node["type"] != "slot":
             continue
         aisle_y = round(node["y"] / AISLE_SPACING) * AISLE_SPACING
-        jid = junctions_by_pos.get((node["floor"], node["x"], aisle_y))
-        edges[nid] = [{"dir": "straight", "to": jid}] if jid else []
+        junction_id = junctions_by_position.get((node["floor"], node["x"], aisle_y))
+        edges[node_id] = [{"dir": "straight", "to": junction_id}] if junction_id else []
 
-    # Mirror every road edge. Bay edges stay one-in/one-out so searches cannot
-    # use a parking bay as a shortcut. Reversing a turn also reverses its hand.
     road_edges = [
         (source, edge["to"], edge["dir"])
         for source, outgoing in edges.items()
@@ -198,11 +184,14 @@ def main():
     opposite = {"left": "right", "right": "left", "up": "down", "down": "up"}
     for source, target, direction in road_edges:
         if nodes[target]["type"] == "turn":
-            # Driving into a turn from the far side makes the opposite hand.
             direction = opposite[edges[target][0]["dir"]]
         else:
             direction = opposite.get(direction, direction)
         edges[target].append({"dir": direction, "to": source})
+
+    for source, outgoing in edges.items():
+        for edge in outgoing:
+            edge["cost"] = round(edge_cost(nodes, source, edge["to"]), 3)
 
     lot = {
         "floors": FLOORS,
@@ -214,41 +203,30 @@ def main():
         "slot_offset": SLOT_OFFSET,
         "road_width": ROAD_WIDTH,
         "slot_depth": SLOT_DEPTH,
+        "ramp_outset": RAMP_OUTSET,
+        "ramp_corner_radius": RAMP_CORNER_RADIUS,
         "nodes": nodes,
         "edges": edges,
     }
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    # The graph is written twice on purpose. The backend reads shared/, and
-    # the browser can only fetch files served from frontend/public/, so the
-    # frontend needs its own copy. Writing both here is the only thing that
-    # keeps them in step: when this was a manual copy the two drifted, and a
-    # frontend running yesterday's graph against today's backend is a very
-    # confusing bug to chase.
-    out_paths = [
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output_paths = [
         os.path.join(project_root, "shared", "lot.json"),
         os.path.join(project_root, "frontend", "public", "lot.json"),
     ]
-    for out_path in out_paths:
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        with open(out_path, "w") as f:
-            json.dump(lot, f, indent=2)
+    for output_path in output_paths:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as file:
+            json.dump(lot, file, separators=(",", ":"))
+            file.write("\n")
+        print(f"Generated {output_path}")
 
-    slot_count = sum(1 for n in nodes.values() if n["type"] == "slot")
-    junction_count = sum(1 for n in nodes.values() if n["type"] == "junction")
-    turn_count = sum(1 for n in nodes.values() if n["type"] == "turn")
-    ramp_count = sum(1 for n in nodes.values() if "ramp" in n["type"])
-    approach_count = sum(1 for n in nodes.values() if n["type"] == "approach")
-    for out_path in out_paths:
-        print(f"Generated {out_path}")
+    counts = {
+        node_type: sum(1 for node in nodes.values() if node["type"] == node_type)
+        for node_type in {node["type"] for node in nodes.values()}
+    }
     print(f"  Floors: {FLOORS}")
-    print(f"  Aisles/floor: {AISLES_PER_FLOOR}")
-    print(f"  Junctions: {junction_count}")
-    print(f"  Turns: {turn_count}")
-    print(f"  Slots: {slot_count}")
-    print(f"  Ramp nodes: {ramp_count}")
-    print(f"  Approach roads: {approach_count}")
+    print(f"  Slots: {counts.get('slot', 0)}")
     print(f"  Total nodes: {len(nodes)}")
 
 
