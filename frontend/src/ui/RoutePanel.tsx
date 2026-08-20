@@ -1,5 +1,6 @@
 import { memo, useMemo, type JSX } from "react";
 import type { LotData, LotNode, NodeType } from "../types";
+import { bayLabel } from "../sim/constants";
 
 /** One car's view-model for the route panel. `color` is already a hex string. */
 export interface RoutePanelCar {
@@ -21,10 +22,8 @@ const FLOOR_LABEL = ["A", "B", "C"];
 /** Node id to the label painted on the floor and shown on every board:
  *  "S0_4" -> "A4". Anything that is not a bay (the exit, say) is passed
  *  through unchanged so it still reads sensibly. */
-function bayLabel(id: string | null): string {
-  if (!id) return "no bay";
-  const m = id.match(/^S(\d+)_(\d+)$/);
-  return m ? `${String.fromCharCode(65 + Number(m[1]))}${m[2]}` : id;
+function bayName(id: string | null): string {
+  return id ? bayLabel(id) : "no bay";
 }
 
 /** Radius and opacity per node type, tuned so 160 bays per floor do not
@@ -128,7 +127,7 @@ function CarChips({
             />
             <span>{c.plate}</span>
             <span className="text-neutral-500">·</span>
-            <span className="text-neutral-400">{bayLabel(c.slot)}</span>
+            <span className="text-neutral-400">{bayName(c.slot)}</span>
           </button>
         );
       })}
@@ -289,7 +288,7 @@ function Readout({ car }: { car: RoutePanelCar | null }) {
   return (
     <div className="mt-2 flex items-center justify-between text-[11px]">
       <span className="text-neutral-400">
-        Bay <span className="font-semibold text-neutral-100">{bayLabel(car.slot)}</span>
+        Bay <span className="font-semibold text-neutral-100">{bayName(car.slot)}</span>
       </span>
       <span className="text-neutral-400">
         <span className="font-semibold tabular-nums text-neutral-100">{hops}</span> {hops === 1 ? "hop" : "hops"} left

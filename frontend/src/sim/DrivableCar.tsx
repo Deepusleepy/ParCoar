@@ -4,14 +4,13 @@ import { Text, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import type { LotData, LotEdge, NodeType } from "../types";
 import { useKeyboard } from "../hooks/useKeyboard";
-import { rampPoints, semicirclePoints } from "./geometry";
+import { aisleOf, rampPoints, semicirclePoints, slabBounds } from "./geometry";
 import {
   AISLE_SPACING,
   CAR_Y_OFFSET,
   FLOOR_HEIGHT,
   LANE_WIDTH,
   ROAD_WIDTH,
-  SLOT_DEPTH,
   SLOT_WIDTH,
   toWorld,
 } from "./constants";
@@ -173,12 +172,6 @@ export interface RoadSegment {
   floor: number;
 }
 
-/** Parse the aisle index from a junction id "J{floor}_{aisle}_{n}". */
-function aisleOf(id: string): number | null {
-  const m = id.match(/^J\d+_(\d+)_\d+$/);
-  return m ? Number(m[1]) : null;
-}
-
 /** Build road centerline segments from the lot graph for road-edge clamping.
  *  Includes aisle centerlines and turn semicircle paths. Ramps are excluded
  *  (they have their own edge clamp in the DrivableCar useFrame loop). */
@@ -337,30 +330,6 @@ function rampPitchAt(
   yAhead = la0.y + (la1.y - la0.y) * bestLaT;
   // Pitch = atan(dy / dx). Positive when climbing (nose up).
   return Math.atan2(yAhead - yHere, lookAhead);
-}
-
-/* ------------------------------------------------------------------ *
- *  Lot bounds (mirrors computeBounds in ParkingLot.tsx)
- * ------------------------------------------------------------------ */
-interface Bounds {
-  minX: number;
-  maxX: number;
-  minZ: number;
-  maxZ: number;
-}
-
-function computeBounds(lot: LotData): Bounds {
-  const structural = Object.values(lot.nodes).filter(
-    (n) => !["approach", "entry", "exit"].includes(n.type),
-  );
-  const xs = structural.map((n) => n.x);
-  const ys = structural.map((n) => n.y);
-  return {
-    minX: Math.min(...xs) - AISLE_SPACING / 2 - 1,
-    maxX: Math.max(...xs) + AISLE_SPACING / 2 + 1,
-    minZ: Math.min(...ys) - SLOT_DEPTH - 2,
-    maxZ: Math.max(...ys) + SLOT_DEPTH + 2,
-  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -1232,7 +1201,7 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
   const rampCurves = useMemo(() => buildRampCurves(lot), [lot]);
 
   // Lot bounds for collision clamping.
-  const bounds = useMemo(() => computeBounds(lot), [lot]);
+  const bounds = useMemo(() => slabBounds(lot), [lot]);
   const maxFloor = useMemo(
     () => Math.max(...Object.values(lot.nodes).map((n) => n.floor)),
     [lot],
@@ -1252,7 +1221,7 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
 
   // Spawn at the entry node E0, in the right-hand driving lane, facing +X.
   // We don't spawn on the approach road (ENTRY_ROAD, x=-15) because that node
-  // is outside the lot bounds clamp (computeBounds excludes approach/entry/
+  // is outside the lot bounds clamp (slabBounds excludes approach/entry/
   // exit nodes, so minX=-13) and isn't covered by road segments — the car
   // would be yanked to x=-13 and then pushed to ~x=-4 by the road-edge clamp
   // on the first frame, producing a visible teleport. E0 is on the entry

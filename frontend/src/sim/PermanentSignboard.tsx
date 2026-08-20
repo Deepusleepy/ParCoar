@@ -2,7 +2,7 @@ import { memo } from "react";
 import { Text } from "@react-three/drei";
 import * as THREE from "three";
 import type { BoardCar, Direction, NodeSign } from "../types";
-import { COLOR_HEX, FLOOR_HEIGHT } from "./constants";
+import { bayLabel, COLOR_HEX, FLOOR_HEIGHT } from "./constants";
 
 export interface PermanentSignboardProps {
   position: [number, number, number];
@@ -16,13 +16,6 @@ export interface PermanentSignboardProps {
   floor: number;
   /** The queue of cars heading for this node, nearest first. */
   dynamic?: NodeSign;
-}
-
-/** Convert a bay node id ("S2_5") into a display label ("C5"). The floor is
- *  encoded in the id itself as S{floor}_{number}. */
-function bayLabel(slot: string): string {
-  const m = slot.match(/^S(\d+)_(\d+)$/);
-  return m ? `${String.fromCharCode(65 + Number(m[1]))}${m[2]}` : slot;
 }
 
 /** Where a car is ultimately going, as the board should print it. */

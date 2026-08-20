@@ -198,9 +198,27 @@ The backend assigns slots considering, in order:
 
 ## Pre-parked Cars
 
-At startup, ~50% of the 480 slots are pre-filled with static cars (random color,
-plate, size matching the slot). These cars never move. The frontend
-generates them deterministically (every other slot, sorted by floor/y/x)
-and renders them in the 3D scene. The frontend reports all occupied slots
-(pre-parked + parked) to the backend via `occupied_slots` in every state
-message, so the backend never assigns a slot that already has a car.
+At startup the frontend fills a share of the 480 bays with static cars, chosen
+deterministically so the same bays are taken on every reload. These cars never
+move; only cars that drive in during the run leave again.
+
+Occupancy is a gradient per storey, from that storey's own entrance to its far
+end, at one of three levels (`quiet`, `normal`, `busy`, chosen in the controls
+drawer). Normal starts the ground floor at 99% by the entrance falling to 93%
+at the far end, floor B at 98% falling to 30%, and floor C at 75% falling to
+5%.
+
+The gradient is the point, not decoration. The backend routes a car to its
+nearest free bay, so a garage that is half empty everywhere parks every car
+within seconds of arrival and no car ever reaches a guidance board. Measured
+on a flat 50% fill, 18 of 26 cars had a route that never passed a board and
+six of the eleven boards were lit less than 2% of the time. With the gradient,
+every car passes at least one.
+
+It is per storey rather than garage-wide because a car arriving by ramp enters
+at the *start* of that floor's run of bays. One gradient across the whole
+building leaves every upper floor empty exactly where cars come in.
+
+The frontend reports all occupied bays (pre-parked, parked, and the ones
+active cars are heading for) in `occupied_slots` on every state message, so
+the backend never assigns a bay that already has a car in it.

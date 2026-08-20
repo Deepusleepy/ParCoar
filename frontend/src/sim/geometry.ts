@@ -1,5 +1,13 @@
 import * as THREE from "three";
-import { AISLE_SPACING, FLOOR_HEIGHT, RAMP_CORNER_RADIUS, RAMP_OUTSET } from "./constants";
+import type { LotData } from "../types";
+import {
+  AISLE_SPACING,
+  FLOOR_HEIGHT,
+  RAMP_CORNER_RADIUS,
+  RAMP_OUTSET,
+  SLAB_PAD_X,
+  SLAB_PAD_Z,
+} from "./constants";
 
 /*
  * Shared road curve generators.
@@ -10,6 +18,60 @@ import { AISLE_SPACING, FLOOR_HEIGHT, RAMP_CORNER_RADIUS, RAMP_OUTSET } from "./
  * copy-pasted implementations that had already drifted apart. They live here
  * now so there is one definition each.
  */
+
+/** Aisle index from a junction id, "J{floor}_{aisle}_{n}". Null for anything
+ *  that is not a junction. */
+export function aisleOf(id: string): number | null {
+  const m = id.match(/^J\d+_(\d+)_\d+$/);
+  return m ? Number(m[1]) : null;
+}
+
+/** Footprint of one floor slab in world X and Z. */
+export interface SlabBounds {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
+/**
+ * Footprint of the floor slabs: the structural nodes plus the padding the
+ * turn loops and bays need.
+ *
+ * This used to be written out twice, once for the 3D geometry and once for
+ * the player car's position clamp, and the two had drifted: the clamp padded
+ * X by 9.5 where the slab pads by 13.5, so the player car hit an invisible
+ * wall four units short of the real deck edge at both ends of the building.
+ * Same class of bug as the three copy-pasted curve generators this file was
+ * created to replace.
+ */
+export function slabBounds(lot: LotData): SlabBounds {
+  const structural = Object.values(lot.nodes).filter(
+    (n) => !["approach", "entry", "exit"].includes(n.type),
+  );
+  const xs = structural.map((n) => n.x);
+  const ys = structural.map((n) => n.y);
+  return {
+    minX: Math.min(...xs) - SLAB_PAD_X,
+    maxX: Math.max(...xs) + SLAB_PAD_X,
+    minZ: Math.min(...ys) - SLAB_PAD_Z,
+    maxZ: Math.max(...ys) + SLAB_PAD_Z,
+  };
+}
+
+/** A BoxGeometry moved so its centre sits at (x, y, z). */
+export function makeBox(
+  w: number,
+  h: number,
+  d: number,
+  x: number,
+  y: number,
+  z: number,
+): THREE.BufferGeometry {
+  const g = new THREE.BoxGeometry(w, h, d);
+  g.applyMatrix4(new THREE.Matrix4().setPosition(x, y, z));
+  return g;
+}
 
 /** Points for a 180° semicircle joining two junctions at the same x.
  *

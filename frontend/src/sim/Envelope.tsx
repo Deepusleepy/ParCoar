@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { FLOOR_HEIGHT, PILLAR_COLOR, WALL_COLOR } from "./constants";
+import { makeBox } from "./geometry";
 
 /** Building envelope: site apron, perimeter spandrels, stair/lift core, and
  *  roof parapet. Gives the floating slabs a read-as-finished shell without
@@ -49,13 +50,6 @@ const MAT_CORE_GLAZING = new THREE.MeshStandardMaterial({
   metalness: 0.2,
   envMapIntensity: 0.3,
 });
-
-/** A BoxGeometry translated to (x, y, z). */
-function makeBox(w: number, h: number, d: number, x: number, y: number, z: number): THREE.BufferGeometry {
-  const g = new THREE.BoxGeometry(w, h, d);
-  g.applyMatrix4(new THREE.Matrix4().setPosition(x, y, z));
-  return g;
-}
 
 /** Openings in the west face, in world Z. The west face carries the entry
  *  (z=0), the exit (z=51) and both ramp crossings, and those need to stay

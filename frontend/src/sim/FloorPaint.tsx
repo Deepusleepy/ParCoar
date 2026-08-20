@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import type { JSX } from "react";
 import type { LotData } from "../types";
+import { aisleOf } from "./geometry";
 import {
   AISLE_SPACING,
   EDGE_LINE_OFFSET,
@@ -31,13 +32,6 @@ import {
  * w2c helper for what that actually works out to; it is not what you would
  * guess, and guessing it mirrored every marking in the garage.
  */
-
-/** Parsed junction id "J{floor}_{aisle}_{n}" -> aisle index (same regex as
- *  ParkingLot's `aisleOf`). Returns null for non-junction / malformed ids. */
-function aisleOf(id: string): number | null {
-  const m = id.match(/^J\d+_(\d+)_\d+$/);
-  return m ? Number(m[1]) : null;
-}
 
 export function FloorPaint({
   lot,

@@ -1,7 +1,7 @@
 """
 Lot layout generator for the ParCoar parking guidance system.
 
-Produces shared/lot.json — a 3-floor parking garage whose two-way aisles
+Produces shared/lot.json and frontend/public/lot.json, a 3-floor garage whose two-way aisles
 follow a serpentine spine through 180° curved turns. Slots line both sides of
 every aisle. Ramps connect floors.
 
@@ -20,7 +20,7 @@ Layout per floor (top view), 4 aisles x 20 bays x 2 sides = 160 slots:
 3 floors x 160 slots = 480 total slots.
 
 Run:  python backend/generate_lot.py
-Output: shared/lot.json
+Output: shared/lot.json and frontend/public/lot.json
 """
 
 import json
@@ -220,16 +220,28 @@ def main():
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
-    out_path = os.path.join(project_root, "shared", "lot.json")
-    with open(out_path, "w") as f:
-        json.dump(lot, f, indent=2)
+    # The graph is written twice on purpose. The backend reads shared/, and
+    # the browser can only fetch files served from frontend/public/, so the
+    # frontend needs its own copy. Writing both here is the only thing that
+    # keeps them in step: when this was a manual copy the two drifted, and a
+    # frontend running yesterday's graph against today's backend is a very
+    # confusing bug to chase.
+    out_paths = [
+        os.path.join(project_root, "shared", "lot.json"),
+        os.path.join(project_root, "frontend", "public", "lot.json"),
+    ]
+    for out_path in out_paths:
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "w") as f:
+            json.dump(lot, f, indent=2)
 
     slot_count = sum(1 for n in nodes.values() if n["type"] == "slot")
     junction_count = sum(1 for n in nodes.values() if n["type"] == "junction")
     turn_count = sum(1 for n in nodes.values() if n["type"] == "turn")
     ramp_count = sum(1 for n in nodes.values() if "ramp" in n["type"])
     approach_count = sum(1 for n in nodes.values() if n["type"] == "approach")
-    print(f"Generated {out_path}")
+    for out_path in out_paths:
+        print(f"Generated {out_path}")
     print(f"  Floors: {FLOORS}")
     print(f"  Aisles/floor: {AISLES_PER_FLOOR}")
     print(f"  Junctions: {junction_count}")

@@ -17,15 +17,13 @@ import {
   PILLAR_COLOR,
   PILLAR_HEIGHT,
   ROAD_WIDTH,
-  SLAB_PAD_X,
-  SLAB_PAD_Z,
   SLOT_WIDTH,
   toWorld,
 } from "./constants";
 import { Envelope, coreFootprint, spansOutside } from "./Envelope";
 import { FloorPaint } from "./FloorPaint";
 import { PermanentSignboard } from "./PermanentSignboard";
-import { rampPoints, semicirclePoints } from "./geometry";
+import { aisleOf, makeBox, rampPoints, semicirclePoints, slabBounds, type SlabBounds } from "./geometry";
 
 /* ================================================================== *
  *  Lot loading
@@ -200,13 +198,6 @@ function buildSolidBarAlongPath(
   geo.setIndex(indices);
   geo.computeVertexNormals();
   return geo;
-}
-
-/** A BoxGeometry translated to (x, y, z). Used to build merged trim/bar sets. */
-function makeBox(w: number, h: number, d: number, x: number, y: number, z: number): THREE.BufferGeometry {
-  const g = new THREE.BoxGeometry(w, h, d);
-  g.applyMatrix4(new THREE.Matrix4().setPosition(x, y, z));
-  return g;
 }
 
 /** Offset every point of a polyline perpendicular to its tangent (in the X-Z plane). */
@@ -477,13 +468,6 @@ interface SlotDesc {
   rotY: number;
 }
 
-interface Bounds {
-  minX: number;
-  maxX: number;
-  minZ: number;
-  maxZ: number;
-}
-
 /** X-range of edge parking slots on one long side of the slab. */
 interface SlotEdge {
   minX: number;
@@ -510,12 +494,6 @@ interface AreaSignDesc {
   /** True when this board's bays lie on the approaching driver's LEFT. The
    *  board faces oncoming traffic, so the arrow points that way on screen. */
   pointsLeft: boolean;
-}
-
-/** Parse the aisle index from a junction id "J{floor}_{aisle}_{n}". */
-function aisleOf(id: string): number | null {
-  const m = id.match(/^J\d+_(\d+)_\d+$/);
-  return m ? Number(m[1]) : null;
 }
 
 /** Classify the lot graph into renderable descriptors. */
@@ -791,21 +769,6 @@ function buildGeometry(lot: LotData) {
   return { aisles, turns, ramps, slots, rampHoles, signboards, areaSigns };
 }
 
-/** World bounds of the lot footprint (with padding for slots/curves). */
-function computeBounds(lot: LotData): Bounds {
-  const structural = Object.values(lot.nodes).filter(
-    (n) => !["approach", "entry", "exit"].includes(n.type),
-  );
-  const xs = structural.map((n) => n.x);
-  const ys = structural.map((n) => n.y);
-  return {
-    minX: Math.min(...xs) - SLAB_PAD_X,
-    maxX: Math.max(...xs) + SLAB_PAD_X,
-    minZ: Math.min(...ys) - SLAB_PAD_Z,
-    maxZ: Math.max(...ys) + SLAB_PAD_Z,
-  };
-}
-
 /* ================================================================== *
  *  Sub-components
  * ================================================================== */
@@ -822,7 +785,7 @@ const FloorSlab = memo(function FloorSlab({
   rampHole,
 }: {
   floor: number;
-  bounds: Bounds;
+  bounds: SlabBounds;
   rampHole?: [number, number, number, number];
 }) {
   const w = bounds.maxX - bounds.minX;
@@ -1131,7 +1094,7 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
 /** Structural pillars around the perimeter of one storey, rendered as a single
  *  InstancedMesh. Uses PILLAR_SPACING (10) instead of the lot's
  *  JUNCTION_SPACING (2.6) so columns read as columns, not a solid wall. */
-const Pillars = memo(function Pillars({ floor, bounds }: { floor: number; bounds: Bounds }) {
+const Pillars = memo(function Pillars({ floor, bounds }: { floor: number; bounds: SlabBounds }) {
   const mesh = useMemo(() => {
     const y0 = floor * FLOOR_HEIGHT;
     const cy = y0 + PILLAR_HEIGHT / 2;
@@ -1272,7 +1235,7 @@ const GuardRails = memo(function GuardRails({
   northSlots,
 }: {
   floor: number;
-  bounds: Bounds;
+  bounds: SlabBounds;
   southSlots: SlotEdge | null;
   northSlots: SlotEdge | null;
 }) {
@@ -1468,7 +1431,7 @@ export const ParkingLot = memo(function ParkingLot({
   const lot = useLot();
 
   const geo = useMemo(() => (lot ? buildGeometry(lot) : null), [lot]);
-  const bounds = useMemo(() => (lot ? computeBounds(lot) : null), [lot]);
+  const bounds = useMemo(() => (lot ? slabBounds(lot) : null), [lot]);
   // Lookup of dynamic sign data by node id, so each permanent signboard can
   // show real-time car info when a car is waiting at its node.
   const signByNodeId = useMemo(
@@ -1614,20 +1577,6 @@ export const ParkingLot = memo(function ParkingLot({
   );
 });
 
-/** World bounds of the lot (re-exported for camera framing in Scene). */
-export function lotBounds(lot: LotData) {
-  const xs = Object.values(lot.nodes).map((n) => n.x);
-  const ys = Object.values(lot.nodes).map((n) => n.y);
-  const floors = Object.values(lot.nodes).map((n) => n.floor);
-  return {
-    minX: Math.min(...xs),
-    maxX: Math.max(...xs),
-    minZ: Math.min(...ys),
-    maxZ: Math.max(...ys),
-    minFloor: Math.min(...floors),
-    maxFloor: Math.max(...floors),
-  };
-}
 
 // Re-export for type usage in other files.
 export type { LotNode };

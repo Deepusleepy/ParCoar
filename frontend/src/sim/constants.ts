@@ -123,12 +123,6 @@ export const FLOOR_COLOR = "#3a3d44";
  *  greys on three different materials, which read as a patchwork of roads
  *  that changed colour at every junction. */
 export const LANE_COLOR = "#1a1d24";
-/** Double-yellow centre line colour. */
-export const CENTER_LINE_COLOR = "#eab308";
-/** Lane centre / edge marking colour (white). */
-export const LANE_MARKING_COLOR = "#f4f6fa";
-/** Lane edge stripe colour. */
-export const LANE_EDGE_COLOR = "#c9ccd4";
 /** Structural pillar / column colour. */
 export const PILLAR_COLOR = "#15171c";
 /** Low perimeter wall / guardrail colour. */
@@ -180,9 +174,6 @@ export const STATE_TICK_MS = 200;
  *  nose to tail and read as a traffic jam rather than a guidance demo. */
 export const TARGET_ACTIVE_CARS = 3;
 
-/** Min/max bounds for the active car count window. */
-export const MIN_ACTIVE_CARS = 2;
-export const MAX_ACTIVE_CARS = 4;
 
 /** Spawn interval (ms) when below target. */
 export const SPAWN_INTERVAL_MS = 6000;
@@ -211,6 +202,13 @@ function pick<T>(arr: ArrayLike<T>): T {
 }
 
 /** Generate a random license plate like "ABC-123". */
+/** Display name for a bay node id: "S2_5" becomes "C5". The floor is encoded
+ *  in the id itself as S{floor}_{number}. */
+export function bayLabel(slot: string): string {
+  const m = slot.match(/^S(\d+)_(\d+)$/);
+  return m ? `${String.fromCharCode(65 + Number(m[1]))}${m[2]}` : slot;
+}
+
 export function randomPlate(): string {
   const a = pick(PLATE_LETTERS);
   const b = pick(PLATE_LETTERS);
