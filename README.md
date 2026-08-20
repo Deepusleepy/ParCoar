@@ -1,91 +1,100 @@
 # ParCoar
 
-A parking guidance simulator. A three-floor garage in the browser, and a
-Python backend that decides where every arriving car should park and how it
-gets there. Overhead signboards in the garage show each driver their
-instruction, the way real guidance systems do.
+A parking garage you can watch from the inside.
 
-The point of the project is the search. The backend holds the garage as a
-graph and runs a breadth-first sweep outward from the car to the nearest free
-bay it fits in. Everything else exists to make that visible.
+Cars drive in, a Python server works out which free bay each one should take
+and how to get there, and signs hanging over the road tell each driver where
+to go. Three floors, 480 bays, in the browser.
 
-## Running it
+The interesting part is the server. It stores the garage as a graph and
+searches outward from the car until it finds the nearest free bay that fits.
+Everything else exists to show that search happening.
 
-Two processes. Python 3.11+ and Node 20+.
+## Run it
+
+You need Python 3.11 or newer and Node 20 or newer. Open two terminals.
 
 ```bash
-# 1. Backend
+# Terminal 1: the server that decides where cars park
 python3 -m venv backend/.venv
 backend/.venv/bin/pip install -r backend/requirements.txt
-backend/.venv/bin/python backend/server.py        # ws://127.0.0.1:8765
+backend/.venv/bin/python backend/server.py
+```
 
-# 2. Frontend
+```bash
+# Terminal 2: the garage
 cd frontend
 npm install
-npm run dev                                        # http://localhost:5180
+npm run dev
 ```
 
-Open the page. Cars start arriving on their own.
+Open http://localhost:5180. Cars start arriving by themselves.
 
-## What you are looking at
+## What you can do
 
-Three floors, four two-way aisles each, 480 bays. Cars enter at the ground
-floor, get a bay from the backend, and drive to it through 180-degree turn
-loops and an L-shaped ramp that climbs the outside of the west face. After a
-while they leave again.
+Press **C** to open the controls. From there you can change how many cars are
+on the road, how often a new one turns up, how fast time runs, and how full
+the garage starts. You can also add a single car, clear the road, or pause.
 
-The garage starts full near the entrance and empty at the back, which is what
-makes guidance worth having. Without that, every car parks within a few metres
-of the door and never passes a sign.
+Press **M** for the route map. It draws the graph the server searched, with
+the selected car's path lit up.
 
-Press **C** for the controls drawer: traffic volume, spawn rate, time scale
-including pause, how full the garage starts, and what gets drawn over the 3D
-view. **M** toggles the route map, which draws the graph the backend searched
-with the selected car's path lit up. **P** pauses.
+The buttons along the bottom change the camera. You can orbit the building,
+look at one floor, follow a car, or drive one yourself with WASD.
 
-Camera modes along the bottom: free orbit, overview, one per floor, follow a
-car, and two driving modes where you steer a car yourself with WASD.
+## How it works
 
-## Layout
+The garage has three floors. Each floor has four two-way aisles with bays on
+both sides, 180 degree turns at the ends, and a ramp that climbs the outside
+of the building to the floor above.
+
+A car arrives at the entrance. The frontend tells the server where it is and
+which bays are taken. The server searches for the nearest free bay and sends
+back the whole route. The car drives it, and every sign along the way shows
+that car's instruction until it has passed.
+
+The garage starts nearly full at the entrance and emptier further in. That
+sounds like a detail, but it is the whole reason guidance is worth having. If
+bays are free everywhere, every car parks a few metres from the door and never
+passes a single sign.
+
+## The files
 
 ```
-backend/     Python. The graph generator and the WebSocket server that runs
-             the search. Deliberately small and plain: this is the part that
-             has to be explainable line by line.
-frontend/    React, TypeScript, three.js. The 3D garage, the signboards, the
-             cars, the camera rig, the controls.
-shared/      lot.json, the generated garage graph, and spec.md, the message
-             contract both sides follow.
-tools/       simcheck, a movement gate. See tools/simcheck/README.md.
+backend/     Python. Builds the garage graph, and runs the server that does
+             the searching. Kept small and plain on purpose.
+frontend/    React, TypeScript and three.js. The 3D garage, the cars, the
+             signs, the camera, the controls.
+shared/      lot.json is the garage graph. spec.md is the message format the
+             two sides agree on.
+tools/       simcheck, which watches the cars and complains if they misbehave.
 ```
 
-Regenerating the graph writes both copies, the one the backend reads and the
-one the browser fetches:
+To change the garage layout, edit `backend/generate_lot.py` and run it. It
+writes the graph to both places that need it. Restart the server afterwards,
+because it reads the graph once at startup.
 
 ```bash
 backend/.venv/bin/python backend/generate_lot.py
 ```
 
-The backend loads `lot.json` at import, so restart it after regenerating.
-
 ## Checks
 
 ```bash
-cd frontend && npm run build                       # types and production build
+cd frontend && npm run build                        # types and build
 backend/.venv/bin/python -m unittest backend.test_lot_graph
-node tools/simcheck/check.mjs                      # both servers must be up
+node tools/simcheck/check.mjs                       # both servers must be up
 ```
 
-`simcheck` drives the running simulator in a real browser for a few minutes
-and fails if a car stops with clear road ahead, two cars interpenetrate, a car
-jumps or pops vertically, a bay is reassigned mid-journey, or fewer than 90%
-of cars pass a guidance board.
+`simcheck` drives the running garage in a real browser for a few minutes. It
+fails if a car stops with clear road ahead, if two cars end up inside each
+other, if a car jumps or drops, if a car is sent to a different bay halfway
+through its journey, or if cars stop passing the signs.
 
-There is no ESLint config. `typescript-eslint` does not yet support the
-TypeScript 7 this project uses, and a lint setup that needs
-`--legacy-peer-deps` to install is worse than none. `tsc -b` runs on every
-build with `noUnusedLocals` and `noUnusedParameters` on, and does most of the
-same work.
+There is no ESLint setup. The linter plugin for TypeScript does not support
+TypeScript 7 yet, and a setup that only installs with `--legacy-peer-deps` is
+worse than none. `tsc` runs on every build and catches unused code as well as
+type errors.
 
 ## Licence
 
