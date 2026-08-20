@@ -15,17 +15,12 @@ import { rampPoints, semicirclePoints } from "./geometry";
  * produces a parallel curve, and for ramps only the horizontal (X-Z) lane
  * offset is applied — the vertical climb comes from the curve itself.
  *
- * The semicircle and ramp curve generators below are copied verbatim from
- * ParkingLot.tsx so the car path follows the exact same geometry the road
- * mesh is built from.
+ * Semicircle and ramp curve generators come from geometry.ts so the car path
+ * follows the exact same geometry the road mesh is built from.
  */
 
 /** Lane shift: shift to the driver's left (lot units). */
 const LANE_SHIFT = -LANE_WIDTH / 2;
-
-/* ------------------------------------------------------------------ *
- *  Curve generators (mirror ParkingLot.tsx exactly)
- * ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ *
  *  Perpendicular lane offset

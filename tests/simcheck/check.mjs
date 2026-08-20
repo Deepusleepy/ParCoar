@@ -34,18 +34,22 @@ const SECONDS = Number(process.argv[3] ?? 180);
  *  either of the next two nodes on its route at any point during the wait.
  *  Normal following and the websocket handshake both settle inside a second. */
 const MAX_PAUSE_MS = 1500;
-/* Car bodies are 4.5 long and 1.8 wide. Two cars are interpenetrating when
- * they are close along BOTH axes of one of them, which is not the same thing
- * as their centres being close: opposing lanes sit 3.5 apart and pass each
- * other safely all day.
+/* Two cars are interpenetrating when they are close along BOTH axes of one of
+ * them, which is not the same thing as their centres being close: opposing
+ * lanes sit 3.5 apart and pass each other safely all day. A single
+ * centre-to-centre threshold cannot express that, so this projects the offset
+ * onto each car's own axes and uses the real body sizes, which differ by car.
  *
- * A single centre-to-centre threshold cannot express that. The previous
- * version used 2.8, low enough not to fire on passing traffic, which meant
- * two cars nose to tail at 2.8 overlapped by 1.7 units and the check passed.
- * That is the same mistake as a pause threshold set above the pause: a number
- * picked to avoid false alarms, sitting below the size of the fault. */
-const CAR_BODY_LENGTH = 4.5;
-const CAR_BODY_WIDTH = 1.8;
+ * Mirrors CAR_DIMS in frontend/src/sim/constants.ts. */
+const BODY = {
+  small: { length: 3.4, width: 1.55 },
+  medium: { length: 4.1, width: 1.68 },
+  large: { length: 4.5, width: 1.8 },
+};
+/** How much bumper overlap to tolerate before calling it a collision. Models
+ *  are boxes and the real bodies are rounded, so a few centimetres of box
+ *  intersection is not visible. */
+const OVERLAP_TOLERANCE = 0.35;
 /** Top speed is 7 units/s. Anything this fast over a real distance is a jump,
  *  not driving. Both conditions are needed: two animation frames a couple of
  *  milliseconds apart give a huge apparent speed off a 7cm step. */
@@ -87,7 +91,7 @@ await page.evaluate((secs) => {
     for (const child of scene.children) {
       if (!isCar(child)) continue;
       frame.push({
-        id: child.uuid.slice(0, 8),
+        id: child.name || child.uuid.slice(0, 8),
         x: child.position.x, y: child.position.y, z: child.position.z,
         yaw: child.rotation.y,
       });
@@ -151,6 +155,11 @@ for (const [id, pts] of byCar) {
   }
 }
 
+// Which size is each car? The scene groups are named after their car id, and
+// the sim state carries the size, so the two join up without guessing.
+const carSize = new Map();
+for (const { cars } of states) for (const c of cars) if (c.size) carSize.set(c.id, c.size);
+
 // Physical: two car bodies occupying the same space.
 //
 // Project the vector between the two centres onto one car's own heading and
@@ -159,14 +168,20 @@ for (const [id, pts] of byCar) {
 // well as one being rear-ended.
 const overlaps = [];
 const seenPair = new Set();
+const sizeOf = (id) => BODY[carSize.get(id) ?? "large"];
 const insideBody = (a, b) => {
+  const A = sizeOf(a.id);
+  const B = sizeOf(b.id);
   const dx = b.x - a.x;
   const dz = b.z - a.z;
   const fx = Math.cos(a.yaw);
   const fz = -Math.sin(a.yaw);
   const along = Math.abs(dx * fx + dz * fz);
   const across = Math.abs(dx * -fz + dz * fx);
-  return along < CAR_BODY_LENGTH && across < CAR_BODY_WIDTH;
+  return (
+    along < (A.length + B.length) / 2 - OVERLAP_TOLERANCE &&
+    across < (A.width + B.width) / 2 - OVERLAP_TOLERANCE
+  );
 };
 for (const { frame } of frames) {
   for (let i = 0; i < frame.length; i++) {

@@ -79,10 +79,9 @@ const RAMP_ENDPOINT_HEIGHT_EPSILON = 0.2;
  *
  *  While the ramp surface is within this of the flat floor the car is pinned
  *  to the flat height, and at the threshold it snaps by exactly this much.
- *  Sharing 0.2 with the transfer window above meant a visible 20cm pop at
- *  every ramp entry and exit, in both directions, on a car 1.45 tall. The
- *  ramp now starts and ends flush and eases its grade in, so this only has to
- *  cover floating-point noise. */
+ *  The ramp starts and ends flush and eases its grade in, so this only has to
+ *  cover floating-point noise; making it larger would pop the car vertically
+ *  at every ramp entry and exit. */
 const RAMP_FLAT_EPSILON = 0.02;
 
 /** Lane shift to the right of the travel direction (mirrors paths.ts). */
@@ -608,12 +607,11 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
   const { bodyMat, glassMat, scene: cloned } = useMemo(() => {
     const s = scene.clone();
 
-    // Race-red clearcoat paint — distinct from AI car colours.
-    // DoubleSide matters: in POV the camera is INSIDE this shell. With the
-    // default front-side-only rendering the body panels are culled from within,
-    // so the cabin had no walls at all and parked cars showed through where the
-    // driver's door should be. Hiding the body in POV (the previous fix for the
-    // interior clipping through it) caused exactly that.
+    // Race-red clearcoat paint, distinct from AI car colours. DoubleSide
+    // matters: in POV the camera is INSIDE this shell, and front-side-only
+    // rendering would cull the body panels from within, leaving the cabin
+    // with no walls and letting parked cars show through where the driver's
+    // door should be.
     const body = new THREE.MeshPhysicalMaterial({
       side: THREE.DoubleSide,
       color: new THREE.Color("#e0141b"),
@@ -1220,13 +1218,11 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
   }, [lot]);
 
   // Spawn at the entry node E0, in the right-hand driving lane, facing +X.
-  // We don't spawn on the approach road (ENTRY_ROAD, x=-15) because that node
-  // is outside the lot bounds clamp (slabBounds excludes approach/entry/
-  // exit nodes, so minX=-13) and isn't covered by road segments — the car
-  // would be yanked to x=-13 and then pushed to ~x=-4 by the road-edge clamp
-  // on the first frame, producing a visible teleport. E0 is on the entry
-  // aisle's road segment, so the spawn position is stable. AI-car overlap at
-  // E0 is handled by the push-out collision below.
+  // The approach road (ENTRY_ROAD, x=-15) is outside the lot bounds clamp
+  // (slabBounds excludes approach/entry/exit nodes, so minX=-13) and is not
+  // covered by road segments, so spawning there would teleport the car on the
+  // first frame. E0 is on the entry aisle's road segment, so the spawn is
+  // stable. AI-car overlap at E0 is handled by the push-out collision below.
   const spawn = useMemo(() => {
     const entry = lot.nodes["E0"];
     if (!entry) return { pos: [0, ROAD_Y + CAR_Y_OFFSET, 0] as [number, number, number], heading: 0 };

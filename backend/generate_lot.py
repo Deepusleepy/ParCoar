@@ -7,13 +7,13 @@ every aisle. Ramps connect floors.
 
 Layout per floor (top view), 4 aisles x 20 bays x 2 sides = 160 slots:
 
-    Aisle 1 (→):  J1 → J2 → J3 → J4 → J5 → J6 → J7 → J8 → [Turn1]
-                                                                   ↓
-    Aisle 2 (←): [Turn2] ← J9 ← J10 ← J11 ← J12 ← J13 ← J14 ← J15 ← J16
+    Aisle 1 (→):  J1 → J2 → ... → J20 → [Turn1]
+                                          ↓
+    Aisle 2 (←): [Turn2] ← J20 ← J19 ← ... ← J1
                     ↓
-    Aisle 3 (→):  J17 → J18 → J19 → J20 → J21 → J22 → J23 → J24 → [Turn3]
-                                                                     ↓
-    Aisle 4 (←): [Turn4] ← J25 ← J26 ← J27 ← J28 ← J29 ← J30 ← J31 ← J32
+    Aisle 3 (→):  J1 → J2 → ... → J20 → [Turn3]
+                                          ↓
+    Aisle 4 (←): [Turn4] ← J20 ← J19 ← ... ← J1
                     ↓
                 [Ramp up to next floor]
 
@@ -47,9 +47,9 @@ def slot_number(aisle, j_idx, s_pos):
     Each aisle holds JUNCTIONS_PER_AISLE junctions, each with two slots
     (s_pos 0 = the -y side, s_pos 1 = the +y side). Numbers are assigned
     side-by-side rather than interleaved per junction, so every *side* of
-    an aisle is a contiguous, predictable run (e.g. A1..A8 on one side,
-    A9..A16 on the other), in travel order. Aisles chain contiguously:
-    aisle 0 = 1..16, aisle 1 = 17..32, etc.
+    an aisle is a contiguous, predictable run (e.g. A1..A20 on one side,
+    A21..A40 on the other), in travel order. Aisles chain contiguously:
+    aisle 0 = 1..40, aisle 1 = 41..80, etc.
     """
     per_aisle = JUNCTIONS_PER_AISLE * SLOTS_PER_JUNCTION
     return aisle * per_aisle + s_pos * JUNCTIONS_PER_AISLE + j_idx + 1

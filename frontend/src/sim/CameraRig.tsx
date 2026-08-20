@@ -83,8 +83,7 @@ const DEFAULT_VANTAGE = {
 
 /** Predefined camera framings for the preset (teleport) modes.
  *  Each floor's vantage sits INSIDE its storey at floor*FLOOR_HEIGHT + 6,
- *  never within 0.5 of a slab (slabs are at multiples of FLOOR_HEIGHT).
- *  See the report for the arithmetic. */
+ *  never within 0.5 of a slab (slabs are at multiples of FLOOR_HEIGHT). */
 const PRESETS: Record<
   "overview" | "floor0" | "floor1" | "floor2",
   { pos: THREE.Vector3; look: THREE.Vector3 }
@@ -93,11 +92,9 @@ const PRESETS: Record<
     pos: new THREE.Vector3(LOT_CENTER_X + 30, 70, LOT_CENTER_Z + 70),
     look: new THREE.Vector3(LOT_CENTER_X, (3 * FLOOR_HEIGHT) / 2, LOT_CENTER_Z),
   },
-  // Floor vantages look ALONG the aisles from the south-west corner. The old
-  // ones sat at LOT_CENTER_X + 28, which after the rescale put the camera
-  // about seven units from the turn signboard at the east end of the aisle,
-  // so the board filled most of the frame and the floor was invisible behind
-  // it. Turn boards hang near x = 3 and x = 51.6, so this vantage is clear.
+  // Floor vantages look ALONG the aisles from the south-west corner. Turn
+  // boards hang near x = 3 and x = 51.6, so the vantage stays clear of them
+  // instead of filling the frame with a signboard.
   floor0: {
     pos: new THREE.Vector3(LOT_CENTER_X - 34, 0 * FLOOR_HEIGHT + 7, LOT_CENTER_Z - 34),
     look: new THREE.Vector3(LOT_CENTER_X + 6, 0 * FLOOR_HEIGHT + 1.5, LOT_CENTER_Z),
@@ -311,8 +308,7 @@ export function CameraRig({
       e.preventDefault();
       // Shift+wheel trims how fast W/A/S/D fly. Plain wheel moves the camera
       // along the direction you are looking, which is what "zoom" means to
-      // anyone who has used a 3D viewer. The first version only adjusted fly
-      // speed, silently, so scrolling appeared to do nothing at all.
+      // anyone who has used a 3D viewer.
       if (e.shiftKey) {
         const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
         flySpeedRef.current = THREE.MathUtils.clamp(
@@ -427,19 +423,15 @@ export function CameraRig({
         camera.lookAt(tmpLook.current);
       } else {
         // POV: driver's-eye position inside the cabin (right-hand drive).
-        // Driver's eye. Sat at 0.3 forward, the eye was only 0.25 behind the
-        // steering wheel, so a 0.18-radius rim subtended about 70 degrees of a
-        // 45-degree lens and swallowed the whole frame with no road visible.
-        // Pulled back to roughly 0.6 behind the rim, which is the real
-        // eye-to-wheel distance, and dropped slightly so the sightline clears
-        // the dash top (about y=1.06) rather than skimming it.
+        // EYE_FWD sits behind the steering rim so the rim does not fill the
+        // frame; EYE_UP clears the dash top (~y=1.06) so the sightline reaches
+        // the road while staying below the windscreen header so the cabin
+        // still frames the view.
         const EYE_FWD = -0.05;
         const EYE_RIGHT = 0.42;
-        // The cabin floor is at y=0.26, so 1.19 put the eye only 0.93 above it
-        // where a real driver sits 1.15 to 1.25 up. Being that low meant the
-        // rim and dash top filled the frame and no road was visible at all.
-        // 1.31 overshot the other way, lifting the eye above the windscreen
-        // header so the cabin stopped framing the view. 1.25 sits between.
+        // Cabin floor is at y=0.26; EYE_UP sits between the dash top and the
+        // windscreen header so the road is visible and the cabin frames the
+        // view.
         const EYE_UP = 1.20;
         tmpPos.current.set(EYE_FWD, EYE_UP, -EYE_RIGHT);
         tmpLook.current.set(EYE_FWD + 14, EYE_UP - 0.25, -EYE_RIGHT);

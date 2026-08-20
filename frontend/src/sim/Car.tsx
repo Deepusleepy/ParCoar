@@ -172,10 +172,9 @@ export interface ParkedCarInstance {
 
 /** Instanced renderer for every parked car (pre-parked + newly parked).
  *  Walks each of the three GLTF models once and builds one InstancedMesh per
- *  mesh in the model, so ~96 cars draw in ~18 calls instead of ~400 (each
- *  cloned scene previously made two fresh materials + a shader setup).
- *  Body paint uses per-instance colour via setColorAt; trim (windows, lights,
- *  tires) shares one material per mesh with no per-instance colour. */
+ *  mesh in the model, so ~96 cars draw in ~18 calls. Body paint uses
+ *  per-instance colour via setColorAt; trim (windows, lights, tires) shares
+ *  one material per mesh with no per-instance colour. */
 export function ParkedCarField({ cars }: { cars: ParkedCarInstance[] }) {
   const bySize = useMemo(() => {
     const groups: Record<CarSize, ParkedCarInstance[]> = { small: [], medium: [], large: [] };
@@ -199,12 +198,9 @@ const PARKED_CAPACITY = 512;
 function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInstance[] }) {
   const { scene } = useGLTF(MODEL_PATHS[size]);
 
-  // Build the instanced meshes ONCE per model, at full capacity. This used to
-  // rebuild on every change to `cars`, which meant every single arrival and
-  // departure tore down and reallocated ~18 InstancedMeshes holding a few
-  // hundred instances each. With cars parking and leaving continuously that
-  // was a visible hitch every few seconds, and it is the main reason the scene
-  // felt laggy despite a healthy frame rate between hitches.
+  // Build the instanced meshes ONCE per model, at full capacity. Rebuilding on
+  // every change to `cars` would tear down and reallocate ~18 InstancedMeshes
+  // per arrival and departure, so only the instance buffers are updated below.
   const built = useMemo(() => {
     scene.updateMatrixWorld(true);
     const scale = MODEL_SCALE[size];
@@ -334,30 +330,20 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
   }, [car.id, carGroupsRef]);
 
   // Collect wheel meshes from the GLTF model and re-center them so they spin
-  // in place. GLTF car models have wheel nodes with no transform — the mesh
-  // vertices are positioned at the actual wheel location, offset from the
-  // node's origin (the car center). Without re-centering, rotating the node
-  // swings the wheel in a giant arc around the car center (causing z-fighting
-  // flicker and making wheels invisible). We compute the mesh's bounding-box
-  // center, translate the geometry so vertices are centered at the node
-  // origin, then move the node to that center — so rotation spins in place.
-  // IMPORTANT: scene.clone() shares geometries across all car instances of
-  // the same model. We MUST clone the geometry before translating, otherwise
-  // the first car translates the shared geometry and subsequent cars get
-  // already-translated geometry (bounding box center = origin → wheel ends
-  // up at the car center).
+  // in place. GLTF wheel nodes carry no transform; the mesh vertices sit at
+  // the actual wheel location, offset from the node's origin (the car center).
+  // Rotating such a node swings the wheel in a giant arc around the car center,
+  // so we translate the geometry to centre it on the node origin and move the
+  // node to compensate. scene.clone() shares geometries across all instances of
+  // a model, so each geometry MUST be cloned before translating, or the first
+  // car shifts the shared geometry for every car after it.
   const handleModelLoad = useCallback((obj: THREE.Object3D) => {
-    // Collect the TOPMOST node of each wheel, and spin only that.
-    //
-    // The trap: a GLTF wheel is often a Group holding two mesh primitives (tyre
-    // and rim, different materials), and every one of those nodes has "wheel"
-    // in its name. Matching on the name alone collected the group AND both
-    // children, so the group was spun while its children had also been offset
-    // 1.3 units from the group origin. The children then orbited the car in a
-    // huge arc; measured in the running scene, the rear wheels sat 1.09 above
-    // the car and the fronts 1.11 below, which is how tyres ended up on the
-    // roof. Centring each primitive on its own bounding box also pulled the
-    // tyre and rim apart, because their boxes differ.
+    // Collect the TOPMOST node of each wheel and spin only that. A GLTF wheel
+    // is often a Group holding two mesh primitives (tyre and rim), and every
+    // one of those nodes has "wheel" in its name, so matching on the name
+    // alone would collect the group AND its children. Centring each primitive
+    // on its own bounding box would also pull the tyre and rim apart, because
+    // their boxes differ, so the combined bounds of the whole wheel are used.
     const isWheelName = (n: string) => {
       const s = n.toLowerCase();
       return s.includes("wheel") || s.includes("tire") || s.includes("rim");
@@ -409,18 +395,19 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
 
     // Register the group every frame (cheap) so the rig always has a handle.
     if (carGroupsRef) carGroupsRef.current.set(car.id, g);
+    // Name the group after the car so anything walking the scene graph, the
+    // camera rig or the movement gate, can tell which car it is looking at.
+    if (g.name !== car.id) g.name = car.id;
 
     const fromNode = lot.nodes[car.fromNode];
     const toNode = lot.nodes[car.toNode];
     if (!fromNode || !toNode) return;
 
     // A departing car is created standing IN its bay, but a freshly mounted
-    // <group> has rotation 0, so it appeared broadside across the bay and then
-    // pirouetted out of it — measured, 17 of 17 departures started 90 degrees
-    // wrong, and while swinging round, a third of the frames put the car's
-    // body inside the neighbouring parked car, worst case 0.94 units in. Seed
-    // the heading from the bay's own axis, the same value the parked renderer
-    // was drawing a moment ago, so the handover is invisible.
+    // <group> has rotation 0, so it would start broadside across the bay and
+    // swing into the neighbouring parked car. Seed the heading from the bay's
+    // own axis, the same value the parked renderer was drawing a moment ago, so
+    // the handover is invisible.
     if (!seededRef.current) {
       seededRef.current = true;
       if (fromNode.type === "slot") {
@@ -448,12 +435,10 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
     // centreline, because that is where the travelling path put it; without
     // the offset it would flick sideways for one frame on arrival.
     //
-    // On a BAY it must sit exactly on the node. A bay is a destination, not a
+    // On a BAY it must sit exactly on the node: a bay is a destination, not a
     // lane, and the path into it ends on the node itself. Applying the lane
-    // offset here made every car snap sideways by LANE_WIDTH/2 the instant it
-    // arrived, and then snap back when it handed over to the parked renderer.
-    // A movement trace caught it as a pair of jumps of exactly 1.75 units at
-    // bay coordinates: this is the "cars park weirdly" behaviour.
+    // offset here would snap the car sideways on arrival and back again at
+    // handover to the parked renderer.
     if (wps.length < 2) {
       const w = toWorld(fromNode.x, fromNode.y, fromNode.floor);
       const onBay = fromNode.type === "slot";
@@ -491,12 +476,10 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
         g.position.set(last.x, last.y + CAR_Y_OFFSET, last.z);
         // Snap rotation to the final target so the transition to the
         // fixed-rotation ParkedCarMesh (±π/2) doesn't show a visual pop
-        // when the smoothing hasn't fully converged.
-        // Settle square in the bay. The look-ahead's final value is the last
-        // CHORD of the arrival curve, not its end tangent, which left every
-        // car resting 2.24 degrees off the bay axis — identical on all 48
-        // arrivals measured — and then popping straight when the instanced
-        // parked renderer took over at exactly 90 degrees.
+        // when the smoothing hasn't fully converged. The look-ahead's final
+        // value is the last CHORD of the arrival curve, not its end tangent,
+        // so without this snap the car would rest slightly off the bay axis
+        // and pop straight when the parked renderer takes over.
         g.rotation.y = toNode.type === "slot" ? bayYaw(toNode) : targetRot.current;
         g.rotation.z = targetPitchRef.current;
         segIndexRef.current = 0;
@@ -519,12 +502,9 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({ car, lot, onArrive, c
     const bb = wps[ii + 1];
     const p = segProgressRef.current;
     // Publish how far along this leg the car is. The real progress lives in
-    // refs in here, and car.progress was only ever reset to 0 on arrival, so
-    // to the queueing logic in useSimulation every car looked as if it were
-    // still sitting on the node it had just left. That is harmless on a
-    // 2.6-unit aisle hop and very much not harmless on the ramp, which is one
-    // 89-unit leg: a car at the foot of it waited for the car ahead to reach
-    // the next floor.
+    // refs here; without mirroring it onto car.progress the queueing logic in
+    // useSimulation would see every car as still sitting on the node it just
+    // left, which blocks the ramp (one long leg) until the car ahead clears it.
     car.progress = segCount > 0 ? (ii + p) / segCount : 0;
     g.position.set(
       aa.x + (bb.x - aa.x) * p,

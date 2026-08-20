@@ -18,18 +18,8 @@ all_slots = [n for n, d in nodes.items() if d["type"] == "slot"]
 # The one exit node. Cars that have finished parking are routed here.
 EXIT_NODE = next(n for n, d in nodes.items() if d["type"] == "exit")
 
-# Per-connection state.
-#
-# These used to be module-level globals shared by every client. With two
-# browser tabs open (or one still closing while another loads) both talked to
-# the same dictionaries, and because each message prunes cars it does not
-# mention, the two clients deleted each other's cars several times a second.
-# Each recreated car was then assigned a fresh bay, which is why cars appeared
-# to "dance between parking spaces". Measured: 747 prune/recreate events in 45
-# seconds with two tabs open.
-#
-# A Session holds one client's view, so clients can no longer corrupt one
-# another.
+# Per-connection state. A Session holds one client's view, so two concurrent
+# clients cannot prune or reassign one another's cars.
 class Session:
     def __init__(self):
         # Bays that already have a car: pre-parked, parked, and bays this
@@ -79,9 +69,8 @@ def nearest_free_slot(session, car_node, car_size):
     One breadth-first sweep outward from the car. BFS visits nodes in order of
     distance, so `found` comes out sorted nearest-first for free, and we can
     just walk it. The whole garage is a few hundred nodes, so sweeping all of
-    it costs well under a millisecond; an earlier version stopped after a
-    dozen candidates and, because those were all on the nearest floor, it
-    could never offer an alternative and sent every single car to floor A.
+    it costs well under a millisecond; stopping early would only ever see the
+    nearest floor and could never offer an alternative.
     """
     found = []
     seen = {car_node}
@@ -144,21 +133,17 @@ def direction_along(path, step):
 
 def handle_message(session, msg):
     """Process an incoming state message and build the instructions reply."""
-    # Sync occupied slots from the frontend. The frontend now sends ALL
-    # occupied slots: pre-parked, parked, and slots active routing cars are
-    # heading toward. This closes the race where a just-parked car's slot
-    # briefly left routing_claimed before appearing in the frontend parked
-    # list, allowing the backend to reassign it to another car.
+    # Sync occupied slots from the frontend. It sends ALL occupied slots:
+    # pre-parked, parked, and slots routing cars are heading toward, so the
+    # backend never reassigns a slot a car is already committed to.
     frontend_occupied = set(msg.get("occupied_slots", []))
     session.occupied.clear()
     session.occupied.update(frontend_occupied)
-    # After syncing from the frontend, also keep ALL backend-tracked cars'
-    # slots. The frontend's occupied_slots may briefly omit a just-parked
-    # car's slot during the React re-render window (or after a page reload
-    # before the frontend re-sends it); this keeps the backend from
-    # reassigning it to another car. Keeping parked cars' slots too means a
-    # stale parked car that vanished from the frontend's message doesn't
-    # free its slot until the prune step below removes it from `cars`.
+    # Re-add every backend-tracked car's slot after the sync. The frontend's
+    # occupied list can briefly omit a just-parked car's slot during a re-render
+    # or after a reload; keeping parked cars' slots too means a stale parked car
+    # that vanished from the message does not free its slot until the prune
+    # step below removes it from `cars`.
     for c in session.cars.values():
         if c["slot"] and not c.get("leaving"):
             session.occupied.add(c["slot"])

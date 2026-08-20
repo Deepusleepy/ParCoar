@@ -404,11 +404,7 @@ function PermanentSignboardImpl({
             </>
           ) : (
             /* No traffic routed here. A real sign falls back to its permanent
-               message, so this one shows where the junction leads, large.
-               It used to print "NO CARS ROUTED", which is a statement about
-               the simulator rather than anything a driver can use — and the
-               upper-floor boards are idle most of the time, so that is what
-               most of them said most of the time. */
+               message, so this one shows where the junction leads, large. */
             <Text
               position={[0, 0.1, 0]}
               fontSize={0.72}

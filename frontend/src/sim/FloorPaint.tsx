@@ -19,9 +19,7 @@ import {
  *
  * Bakes every flat, static floor marking on one garage floor (road surface,
  * edge/centre lines, parking-bay outlines, bay numbers, direction arrows)
- * into a single CanvasTexture on a single horizontal plane. Replaces the
- * per-bay / per-aisle / per-arrow meshes that dominated the scene's draw
- * count.
+ * into a single CanvasTexture on a single horizontal plane.
  *
  * Coordinate convention
  * ---------------------
@@ -29,8 +27,7 @@ import {
  * they map directly to three.js world X and world Z (see `toWorld`). So
  * throughout this file: worldX === lot x, worldZ === lot y. The plane is
  * rotated [-PI/2, 0, 0] and CanvasTexture defaults to flipY = true. See the
- * w2c helper for what that actually works out to; it is not what you would
- * guess, and guessing it mirrored every marking in the garage.
+ * w2c helper for the resulting mapping; it is not what you would guess.
  */
 
 export function FloorPaint({
@@ -50,10 +47,7 @@ export function FloorPaint({
     const w = bounds.maxX - bounds.minX;
     const h = bounds.maxZ - bounds.minZ;
 
-    // Texels per world unit, clamped so neither side exceeds 4096. The cap
-    // used to be 40, which was the binding term rather than the budget: at
-    // 81.6 x 77 the texture could carry 50 and still fit in one 4096 map, so
-    // every bay number was rendering 25% softer than it needed to.
+    // Texels per world unit, clamped so neither side exceeds 4096.
     const px = Math.min(50, 4096 / w, 4096 / h);
     const canvasW = Math.max(1, Math.ceil(w * px));
     const canvasH = Math.max(1, Math.ceil(h * px));
@@ -69,13 +63,7 @@ export function FloorPaint({
     // The plane is rotated -PI/2 about X, so its local +Y maps to world -Z.
     // CanvasTexture has flipY = true, which maps v=1 (local +Y, i.e. world
     // -Z) to canvas row 0. So world minZ is canvas top, NOT world maxZ.
-    //
-    // Getting this backwards mirrored the ENTIRE floor about z = 25.5: every
-    // bay number named a bay on the far side of the garage (a driver sent to
-    // C104 would have parked in C24) and every direction chevron pointed
-    // against the traffic. The road, edge lines and bay outlines hid it,
-    // because the aisles at z = 0, 17, 34, 51 happen to be symmetric about
-    // that centreline.
+    // Inverting this mirrors the entire floor about its centreline.
     const minZ = bounds.minZ;
     const w2c = (wx: number, wz: number): [number, number] => [
       (wx - bounds.minX) * px,
@@ -183,14 +171,10 @@ export function FloorPaint({
     // 2. No road surface is painted here.
     //
     //    The tarmac is real geometry: AisleRoad's raised box, TurnRoad's and
-    //    RampRoad's ribbons, all sharing one asphalt material. Filling the
-    //    aisles again on this canvas layered a second, differently-shaded
-    //    surface on top of the first — a transparent MeshStandardMaterial at
-    //    y = 0.16 over an opaque one at y = 0.15 — so a straight aisle, the
-    //    turn at the end of it and the ramp beyond that were three visibly
-    //    different greys. The fill also stopped at the outermost junction
-    //    (x = 2.6) while the asphalt box runs to x = 0, putting a hard colour
-    //    seam right at every entry, exit and ramp mouth.
+    //    RampRoad's ribbons, all sharing one asphalt material. Painting the
+    //    aisles again on this canvas would layer a second, differently-shaded
+    //    surface on top of the real one and stop at the outermost junction
+    //    while the asphalt runs to x = 0, seaming at every portal.
 
     // 3. White road edge lines (0.15 wide) on both outer edges of each aisle,
     //    running the full length of the tarmac including the approach to the
@@ -220,11 +204,9 @@ export function FloorPaint({
       const xL = node.x - SLOT_WIDTH / 2;
       const xR = node.x + SLOT_WIDTH / 2;
       // `side` is +1 when the bay lies on the +y side of its aisle, so the
-      // edge NEAREST the aisle is the one at node.y - side*depth/2. These two
-      // were swapped, which painted the solid "closed back" line across the
-      // bay's entrance and put the coloured size bar against the rear wall.
-      // Two rows of bays back to back then placed their bars a unit apart,
-      // which is the continuous multicoloured band running down the middle.
+      // edge NEAREST the aisle is the one at node.y - side*depth/2. Swapping
+      // these would paint the closed back line across the bay's entrance and
+      // the size bar against the rear wall.
       const aisleZ = node.y - side * (SLOT_DEPTH / 2);
       const backZ = node.y + side * (SLOT_DEPTH / 2);
 
@@ -234,17 +216,10 @@ export function FloorPaint({
       lineWorld(xR, backZ, xR, aisleZ, 0.15, MARKING_WHITE);
       lineWorld(xL, backZ, xR, backZ, 0.15, MARKING_WHITE);
 
-      // Colour-coded bar on the aisle-facing edge: the outer 0.2 of the bay,
-      // INSIDE the opening, so it reads as the bay-size cue.
-      //
-      // The sign here was inverted. `side` is +1 when the bay lies on the +z
-      // side of its aisle, so "into the bay" is +side, and subtracting put
-      // every bar in the 0.2 strip of tarmac immediately OUTSIDE the bay --
-      // painted on the road, on top of the white edge line, which is drawn
-      // first and loses. That cost two things at once: every edge line in the
-      // garage was left at half width, and the two rows facing each other
-      // across an aisle laid their bars along both kerbs as one continuous
-      // multicoloured band. That band is what Deepu photographed.
+      // Colour-coded size cue: the outer 0.2 of the bay, INSIDE the opening.
+      // `side` is +1 when the bay lies on the +z side of its aisle, so into
+      // the bay is +side. Subtracting would put the bar on the tarmac over
+      // the edge line, which is drawn first and loses.
       const barInner = aisleZ + side * 0.2;
       rectWorld(
         xL,
@@ -272,11 +247,6 @@ export function FloorPaint({
       // at the bay, so the top of the lettering has to point AWAY from the
       // aisle and into the bay. That depends on which SIDE of the aisle the
       // bay is on, not on which way the aisle runs.
-      //
-      // Rotation was keyed off the aisle index instead, which gave both rows
-      // of an aisle the same rotation — so on every single aisle in the
-      // garage one of the two rows was printed upside down to the only people
-      // who ever read it.
       //
       // Canvas +y maps to world +z here (see w2c), and canvas text stands
       // with its top toward -y, so an unrotated label points its top at -z.

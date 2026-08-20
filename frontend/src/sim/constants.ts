@@ -79,16 +79,12 @@ export const CAR_Y_OFFSET = 0.15;
 
 /* ------------------------------------------------------------------ *
  *  World-space lot framing (used by Scene + CameraRig)
- *  Structural nodes span x=0..23.4, z=-6..57. computeBounds() in
- *  ParkingLot pads x by AISLE_SPACING/2 + 1 and z by SLOT_DEPTH + 2,
- *  giving minX=-9.5, maxX=32.9, minZ=-13, maxZ=64.
+ *  Structural nodes span x=0..54.6, z=-6..57. slabBounds() in geometry.ts
+ *  pads x by SLAB_PAD_X and z by SLAB_PAD_Z,
+ *  giving minX=-13.5, maxX=68.1, minZ=-13, maxZ=64.
  * ------------------------------------------------------------------ */
 
-/** World-space center of the lot footprint along X.
- *  Slab spans -13.5 to 68.1 after the rescale to 20 bays per aisle side. This
- *  was left at 11.7 from the previous footprint, which put every overhead
- *  light, the shadow frustum and all four camera presets over the west half
- *  of the building and left the east end unlit and unshadowed. */
+/** World-space center of the lot footprint along X. */
 export const LOT_CENTER_X = 27.3; // (-13.5 + 68.1) / 2
 /** World-space center of the lot footprint along Z. */
 export const LOT_CENTER_Z = 25.5; // (-13 + 64) / 2
@@ -101,7 +97,6 @@ export const LOT_MAX_Z = 64;
  *  Slot / car dimensions
  * ------------------------------------------------------------------ */
 
-/** Car body dimensions by car size (length along travel axis, width across). */
 /** Car body dimensions by size. Scale is uniform, so `length` also sets the
  *  rendered width; these are trimmed slightly from real-world figures because
  *  a 1.95-wide car in a 2.5-wide bay left only 0.27 either side and the wing
@@ -118,10 +113,10 @@ export const CAR_DIMS: Record<CarSize, { length: number; width: number; height: 
 
 /** Concrete floor slab colour (lighter so asphalt reads clearly). */
 export const FLOOR_COLOR = "#3a3d44";
-/** Asphalt colour. ONE value for every driveable surface — straight aisles,
- *  turn loops and the inter-floor ramp. They used to be three different
- *  greys on three different materials, which read as a patchwork of roads
- *  that changed colour at every junction. */
+/** Asphalt colour. One value for every driveable surface: straight aisles,
+ *  turn loops and the inter-floor ramp all share it. Give them separate
+ *  colours or separate materials and the road visibly changes shade at every
+ *  junction. */
 export const LANE_COLOR = "#1a1d24";
 /** Structural pillar / column colour. */
 export const PILLAR_COLOR = "#15171c";
@@ -201,7 +196,6 @@ function pick<T>(arr: ArrayLike<T>): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-/** Generate a random license plate like "ABC-123". */
 /** Display name for a bay node id: "S2_5" becomes "C5". The floor is encoded
  *  in the id itself as S{floor}_{number}. */
 export function bayLabel(slot: string): string {
@@ -209,6 +203,7 @@ export function bayLabel(slot: string): string {
   return m ? `${String.fromCharCode(65 + Number(m[1]))}${m[2]}` : slot;
 }
 
+/** Generate a random license plate like "ABC-123". */
 export function randomPlate(): string {
   const a = pick(PLATE_LETTERS);
   const b = pick(PLATE_LETTERS);

@@ -64,9 +64,8 @@ const DIVIDER_HEIGHT = 0.22;
  *  as a square-nosed kerb stub in the middle of the carriageway — including
  *  one planted at the centre of each ramp mouth, where cars drive. */
 const MEDIAN_TAPER = 2;
-/** Thickness of the structural slab under the ramp. It used to be a
- *  zero-thickness ribbon with no side faces, so from below the ramp simply
- *  had no underside: only the rail posts were visible, hanging in black. */
+/** Thickness of the structural slab under the ramp, giving it a visible
+ *  underside rather than a zero-thickness ribbon. */
 const SOFFIT_THICKNESS = 0.45;
 /** Guardrail post spacing along a straight run. */
 const POST_SPACING = 4;
@@ -377,18 +376,10 @@ const GATE_FRAME_GEO = (() => {
 /** Coloured gate parts: the raised boom arm and the label panel, merged into
  *  one draw call. Shared geometry; the material (green/red) is per gate.
  *
- *  Three things were wrong here and all three are visible in Deepu's
- *  screenshots:
- *   - The boom lay HORIZONTALLY across the road at y=3.0, and cars are 1.35
- *     to 1.65 tall, so every car drove straight through a closed barrier. It
- *     now stands vertically in the raised position, hinged at its housing,
- *     which is what an open barrier looks like and leaves the road clear.
- *   - The label panel was 1.8 wide in X and 0.12 thin in Z. The road runs
- *     along X, so a driver saw a 0.12-wide sliver edge-on, and from three
- *     quarters it sliced the word in half ("EXIT" read as "IT"). It is now
- *     thin in X and wide in Z, facing the traffic.
- *   - The boom tip box sat at z = -ROAD_WIDTH/2, exactly inside the south
- *     leg, permanently interpenetrating it. */
+ *  The boom stands vertically in the raised position, hinged at its housing,
+ *  which is what an open barrier looks like and leaves the road clear. The
+ *  label panel is thin in X and wide in Z, facing the traffic, so the word
+ *  reads from the approach rather than as an edge-on sliver. */
 const GATE_ARM_LEN = ROAD_WIDTH - 0.9;
 const GATE_BOOM_GEO = (() =>
   mergeGeometries(
@@ -406,21 +397,15 @@ const GATE_BOOM_GEO = (() =>
 /** Emissive booth window on the booth's road-facing (south) face. */
 const GATE_SCREEN_GEO = makeBox(1.4, 1.0, 0.06, 0, 1.6, 4.85);
 
-/** How far back along the approach road the gate portal stands, away from the
- *  building. Both approach roads run in from -x, so the gate moves to -x.
- *
- *  It used to sit exactly on the entry/exit node at x = 0, which is also
- *  where the first aisle's two bay-range signboards stand (2.5 before the
- *  first bay, at z = +/-4.1). The gate's own legs are at z = +/-3.5 on the
- *  same x, so from a driver's seat each leg stood squarely in front of one
- *  board — the "A21 - A40" sign on the ground floor was permanently hidden
- *  behind a black post. Standing the portal off the building also reads
- *  better: a barrier belongs on the approach, before you are inside. */
+/** How far back along the approach road the gate portal stands, away from
+ *  the building. Both approach roads run in from -x, so the gate moves to
+ *  -x. Standing it off the building avoids overlapping the first aisle's
+ *  bay-range signboards, and reads better: a barrier belongs on the
+ *  approach, before you are inside. */
 const GATE_SETBACK = 6;
 
-/** Area-sign dimensions shared by the merged sign body and the screen plane. */
-// Sized against a 7-wide road and a 4.5-long car. The old 5.0 x 2.2 panel on
-// a 4-unit post read as a motorway billboard standing indoors.
+/** Area-sign dimensions shared by the merged sign body and the screen plane.
+ *  Sized against a 7-wide road and a 4.5-long car. */
 const AREA_POST_H = 2.9;
 const AREA_PANEL_W = 3.2;
 const AREA_PANEL_H = 1.25;
@@ -591,14 +576,11 @@ function buildGeometry(lot: LotData) {
     ];
     turns.push({ floor: node.floor, points });
 
-    // Permanent signboard at this turn.
-    //
-    // The board used to carry a fixed "LEFT" or "RIGHT", classified from the
-    // cross product of the approach and exit directions. Now that the road is
-    // two-way that is wrong half the time: the same 180-degree loop is a left
-    // for traffic going one way and a right for traffic going the other. The
-    // header names the junction, and each car's own row on the board carries
-    // its own hand, taken from the edge it is actually about to traverse.
+    // Permanent signboard at this turn. The header names the junction and
+    // each car's own row carries its own hand, taken from the edge it is
+    // about to traverse. A fixed "LEFT"/"RIGHT" would be wrong half the
+    // time on a two-way road: the same loop is a left one way and a right
+    // the other.
     const apx = node.x - a.x;
     const apz = node.y - a.y;
     // Face oncoming traffic: board +Z points back toward the incoming node.
@@ -610,15 +592,15 @@ function buildGeometry(lot: LotData) {
     const apLen = Math.hypot(apx, apz) || 1;
     // On covered storeys the board hangs from the slab, so it can sit three
     // units back down the aisle. On the TOP deck it stands on two posts at
-    // z = +/-4.1, and the bays start at exactly +/-3.5 — so at that offset
-    // both posts landed inside a parking bay and ran straight through the car
-    // in it, on six bays across the open deck. The only x with no bay is past
-    // the last one, between it and the turn, so top-floor boards stand there.
+    // z = +/-4.1, and the bays start at exactly +/-3.5, so at that offset
+    // both posts would land inside a parking bay. The only x with no bay is
+    // past the last one, between it and the turn, so top-floor boards stand
+    // there.
     const off = node.floor === maxFloor ? 0.7 : 3;
     const sx = node.x - (apx / apLen) * off;
     const sy = node.y - (apz / apLen) * off;
-    // Name the run of bays this turn leads to. Nine identical "U-TURN"
-    // headers told a driver who can see three of them at once nothing.
+    // Name the run of bays this turn leads to, so a driver who can see
+    // several turn boards at once can tell them apart.
     const destAisle = aisleOf(neighbours[1]);
     const range =
       destAisle === null ? undefined : aisleBayRange.get(`${node.floor}:${destAisle}`);
@@ -726,12 +708,9 @@ function buildGeometry(lot: LotData) {
     const flowsPositive = aisle.index % 2 === 0;
     const entryX = flowsPositive ? aisle.bayX0 : aisle.bayX1;
     const arrowDir: 1 | -1 = flowsPositive ? 1 : -1;
-    // Sit the post BEFORE the first bay of the aisle. It used to be placed
-    // 3 units *into* the aisle at a z of ROAD_WIDTH/2 + 1 = 4.5, but bays now
-    // start only 3.5 from the aisle centreline, so the post was landing inside
-    // a bay and running straight through whatever car was parked there.
-    // 2.5 left only 2cm between the post and the 15-unit ramp opening on
-    // the upper floors, and hung 7cm of panel over the hole.
+    // Sit the post BEFORE the first bay of the aisle. Bays start only 3.5
+    // from the aisle centreline, so placing it further in would land inside
+    // a bay. 2.2 keeps clear of the ramp opening on the upper floors too.
     const signX = entryX - arrowDir * 2.2;
     // Face oncoming traffic: toward the entry end (opposite of travel dir).
     const faceX = -arrowDir;
@@ -751,11 +730,6 @@ function buildGeometry(lot: LotData) {
       // aisle? Facing +x, the driver's left is -z; facing -x it is +z. So the
       // row is on their left exactly when its side and the flow direction
       // disagree in sign.
-      //
-      // Both boards used to show the aisle's TRAVEL direction instead, so
-      // every board in the garage displayed the same sideways arrow -- one of
-      // them always pointing at the wrong row of bays, and neither of them
-      // telling the driver anything the road markings didn't.
       const pointsLeft = sideSign * arrowDir < 0;
       areaSigns.push({
         position: toWorld(signX, aisleY + sideSign * sideOffset, aisle.floor),
@@ -794,30 +768,9 @@ const FloorSlab = memo(function FloorSlab({
   const cz = (bounds.minZ + bounds.maxZ) / 2;
   const y = floor * FLOOR_HEIGHT;
 
-  // No edge trim of any kind.
-  //
-  // The slab used to carry two sets of thin bars: four around its perimeter
-  // and four framing the ramp opening, each 0.06 tall and 0.12 wide. Both
-  // were meant to read as a kerb. At that size neither ever did. What they
-  // actually produced was a hard hairline of a different tone drawn exactly
-  // along the lip of the deck, running the full 81.6 by 77 of every storey,
-  // which from any outside camera reads as a wire strung across the building.
-  // That is the "weird rod" Deepu has photographed repeatedly. It is present
-  // on all three floors because every slab draws its own.
-  //
-  // Proven by raycasting three separate pixel columns through the rod in his
-  // screenshot: all three hit a mesh of size 81.72 x 0.06 x 77.12 in colour
-  // #2a2d34 (MAT_TRIM), 2 to 4 pixels tall, sandwiched between the ramp road
-  // above and below it.
-  //
-  // The hole trim was worse than cosmetic: its bar at the hole's right edge
-  // sat at x = 0, spanning the full 11-unit width of the ramp opening — a bar
-  // laid across the ramp mouth, exactly where a car drives off the ramp onto
-  // the deck.
-  //
-  // Neither is needed. The Envelope already puts a 1-unit spandrel and a
-  // lighter coping band along every slab edge, which is the kerb; the ramp
-  // opening is framed by the ramp's own edge lines and guardrails.
+  // No edge trim of any kind. The Envelope already puts a 1-unit spandrel
+  // and a lighter coping band along every slab edge, which is the kerb; the
+  // ramp opening is framed by the ramp's own edge lines and guardrails.
   const slabGeo = useMemo(() => {
     if (!rampHole) return makeBox(w, 0.5, d, 0, -0.25, 0);
 
@@ -829,12 +782,8 @@ const FloorSlab = memo(function FloorSlab({
     const ox = rampHole[0] - cx;
     const oz = rampHole[1] - cz;
     // CLAMP the hole to the slab. The ramp opening is centred on the ramp,
-    // which starts outside the building, so the raw hole extended 4.5 units
-    // past the west edge. The left piece was then skipped (negative width)
-    // while the top and bottom pieces were still drawn at the hole's FULL
-    // width, so floors B and C grew a 4.5 x 77 tongue of slab sticking out
-    // past floor A with no parapet and no guardrail over a 15 and 30 unit
-    // drop. Clamping first keeps every piece inside the footprint.
+    // which starts outside the building, so the raw hole can extend past the
+    // west edge. Clamping first keeps every slab piece inside the footprint.
     const holeLeft = Math.max(ox - holeHalfX, -w / 2);
     const holeRight = Math.min(ox + holeHalfX, w / 2);
     const holeMinZ = Math.max(oz - holeHalfZ, -d / 2);
@@ -1023,16 +972,11 @@ const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
     () => buildSolidBarAlongPath(ramp.points, ROAD_WIDTH + 1.2, SOFFIT_THICKNESS, ROAD_Y - 0.1 - SOFFIT_THICKNESS),
     [ramp.points],
   );
-  // Road surface. There used to be a "threshold apron" box at each end,
-  // meant to bridge ramp to floor. It did the opposite: a FLAT 2-unit box
-  // held at the ramp's FINAL height while the deck beneath it was still
-  // climbing at 18%. Measured, that left a hard 0.362-unit step straight
-  // across the full 7-unit carriageway, plus a coplanar z-fighting sliver
-  // where the two surfaces met. That step is the dark band across the road
-  // at the ramp joint that Deepu photographed repeatedly.
-  //
-  // No apron is needed. rampPoints() starts and ends exactly on the floor
-  // heights, so the ribbon already meets each deck flush at ROAD_Y.
+  // Road surface. No threshold apron: rampPoints() starts and ends exactly
+  // on the floor heights, so the ribbon already meets each deck flush at
+  // ROAD_Y. A flat apron box held at the ramp's final height while the deck
+  // beneath was still climbing would produce a hard step across the
+  // carriageway at the joint.
   const road = useMemo(
     () => buildRibbon(ramp.points, ROAD_WIDTH, ROAD_Y),
     [ramp.points],
@@ -1153,10 +1097,8 @@ const Pillars = memo(function Pillars({ floor, bounds }: { floor: number; bounds
  *
  * Posts go in every POST_SPACING of travel OR every POST_MAX_TURN of heading
  * change, whichever comes first. Spacing alone is curvature-blind, and the
- * rail is straight between posts, so on tight curves a 4-unit step cut the
- * corner badly: measured 53 degrees of heading between two posts on the
- * ramp's inner rail, the rail sagging 0.378 inside the road edge, and only
- * 7 posts for a whole 180-degree turn loop.
+ * rail is straight between posts, so on tight curves a fixed step leaves too
+ * few posts and the rail sags inside the road edge.
  */
 function GuardRailAlongPath({
   points,
@@ -1243,8 +1185,7 @@ const GuardRails = memo(function GuardRails({
 
   /** Build guardrail polylines along one long edge, leaving a gap over the
    *  slot area so the rails only cover the driving/turn portions, and another
-   *  where the stair core stands. Six units of the north rail on every storey
-   *  used to be built inside the core, invisible and pointless. */
+   *  where the stair core stands. */
   const segments = useMemo(() => {
     const margin = SLOT_WIDTH / 2 + 1;
     const core = coreFootprint(bounds);
@@ -1400,7 +1341,7 @@ const AreaSignboard = memo(function AreaSignboard({ sign }: { sign: AreaSignDesc
         </Text>
         {/* Arrow pointing at the row of bays this board is announcing. It sat
             at y = -0.55, which is outside the 0.95-tall screen (+/-0.475) and
-            half off the panel frame \u2014 the arrow appeared to float below the
+            half off the panel frame, so the arrow appeared to float below the
             board rather than on it. */}
         <Text
           position={[0, -0.28, 0.1]}

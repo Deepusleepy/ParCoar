@@ -56,18 +56,11 @@ function dprForViewport(): number {
  *  calls total for ceiling fixtures across the two enclosed storeys.
  */
 
-/** Shadow frustum half-extents, centred on the lot. The footprint is ~55 wide
- *  x ~63 deep (constants: LOT_MIN_Z=-13, LOT_MAX_Z=64 -> depth 77 with the
- *  padded bounds). The old +/-60 (120x120) massively overshoot; this is
- *  retuned to the current footprint with a small margin. */
-// Half-extents of the shadow frustum, sized to the real slab (81.6 x 77)
-// rather than a guess. Too small and the east end simply has no shadows.
-// These are half-extents of the LIGHT's orthographic camera, not of the lot.
-// The sun sits off to one side, so the lot's footprint rotates and shears in
-// light space and needs more room than its world size suggests: measured, the
-// corners of the top deck and the whole ramp landed at up to 1.33 in NDC,
-// i.e. outside the map. 56 covers the padded footprint plus the ramp at
-// x = -22.5 and the full 30 units of height.
+/** Half-extents of the LIGHT's orthographic camera, not of the lot. The sun
+ *  sits off to one side, so the building's footprint rotates and shears in
+ *  light space and needs more room than its 81.6 by 77 world size suggests.
+ *  56 covers that, plus the ramp out at x = -22.5 and the full 30 units of
+ *  height. Anything outside this frustum neither casts nor receives. */
 const SHADOW_HALF_X = 56;
 const SHADOW_HALF_Z = 56;
 
@@ -114,11 +107,9 @@ const HOUSING_WIDTH = 0.5;
 const HOUSING_TOP_Y = (floor: number) => (floor + 1) * FLOOR_HEIGHT - 0.5;
 const HOUSING_CENTER_Y = (floor: number) => HOUSING_TOP_Y(floor) - HOUSING_HEIGHT / 2;
 // The lamp hangs just PROUD of the housing's underside, inset in X/Z so the
-// dark housing rim frames it. It used to sit flush: its bottom face was at
-// exactly the housing's bottom face, two coplanar surfaces fighting for the
-// same depth value. That is the flicker Deepu photographed — every strip
-// broke into shimmering black blocks and hatching as the camera moved,
-// because which surface won varied per pixel and per frame.
+// dark housing rim frames it. It must not sit flush: two coplanar faces fight
+// for the same depth value and the strip breaks into shimmering blocks as the
+// camera moves.
 const LAMP_LENGTH = SEG_LENGTH - 0.4;
 // Widened from 0.34 so the bright face stays above a pixel at distance and
 // grazing angles — the old sub-pixel width aliased into jagged white streaks

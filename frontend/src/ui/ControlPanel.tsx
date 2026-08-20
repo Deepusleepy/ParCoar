@@ -4,11 +4,10 @@ import type { GarageFill, SimSettings } from "../hooks/useSimulation";
 /**
  * The controls drawer.
  *
- * Everything that used to be permanently on screen, plus the levers that make
- * the simulator demonstrable: how much traffic there is, how fast time runs,
- * how full the garage starts, and what is drawn on top of the 3D view. It
- * slides in from the right and is closed by default, so the garage is the
- * only thing on screen until you ask for something else.
+ * The levers that make the simulator demonstrable: how much traffic there is,
+ * how fast time runs, how full the garage starts, and what is drawn on top of
+ * the 3D view. It slides in from the right and is closed by default, so the
+ * garage is the only thing on screen until you ask for something else.
  */
 
 export interface Overlays {

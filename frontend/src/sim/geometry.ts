@@ -14,9 +14,8 @@ import {
  *
  * The road mesh (ParkingLot), the AI car paths (paths.ts) and the player car's
  * height sampling (DrivableCar) must all follow the EXACT same curves, or cars
- * float above the tarmac and clip through guardrails. These used to be three
- * copy-pasted implementations that had already drifted apart. They live here
- * now so there is one definition each.
+ * float above the tarmac and clip through guardrails. They live here so there
+ * is one definition of each.
  */
 
 /** Aisle index from a junction id, "J{floor}_{aisle}_{n}". Null for anything
@@ -36,14 +35,8 @@ export interface SlabBounds {
 
 /**
  * Footprint of the floor slabs: the structural nodes plus the padding the
- * turn loops and bays need.
- *
- * This used to be written out twice, once for the 3D geometry and once for
- * the player car's position clamp, and the two had drifted: the clamp padded
- * X by 9.5 where the slab pads by 13.5, so the player car hit an invisible
- * wall four units short of the real deck edge at both ends of the building.
- * Same class of bug as the three copy-pasted curve generators this file was
- * created to replace.
+ * turn loops and bays need. Shared by the 3D geometry and the player car's
+ * position clamp so the two cannot drift apart.
  */
 export function slabBounds(lot: LotData): SlabBounds {
   const structural = Object.values(lot.nodes).filter(
@@ -148,10 +141,6 @@ function roundedCorner(
  * The inter-floor ramp: an L-shaped run that leaves the west face of the
  * building, climbs along the outside of it, and turns back in one floor up.
  *
- * This replaces an earlier version that swept diagonally across the entire
- * depth of the garage as a single Catmull-Rom curve, which read as a giant
- * noodle flying through mid-air with no relationship to the building.
- *
  * Geometry: a car leaves `from` heading -x (it has just finished the last
  * aisle, which runs right to left), turns south to run parallel to the west
  * wall, then turns back east to arrive at `to` heading +x, which is the
@@ -166,14 +155,13 @@ const RAMP_VERTICAL_CURVE = 6;
  * Fraction of the total rise reached after travelling `d` of `total` along a
  * ramp, with a parabolic vertical curve at each end.
  *
- * Height used to rise linearly with distance, which is right in the middle
- * and wrong at the ends: the grade went from 0% on the flat deck to 18.08% on
- * the ramp with nothing in between, a 10.25-degree break, four times per
- * ramp. A real ramp eases in and out over a few metres, and so does a car.
+ * A linear rise is right in the middle and wrong at the ends, where the grade
+ * would step straight from 0% on the flat deck to the ramp grade. A real ramp
+ * eases in and out over a few metres, and so does a car.
  *
  * Grade is zero at both ends, rises smoothly over RAMP_VERTICAL_CURVE, and is
  * constant across the middle. Easing costs a slightly steeper middle for the
- * same rise over the same run: 19.5% instead of 18.1%.
+ * same rise over the same run.
  */
 function heightFraction(d: number, total: number): number {
   const lc = Math.min(RAMP_VERTICAL_CURVE, total / 2 - 1e-3);
@@ -201,12 +189,10 @@ export function rampPoints(
   const cornerB = new THREE.Vector2(x1 - RAMP_OUTSET, z1); // south along the face
   const end = new THREE.Vector2(x1, z1);
 
-  // 32 segments, not 12. The resample below runs at 0.5, and a 12-segment
-  // 90-degree arc of radius 7 has a chord of 0.916 — nearly twice the
-  // resample spacing — so the arc was being decimated to about six chords
-  // and the ramp deck read as a hexagon. Measured 16.1 degrees of heading
-  // change per vertex through a corner, against 5.63 on the turn loops
-  // right beside it.
+  // 32 segments, not 12: the resample below runs at 0.5, and a 12-segment
+  // 90-degree arc of radius 7 has a chord of ~0.92, nearly twice the resample
+  // spacing, so the arc would be decimated to about six chords and the ramp
+  // deck would read as a hexagon.
   const a = roundedCorner(start, cornerA, cornerB, RAMP_CORNER_RADIUS, 32);
   const b = roundedCorner(cornerA, cornerB, end, RAMP_CORNER_RADIUS, 32);
 

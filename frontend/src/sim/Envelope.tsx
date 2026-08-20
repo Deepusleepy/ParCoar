@@ -53,12 +53,7 @@ const MAT_CORE_GLAZING = new THREE.MeshStandardMaterial({
 
 /** Openings in the west face, in world Z. The west face carries the entry
  *  (z=0), the exit (z=51) and both ramp crossings, and those need to stay
- *  open — but only those.
- *
- *  The spandrel used to be one band from z=4 to z=47, which left 17 units at
- *  the south end and 11 at the north with no spandrel AND no guardrail: a
- *  bare deck lip over a 15 and a 30 unit drop on the upper storeys. Openings
- *  are now cut to size and everything else on the face is closed. */
+ *  open, but only those. Everything else on the face is closed. */
 const WEST_OPENINGS: Array<[number, number]> = [
   [-5, 5],
   [46, 56],
@@ -81,9 +76,7 @@ const CORE_SIZE = 6;
 /** Height of the top storey's spandrel, which doubles as the roof parapet. */
 const TOP_SPANDREL_H = 2.0;
 /** How far the core rises above the roof parapet. A lift overrun and a stair
- *  head-house is a few units, not most of a storey: this was a full storey
- *  height, putting a blank 45-unit black tower 12.85 above a 32-unit
- *  building, which dominated the silhouette from every outside angle. */
+ *  head-house is a few units, not most of a storey. */
 const CORE_OVERRUN = 3.5;
 
 /** Split a span into the pieces left after removing a set of openings. */

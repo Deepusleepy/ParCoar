@@ -47,25 +47,14 @@ const BOARD_ROWS = 3;
 
 /* How full each storey starts, from its own entrance to its far end.
  *
- * This used to be a flat 50% across the whole garage, which quietly killed
- * the point of the product. The backend routes a car to its NEAREST free
- * bay, so with one bay in two free right at the entrance every car parked
- * within seconds of arriving. Measured: 18 of 26 cars had a route that never
- * passed a single guidance board, and six of the eleven boards were lit less
- * than 2% of the time. Cars drove past dark signs, which is exactly what
- * Deepu was seeing.
- *
- * A real garage is full near the door and empty at the back, and that is the
- * condition that makes guidance worth having at all. The gradient is
- * per-STOREY, not global: a car that comes up the ramp arrives at the far
- * end of the building but at the START of that floor's own run of bays, so a
- * single garage-wide gradient left every upper floor empty right where cars
- * entered it and no upstairs board ever lit.
+ * The gradient must be per-STOREY, not global: a car that comes up the ramp
+ * arrives at the far end of the building but at the START of that floor's own
+ * run of bays. A single garage-wide gradient would leave every upper floor
+ * empty right where cars enter it, so no upstairs board would ever light.
  *
  * Ground floor is close to full so arrivals are pushed upstairs; each floor
  * above starts fuller than it ends, so a car still has to drive its length.
- * None of this touches the search, which stays a plain outward sweep to the
- * nearest free bay: that is the part Deepu has to explain. */
+ * The search itself stays a plain outward sweep to the nearest free bay. */
 export type GarageFill = "quiet" | "normal" | "busy";
 
 /** How full each storey starts, from its own entrance to its far end, per
@@ -254,39 +243,29 @@ function isNodeBusy(
     // A car that has already LEFT `target` only blocks it until its tail is
     // clear. Reserving the whole leg is right for a 2.6-unit aisle hop, where
     // the car is still overhanging the node it left, and wrong for the ramp,
-    // which is a single leg tens of units long: a car at the ramp foot sat
-    // motionless for thirteen seconds waiting for the car ahead to reach the
-    // floor above. nodeGap is straight-line and so understates the ramp's
-    // real path length, which only makes this more conservative.
+    // which is a single leg tens of units long. nodeGap is straight-line and
+    // so understates the ramp's real path length, which only makes this more
+    // conservative.
     if (other.fromNode === target && other.toNode !== target) {
       const len = legLength(lot, other.fromNode, other.toNode);
       if (other.progress * len > CAR_LENGTH * 1.5) return false;
     }
-    // The mirror of the same idea, and the one that produced the jam Deepu
-    // could see: a car heading TOWARD `target` held it for the whole leg. On
-    // a 2.6-unit aisle hop that is a third of a second and correct. On the
-    // ramp, which is one leg 53 units end to end, a car entering it reserved
-    // the node at the TOP for the whole twelve-second climb, so every car
-    // behind stopped dead at the ramp foot — which is exactly where the RAMP
-    // UP board hangs. Same on a turn loop, which is one 17-unit leg.
-    //
-    // A car now only holds the node it is heading for once it is genuinely
-    // about to arrive. Two car lengths is far enough out that it still owns
-    // the node before anyone else can reach it, and on every aisle hop the
-    // leg is shorter than that, so short-range behaviour is unchanged.
+    // A car heading TOWARD `target` only holds it once it is genuinely about
+    // to arrive. On a long leg (the ramp is one 53-unit leg, a turn loop one
+    // 17-unit leg) reserving the far node for the whole traversal would stop
+    // every car behind at the foot of the ramp or the mouth of the turn.
+    // Two car lengths is far enough out that it still owns the node before
+    // anyone else can reach it, and on every aisle hop the leg is shorter
+    // than that, so short-range behaviour is unchanged.
     if (other.toNode === target && other.fromNode !== target) {
       const len = legLength(lot, other.fromNode, other.toNode);
       if (other.fromNode === self.fromNode) {
         // The other car is on the very leg we are about to start, ahead of
         // us. What matters then is the gap BETWEEN us, which is how far it
-        // has already driven — not how far it still has to go.
-        //
-        // Measuring how far it had left to go is what made a car sit at the
-        // mouth of every 180-degree turn for two to three seconds: the car
-        // ahead had to get roughly half way round the loop before the one
-        // behind was let on, even though the loop is 32 units of road and
-        // comfortably holds two cars. Deepu watched a car stop dead under a
-        // turn board with nothing in front of it but clear tarmac.
+        // has already driven, not how far it still has to go. Measuring the
+        // remaining distance instead would hold a car at the mouth of a
+        // 180-degree turn until the leader is half way round the loop, even
+        // though the loop comfortably holds two cars.
         if (other.progress * len > CAR_LENGTH * 1.6) return false;
       } else if ((1 - other.progress) * len > CAR_LENGTH * 2) {
         // Converging on the node from a different leg, and still far enough
@@ -317,11 +296,13 @@ function nextNodeForDirection(
   return edge ? edge.to : null;
 }
 
-/** Generate the static pre-parked cars (~50% of slots, size-matched).
- *  Uses a deterministic slot pattern (every other slot) so the set of
- *  occupied positions is stable across reloads. Colors and plates are
- *  random for visual variety. When the backend assigns a slot to an active
- *  car, we remove any pre-parked car from that slot to avoid overlap. */
+/** Generate the static pre-parked cars, size-matched to each bay.
+ *  Fill follows a per-storey gradient (one of three presets) so the garage
+ *  starts full near the entrance and empties toward the back, the condition
+ *  that makes guidance worth having. A deterministic hash on each bay's rank
+ *  keeps the same bays taken on every reload. Colors and plates are random
+ *  for visual variety. When the backend assigns a slot to an active car, we
+ *  remove any pre-parked car from that slot to avoid overlap. */
 function generatePreParked(lot: LotData, fillLevel: GarageFill = "normal"): ParkedCarData[] {
   // Order every bay the way a driver actually meets it: floor by floor, aisle
   // by aisle along the spine, and along each aisle in its travel direction.
@@ -762,19 +743,16 @@ export function useSimulation(): SimulationState {
   // --- Dev-only: publish sim state so an automated pass can see what a car
   //     believes it is doing, rather than inferring it from pixels.
   //
-  //     Refreshed every DEV_PUBLISH_MS. This used to be 500, which quietly
-  //     capped the resolution of everything built on it: the movement gate
-  //     measures how long a car stands still, and every duration it reported
-  //     came out a multiple of half a second, so a real 1.2-second halt read
-  //     as 1000ms. That gate exists because a 3.4-second halt slipped past a
-  //     5-second threshold, so it of all things must not be quantised coarser
-  //     than the faults it hunts. ---
+  //     Refreshed every DEV_PUBLISH_MS, which is the finest duration anything
+  //     built on top of this can measure. Keep it well under the shortest
+  //     fault worth catching. ---
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     const id = setInterval(() => {
       (window as unknown as Record<string, unknown>).__parcoarSim = {
         cars: activeCarsRef.current.map((c) => ({
           id: c.id,
+          size: c.size,
           from: c.fromNode,
           to: c.toNode,
           slot: c.slot,
@@ -925,7 +903,7 @@ export function useSimulation(): SimulationState {
   // --- Departures: parked cars leave again after their stay ---
   // Only cars that actually drove in are eligible; the pre-parked decoration
   // has no parkedAt and stays put. Without this the garage fills to capacity
-  // and then sits on LOT FULL forever, which is what it used to do.
+  // and then sits on LOT FULL forever.
   useEffect(() => {
     if (!lot) return;
     const id = setInterval(() => {
