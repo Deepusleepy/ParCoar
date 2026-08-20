@@ -1,14 +1,13 @@
-import json
 import os
 import sys
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-with open(os.path.join(ROOT, "shared", "lot.json"), encoding="utf-8") as file:
-    LOT = json.load(file)
-
 sys.path.insert(0, os.path.join(ROOT, "backend"))
 import server
+from generate_lot import build_lot
+
+LOT = build_lot()
 
 
 class LotGraphTest(unittest.TestCase):
