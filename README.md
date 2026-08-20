@@ -87,7 +87,9 @@ TypeScript 7 this project uses, and a lint setup that needs
 build with `noUnusedLocals` and `noUnusedParameters` on, and does most of the
 same work.
 
-## Credits
+## Licence
 
-Car models are third-party assets converted to glTF. See
-[frontend/public/models/CREDITS.md](frontend/public/models/CREDITS.md).
+MIT. See [LICENSE](LICENSE).
+
+Car models are by [Quaternius](https://quaternius.com/packs/cars.html) and are
+CC0. See [frontend/public/models/CREDITS.md](frontend/public/models/CREDITS.md).
