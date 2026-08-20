@@ -6,9 +6,10 @@ Cars drive in, a Python server works out which free bay each one should take
 and how to get there, and signs hanging over the road tell each driver where
 to go. Three floors, 480 bays, in the browser.
 
-The interesting part is the server. It stores the garage as a graph and
-searches outward from the car until it finds the nearest free bay that fits.
-Everything else exists to show that search happening.
+The interesting part is the server. It holds the garage as a graph of 737
+nodes and runs a breadth-first search outward from the car, so the first free
+bay it reaches is the closest one that fits. Everything else exists to show
+that search happening.
 
 ## Run it
 
