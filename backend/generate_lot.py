@@ -65,7 +65,8 @@ def edge_cost(nodes: dict, source: str, target: str) -> float:
     return math.sqrt(dx * dx + dy * dy + dz * dz)
 
 
-def main() -> None:
+def build_lot() -> dict:
+    """Build and return the routing graph without touching the filesystem."""
     nodes: dict[str, dict] = {}
     edges: dict[str, list[dict]] = {}
 
@@ -193,7 +194,7 @@ def main() -> None:
         for edge in outgoing:
             edge["cost"] = round(edge_cost(nodes, source, edge["to"]), 3)
 
-    lot = {
+    return {
         "floors": FLOORS,
         "floor_height": FLOOR_HEIGHT,
         "aisles_per_floor": AISLES_PER_FLOOR,
@@ -209,6 +210,9 @@ def main() -> None:
         "edges": edges,
     }
 
+
+def main() -> None:
+    lot = build_lot()
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     shared_path = os.path.join(project_root, "shared", "lot.json")
     frontend_path = os.path.join(project_root, "frontend", "public", "lot.json")
@@ -228,12 +232,12 @@ def main() -> None:
         print(f"Generated {output_path}")
 
     counts = {
-        node_type: sum(1 for node in nodes.values() if node["type"] == node_type)
-        for node_type in {node["type"] for node in nodes.values()}
+        node_type: sum(1 for node in lot["nodes"].values() if node["type"] == node_type)
+        for node_type in {node["type"] for node in lot["nodes"].values()}
     }
     print(f"  Floors: {FLOORS}")
     print(f"  Slots: {counts.get('slot', 0)}")
-    print(f"  Total nodes: {len(nodes)}")
+    print(f"  Total nodes: {len(lot['nodes'])}")
 
 
 if __name__ == "__main__":
