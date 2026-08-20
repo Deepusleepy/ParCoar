@@ -9,6 +9,8 @@ running in a browser.
 
 You can also take a car and drive it yourself.
 
+![The garage, all three floors and the ramp](docs/images/garage.png)
+
 ## Run it
 
 You need Python 3.11 or newer and Node 22 or newer. Open two terminals.
@@ -41,6 +43,8 @@ it at the same time.
 
 The buttons along the bottom change the camera. Orbit the building, look at
 one floor, follow a car, or drive one yourself with WASD.
+
+![The controls drawer open, with the route map showing](docs/images/controls.png)
 
 ---
 
@@ -82,6 +86,13 @@ One rule sits on top of that. If three or more cars are already heading to a
 floor, the search skips that floor and takes the nearest space on another one.
 Without it, every car piles onto the ground floor and the upper storeys stay
 empty.
+
+![An overhead sign naming the car it is talking to](docs/images/board.png)
+
+A sign shows the car it is instructing, in that car's own colour, with the
+turn to take and the space it is heading for. Cars queued behind it get a
+smaller row each, so a driver three back already knows their instruction
+rather than waiting for the sign to get to them.
 
 The same search produces the route, and the server sends the whole route
 rather than one instruction at a time. That is what lets a sign show a car's
