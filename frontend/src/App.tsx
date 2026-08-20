@@ -3,154 +3,138 @@ import * as THREE from "three";
 import { useSimulation } from "./hooks/useSimulation";
 import { Scene, SceneLoadingFallback, type OrbitControlsHandle } from "./sim/Scene";
 import { ActiveCarMesh, ParkedCarField, type ParkedCarInstance } from "./sim/Car";
-import { DrivableCar, buildRoadSegments, type ParkedCarPos, type PlayerSpeedRef } from "./sim/DrivableCar";
+import {
+  DrivableCar,
+  type ParkedCarPos,
+  type PlayerSpeedRef,
+} from "./sim/DrivableCar";
+import { buildRoadSegments } from "./sim/roadSegments";
 import { AISLE_SPACING, CAR_Y_OFFSET, COLOR_HEX, toWorld } from "./sim/constants";
 import type { CameraMode } from "./sim/CameraRig";
 import { RoutePanel, type RoutePanelCar } from "./ui/RoutePanel";
-import { ControlPanel, ControlPanelTab, DEFAULT_OVERLAYS, type Overlays } from "./ui/ControlPanel";
+import {
+  ControlPanel,
+  ControlPanelTab,
+  DEFAULT_OVERLAYS,
+  type Overlays,
+} from "./ui/ControlPanel";
 
-/** Stable empty array, so switching board guidance off does not hand the
- *  scene a fresh reference on every render. */
 const EMPTY_SIGNS: import("./types").NodeSign[] = [];
 
 export function App() {
   const sim = useSimulation();
-  // Ref to the OrbitControls instance, so the "Reset View" button can call
-  // controls.reset() and restore the default isometric framing.
   const controlsRef = useRef<OrbitControlsHandle | null>(null);
-
-  // Camera system state.
   const [cameraMode, setCameraMode] = useState<CameraMode>("orbit");
-  // Which car's route the 2D panel is drawing. This is what turns the demo
-  // from "cars drive around" into "here is the search the backend ran".
   const [routeCarId, setRouteCarId] = useState<string | null>(null);
   const [followCarId, setFollowCarId] = useState<string | null>(null);
-  // Live car transforms (id -> THREE.Group), populated by ActiveCarMesh each
-  // frame and read by CameraRig for follow/POV modes.
   const carGroupsRef = useRef<Map<string, THREE.Group>>(new Map());
-
-  // The controls drawer, and what it lets you draw over the 3D view. Closed
-  // and mostly off by default: the garage should be the only thing on screen
-  // until you ask for something else.
   const [panelOpen, setPanelOpen] = useState(false);
   const [overlays, setOverlays] = useState<Overlays>(DEFAULT_OVERLAYS);
-  const patchOverlays = (patch: Partial<Overlays>) =>
-    setOverlays((prev) => ({ ...prev, ...patch }));
-
-  // Player car live speed (written by DrivableCar each frame, polled for HUD).
   const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0 });
   const [playerSpeed, setPlayerSpeed] = useState(0);
 
-  // Auto-pick a car when entering follow mode without a selection, and clear
-  // the selection when the chosen car is no longer active. POV mode drives the
-  // player car, so it doesn't need an AI car selection.
+  const patchOverlays = (patch: Partial<Overlays>) =>
+    setOverlays((current) => ({ ...current, ...patch }));
+
   useEffect(() => {
     if (cameraMode !== "follow") return;
-    const ids = sim.activeCars.map((c) => c.id);
-    if (followCarId && !ids.includes(followCarId)) {
-      setFollowCarId(null);
-    }
-    if (!followCarId && ids.length > 0) {
-      setFollowCarId(ids[0]);
-    }
+    const ids = sim.activeCars.map((car) => car.id);
+    if (followCarId && !ids.includes(followCarId)) setFollowCarId(null);
+    if (!followCarId && ids.length > 0) setFollowCarId(ids[0]);
   }, [cameraMode, followCarId, sim.activeCars]);
 
-  // Drop the route selection when that car parks or leaves, and adopt the
-  // first available car so the panel is never empty for no reason.
   useEffect(() => {
-    const ids = sim.carRoutes.map((r) => r.carId);
+    const ids = sim.carRoutes.map((route) => route.carId);
     if (routeCarId && !ids.includes(routeCarId)) setRouteCarId(ids[0] ?? null);
     else if (!routeCarId && ids.length > 0) setRouteCarId(ids[0]);
   }, [sim.carRoutes, routeCarId]);
 
-  // Poll the player car's speed for the driving HUD (~10 Hz is enough for a
-  // speedometer; faster updates just waste renders).
   useEffect(() => {
     if (cameraMode !== "pov" && cameraMode !== "drive") return;
-    const id = setInterval(() => setPlayerSpeed(playerSpeedRef.current.speed), 100);
-    return () => clearInterval(id);
+    const interval = setInterval(() => setPlayerSpeed(playerSpeedRef.current.speed), 100);
+    return () => clearInterval(interval);
   }, [cameraMode]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const el = document.activeElement;
-      if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement) return;
-      // While the mouse is captured for free-fly, letters steer the camera.
+    const onKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLInputElement || active instanceof HTMLSelectElement) return;
       if (document.pointerLockElement) return;
-      const k = e.key.toLowerCase();
-      if (k === "c") setPanelOpen((v) => !v);
-      else if (k === "m") patchOverlays({ routeMap: !overlays.routeMap });
-      else if (k === "p") sim.updateSettings({ speed: sim.settings.speed === 0 ? 1 : 0 });
+      const key = event.key.toLowerCase();
+      if (key === "c") setPanelOpen((open) => !open);
+      else if (key === "m") patchOverlays({ routeMap: !overlays.routeMap });
+      else if (key === "p") {
+        sim.updateSettings({ speed: sim.settings.speed === 0 ? 1 : 0 });
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // Depend on the specific values used, not on `sim`. useSimulation returns
-    // a fresh object literal every render, so depending on it tore the
-    // listener down and re-added it several times a second.
-  }, [overlays.routeMap, sim.updateSettings, sim.settings.speed]);
+  }, [overlays.routeMap, sim.settings.speed, sim.updateSettings]);
 
   const lot = sim.lot;
 
-  // World-space positions of all parked cars, for DrivableCar collision.
-  // These useMemo hooks MUST run before the early return below to satisfy
-  // the Rules of Hooks (hooks can't be called conditionally / after a return).
   const parkedCarPositions = useMemo<ParkedCarPos[]>(() => {
     if (!lot) return [];
-    const out: ParkedCarPos[] = [];
-    for (const c of sim.preParked) {
-      const node = lot.nodes[c.slotNode];
+    const positions: ParkedCarPos[] = [];
+    for (const car of [...sim.preParked, ...sim.parked]) {
+      const node = lot.nodes[car.slotNode];
       if (!node) continue;
       const [x, y, z] = toWorld(node.x, node.y, node.floor);
-      out.push({ x, y, z });
+      positions.push({ x, y, z });
     }
-    for (const c of sim.parked) {
-      const node = lot.nodes[c.slotNode];
-      if (!node) continue;
-      const [x, y, z] = toWorld(node.x, node.y, node.floor);
-      out.push({ x, y, z });
-    }
-    return out;
-  }, [sim.preParked, sim.parked, lot]);
+    return positions;
+  }, [lot, sim.preParked, sim.parked]);
 
-  // Instanced parked-car placements (pre-parked + newly parked). Computes the
-  // nose-in rotation (±π/2) per slot so ParkedCarField can bake it into each
-  // instance matrix. Fed to a single <ParkedCarField> for ~18 draw calls total
-  // instead of one cloned GLTF per car.
   const parkedCars = useMemo<ParkedCarInstance[]>(() => {
     if (!lot) return [];
-    const out: ParkedCarInstance[] = [];
-    const push = (c: { slotNode: string; color: import("./types").CarColor; size: import("./types").CarSize }) => {
-      const node = lot.nodes[c.slotNode];
+    const cars: ParkedCarInstance[] = [];
+    const add = (car: {
+      slotNode: string;
+      color: import("./types").CarColor;
+      size: import("./types").CarSize;
+    }) => {
+      const node = lot.nodes[car.slotNode];
       if (!node) return;
       const [x, y, z] = toWorld(node.x, node.y, node.floor);
-      // Nose-in: car faces the slot interior. Car front is +x at rotation 0,
-      // so +π/2 → -Z (-y), -π/2 → +Z (+y).
       const aisleY = Math.round(node.y / AISLE_SPACING) * AISLE_SPACING;
       const rotationY = node.y < aisleY ? Math.PI / 2 : -Math.PI / 2;
-      out.push({ slotNode: c.slotNode, color: c.color, size: c.size, position: [x, y + CAR_Y_OFFSET, z], rotationY });
+      cars.push({
+        slotNode: car.slotNode,
+        color: car.color,
+        size: car.size,
+        position: [x, y + CAR_Y_OFFSET, z],
+        rotationY,
+      });
     };
-    for (const c of sim.preParked) push(c);
-    for (const c of sim.parked) push(c);
-    return out;
-  }, [sim.preParked, sim.parked, lot]);
+    for (const car of sim.preParked) add(car);
+    for (const car of sim.parked) add(car);
+    return cars;
+  }, [lot, sim.preParked, sim.parked]);
 
-  // Route panel view-model: the sim speaks in colour names, the panel wants
-  // hex it can drop straight into an SVG fill.
   const routePanelCars = useMemo<RoutePanelCar[]>(
-    () => sim.carRoutes.map((r) => ({ ...r, color: COLOR_HEX[r.color] })),
+    () => sim.carRoutes.map((route) => ({ ...route, color: COLOR_HEX[route.color] })),
     [sim.carRoutes],
   );
-
-  // Road centerline segments for DrivableCar road-edge clamping.
   const roadSegments = useMemo(() => (lot ? buildRoadSegments(lot) : []), [lot]);
 
-  if (sim.loading || !sim.lot) {
+  if (sim.loading) return <LoadingScreen />;
+  if (sim.error || !lot) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-[#0a0b0e] text-neutral-300">
-        <span className="text-sm font-semibold tracking-[0.18em] text-neutral-400">
-          LOADING
-        </span>
+      <div className="flex h-full w-full items-center justify-center bg-[#0a0b0e] px-6 text-center">
+        <div className="max-w-md rounded-lg border border-red-500/30 bg-black/60 p-5">
+          <div className="text-sm font-semibold text-red-300">GARAGE COULD NOT START</div>
+          <p className="mt-2 text-xs leading-relaxed text-neutral-400">
+            {sim.error ?? "The garage layout is unavailable."}
+          </p>
+          <button
+            type="button"
+            className="mt-4 rounded border border-neutral-700 px-3 py-1.5 text-xs font-semibold text-neutral-200 hover:border-neutral-500"
+            onClick={() => window.location.reload()}
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
@@ -168,23 +152,19 @@ export function App() {
         nodeSigns={overlays.boardGuidance ? sim.nodeSigns : EMPTY_SIGNS}
       >
         <Suspense fallback={<SceneLoadingFallback />}>
-          {/* All parked cars (pre-parked decoration + newly parked) rendered
-              as one instanced field — ~18 draw calls instead of ~400. */}
           <ParkedCarField cars={parkedCars} />
-          {/* Active cars (moving through the lot) */}
-          {sim.activeCars.map((c) => (
+          {sim.activeCars.map((car) => (
             <ActiveCarMesh
-              key={c.id}
-              car={c}
-              lot={lot!}
+              key={car.id}
+              car={car}
+              lot={lot}
               onArrive={sim.onArrive}
               carGroupsRef={carGroupsRef}
             />
           ))}
-          {/* Player-drivable car (WASD) — in POV or Drive mode */}
           {(cameraMode === "pov" || cameraMode === "drive") && (
             <DrivableCar
-              lot={lot!}
+              lot={lot}
               carGroupsRef={carGroupsRef}
               speedRef={playerSpeedRef}
               parkedCars={parkedCarPositions}
@@ -195,17 +175,12 @@ export function App() {
         </Suspense>
       </Scene>
 
-      {/* HUD overlay */}
       <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-4">
-        {/* Top bar — panel for readability over 3D scene */}
         <div className="flex items-start justify-between">
           <div className="rounded-lg border border-neutral-800 bg-black/60 px-3 py-2 backdrop-blur-sm">
             <div className="text-lg font-semibold tracking-tight text-white">ParCoar</div>
-            <div className="text-xs text-neutral-400">
-              Parking guidance simulator
-            </div>
+            <div className="text-xs text-neutral-400">Parking guidance simulator</div>
           </div>
-
           <div
             className={
               "flex flex-col items-end gap-1 rounded-lg border border-neutral-800 bg-black/60 px-3 py-2 text-[11px] backdrop-blur-sm " +
@@ -222,7 +197,6 @@ export function App() {
           </div>
         </div>
 
-        {/* Bottom bar */}
         <div className="flex items-end justify-between">
           <div className="flex items-center gap-3">
             {cameraMode === "pov" || cameraMode === "drive" ? (
@@ -246,43 +220,30 @@ export function App() {
                   (overlays.helpText ? "" : "hidden")
                 }
               >
-                <span>
-                  <span className="text-neutral-200">Click</span> to capture mouse
-                </span>
-                <span>
-                  <span className="text-neutral-200">W A S D</span> move
-                </span>
-                <span>
-                  <span className="text-neutral-200">Space / Shift</span> up, down
-                </span>
-                <span>
-                  <span className="text-neutral-200">Ctrl</span> boost
-                </span>
-                <span>
-                  <span className="text-neutral-200">Scroll</span> fly forward
-                </span>
+                <span><span className="text-neutral-200">Click</span> capture mouse</span>
+                <span><span className="text-neutral-200">W A S D</span> move</span>
+                <span><span className="text-neutral-200">Space / Shift</span> up, down</span>
+                <span><span className="text-neutral-200">Ctrl</span> boost</span>
+                <span><span className="text-neutral-200">Scroll</span> fly forward</span>
               </div>
             )}
             <button
               type="button"
               onClick={() => controlsRef.current?.reset()}
-              className="pointer-events-auto rounded border border-neutral-700 bg-black/70 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-neutral-200 transition-colors hover:border-neutral-500 hover:text-white"
+              className="pointer-events-auto rounded border border-neutral-700 bg-black/70 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-neutral-200 hover:border-neutral-500 hover:text-white"
             >
               Reset View
             </button>
           </div>
           {sim.lotFull && (
             <div className="rounded-md border border-red-500/60 bg-black/80 px-3 py-1.5 text-[12px] font-semibold tracking-wide text-red-400">
-              LOT FULL
+              NO FREE BAY
             </div>
           )}
         </div>
       </div>
 
-      {/* Live route panel: the graph the Python backend searched, with the
-          selected car's path lit up. Hidden in the driving modes, where the
-          bottom-left corner belongs to the driving HUD. */}
-      {overlays.routeMap && cameraMode !== "pov" && cameraMode !== "drive" && lot && (
+      {overlays.routeMap && cameraMode !== "pov" && cameraMode !== "drive" && (
         <RoutePanel
           lot={lot}
           cars={routePanelCars}
@@ -306,7 +267,6 @@ export function App() {
         parkedCount={parkedCount}
       />
 
-      {/* Camera mode controls (bottom-center). */}
       <CameraControls
         mode={cameraMode}
         onModeChange={setCameraMode}
@@ -318,7 +278,14 @@ export function App() {
   );
 }
 
-/** Camera mode buttons + car selector for follow/POV. */
+function LoadingScreen() {
+  return (
+    <div className="flex h-full w-full items-center justify-center bg-[#0a0b0e] text-neutral-300">
+      <span className="text-sm font-semibold tracking-[0.18em] text-neutral-400">LOADING</span>
+    </div>
+  );
+}
+
 function CameraControls({
   mode,
   onModeChange,
@@ -327,7 +294,7 @@ function CameraControls({
   activeCars,
 }: {
   mode: CameraMode;
-  onModeChange: (m: CameraMode) => void;
+  onModeChange: (mode: CameraMode) => void;
   followCarId: string | null;
   onFollowCarChange: (id: string | null) => void;
   activeCars: { id: string; color: import("./types").CarColor; plate: string }[];
@@ -342,53 +309,42 @@ function CameraControls({
     { id: "pov", label: "POV" },
     { id: "drive", label: "Drive" },
   ];
-  const showCarPicker = mode === "follow";
 
   return (
-    <div className="pointer-events-none absolute bottom-16 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
+    <div className="pointer-events-none absolute bottom-16 left-1/2 flex -translate-x-1/2 flex-col items-center gap-2">
       <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1 rounded-lg border border-neutral-800 bg-black/80 p-1 backdrop-blur-sm">
-        {buttons.map((b, i) => {
-          const active = mode === b.id;
-          // Add dividers between groups: after Overview (index 1), after Floor C (index 4)
-          const showDivider = i === 2 || i === 5;
-          return (
-            <div key={b.id} className="flex items-center">
-              {showDivider && <div className="mx-0.5 h-6 w-px bg-neutral-600" />}
-              <button
-                key={b.id}
-                type="button"
-                onClick={() => onModeChange(b.id)}
-                className={
-                  "rounded-md px-2.5 py-1 text-[11px] font-semibold tracking-wide transition-colors " +
-                  (active
-                    ? "bg-white/20 text-white ring-2 ring-white/40"
-                    : "text-neutral-400 hover:text-neutral-100")
-                }
-              >
-                {b.label}
-              </button>
-            </div>
-          );
-        })}
+        {buttons.map((button, index) => (
+          <div key={button.id} className="flex items-center">
+            {(index === 2 || index === 5) && <div className="mx-0.5 h-6 w-px bg-neutral-600" />}
+            <button
+              type="button"
+              onClick={() => onModeChange(button.id)}
+              className={
+                "rounded-md px-2.5 py-1 text-[11px] font-semibold tracking-wide transition-colors " +
+                (mode === button.id
+                  ? "bg-white/20 text-white ring-2 ring-white/40"
+                  : "text-neutral-400 hover:text-neutral-100")
+              }
+            >
+              {button.label}
+            </button>
+          </div>
+        ))}
       </div>
 
-      {showCarPicker && (
+      {mode === "follow" && (
         <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-neutral-800 bg-black/80 px-2 py-1 backdrop-blur-sm">
-          <span className="text-[11px] font-semibold tracking-wide text-neutral-500">
-            CAR
-          </span>
+          <span className="text-[11px] font-semibold tracking-wide text-neutral-500">CAR</span>
           {activeCars.length === 0 ? (
             <span className="text-[11px] text-neutral-500">none active</span>
           ) : (
             <select
               value={followCarId ?? ""}
-              onChange={(e) => onFollowCarChange(e.target.value || null)}
+              onChange={(event: { target: { value: string } }) => onFollowCarChange(event.target.value || null)}
               className="bg-transparent text-[11px] font-medium text-neutral-100 outline-none [&>option]:bg-neutral-900"
             >
-              {activeCars.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.plate} · {c.color}
-                </option>
+              {activeCars.map((car) => (
+                <option key={car.id} value={car.id}>{car.plate} · {car.color}</option>
               ))}
             </select>
           )}
@@ -396,7 +352,9 @@ function CameraControls({
             <span
               className="inline-block h-2 w-2 rounded-full"
               style={{
-                backgroundColor: COLOR_HEX[activeCars.find((c) => c.id === followCarId)?.color ?? "white"],
+                backgroundColor: COLOR_HEX[
+                  activeCars.find((car) => car.id === followCarId)?.color ?? "white"
+                ],
               }}
             />
           )}
@@ -415,18 +373,8 @@ function StatusRow({
   value: string;
   tone: "ok" | "bad" | "neutral";
 }) {
-  const color =
-    tone === "ok"
-      ? "text-emerald-400"
-      : tone === "bad"
-        ? "text-red-400"
-        : "text-neutral-300";
-  const dot =
-    tone === "ok"
-      ? "bg-emerald-400"
-      : tone === "bad"
-        ? "bg-red-400"
-        : "bg-neutral-600";
+  const color = tone === "ok" ? "text-emerald-400" : tone === "bad" ? "text-red-400" : "text-neutral-300";
+  const dot = tone === "ok" ? "bg-emerald-400" : tone === "bad" ? "bg-red-400" : "bg-neutral-600";
   return (
     <div className="flex items-center gap-2">
       <span className={`inline-block h-1.5 w-1.5 rounded-full ${dot}`} />
