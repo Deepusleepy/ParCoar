@@ -2,12 +2,10 @@
 
 import heapq
 import json
-import os
 from websockets.sync.server import serve
+from generate_lot import build_lot
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-with open(os.path.join(HERE, "..", "shared", "lot.json"), encoding="utf-8") as file:
-    lot = json.load(file)
+lot = build_lot()
 
 nodes = lot["nodes"]
 edges = lot["edges"]
