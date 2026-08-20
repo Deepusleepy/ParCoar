@@ -1,5 +1,6 @@
 {
   "name": "parcoar-frontend",
+  "description": "3D front end for ParCoar: the garage, the cars, the overhead signs and the camera.",
   "private": true,
   "version": "0.1.0",
   "type": "module",
