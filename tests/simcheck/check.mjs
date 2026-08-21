@@ -8,6 +8,10 @@
  *
  *   node tests/simcheck/check.mjs [url] [seconds]
  *
+ * SIMCHECK_DURATION_MS sets the soak length in milliseconds without needing
+ * the positional argument (CI uses it for a shorter run than a human would
+ * sit through); the positional seconds still override it.
+ *
  * Exit code 0 means every invariant held. Non-zero means at least one broke,
  * and the offending samples are printed.
  *
@@ -23,7 +27,10 @@
 import { chromium } from "playwright";
 
 const URL = process.argv[2] ?? "http://localhost:5180/";
-const SECONDS = Number(process.argv[3] ?? 180);
+/** Soak length. SIMCHECK_DURATION_MS replaces the 180s default; a garbage or
+ *  zero value falls back to the default rather than sampling for NaN ms. */
+const ENV_MS = Number(process.env.SIMCHECK_DURATION_MS ?? 180000);
+const SECONDS = Number(process.argv[3] ?? (Number.isFinite(ENV_MS) && ENV_MS > 0 ? ENV_MS / 1000 : 180));
 
 /* --- Invariants ---------------------------------------------------- */
 
@@ -60,6 +67,15 @@ const MAX_VERTICAL_STEP = 1.5;
 /** Every car on the road should pass at least one guidance board, or the
  *  garage is not demonstrating anything. */
 const MIN_CARS_WITH_GUIDANCE_FRACTION = 0.9;
+/** Vacuous-pass guard. Car detection depends on /wheel/i still matching a mesh
+ *  inside every car group. If that ever stops matching, every frame comes back
+ *  empty and all of the physical checks pass without having looked at a single
+ *  car — the same "clean garage, bug fully present" lie the pause threshold
+ *  once told. The sim state publishes independently of the scene graph, so it
+ *  can witness whether cars actually existed: when the sim says the road was
+ *  busy for most of the run and the sampler saw poses in fewer than this
+ *  fraction of frames, the gate was blind and must say so. */
+const MIN_FRAMES_WITH_CARS_FRACTION = 0.2;
 
 const browser = await chromium.launch({
   headless: true,
@@ -119,6 +135,25 @@ await browser.close();
 
 const failures = [];
 const note = (name, detail) => failures.push({ name, detail });
+
+// Blind-run guard. The scene graph and the sim state come from different code
+// paths, so one going quiet does not mean the other did. A run with no frames
+// at all checked nothing; a run where the sim kept reporting cars but the
+// frames stayed empty means the /wheel/i matcher no longer finds the car
+// meshes, and every physical check below would pass without seeing anything.
+if (frames.length === 0) {
+  note("no frames were captured", "the scene sampler never ran; nothing physical was checked");
+} else {
+  const withCars = frames.filter((f) => f.frame.length > 0).length;
+  const activeStates = states.filter((s) => s.cars.length > 0).length;
+  const simBusy = states.length > 0 && activeStates / states.length > 0.5;
+  if (simBusy && withCars / frames.length < MIN_FRAMES_WITH_CARS_FRACTION) {
+    note("the sampler saw no car poses while the sim reported active cars",
+      `${withCars}/${frames.length} frames had any pose across ` +
+      `${activeStates}/${states.length} car-occupied state samples; ` +
+      "no mesh in any car group matches /wheel/i anymore, most likely a rename");
+  }
+}
 
 // Physical: per-car motion between frames.
 const byCar = new Map();
@@ -280,6 +315,7 @@ console.log(JSON.stringify({
   seconds: SECONDS,
   carsSeen: carsSeen.size,
   frames: frames.length,
+  framesWithCarPoses: frames.filter((f) => f.frame.length > 0).length,
   longestPauseMs: pauseMs.length ? pauseMs[pauseMs.length - 1] : 0,
   medianPauseMs: pauseMs.length ? pauseMs[Math.floor(pauseMs.length / 2)] : 0,
   pausesOverThresholdWithClearRoad: longPauses.length,
