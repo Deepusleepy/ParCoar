@@ -30,7 +30,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat tools/driving_payload_v2/part-* > /tmp/driving-overhaul.b64
+          cat \
+            tools/driving_payload_v2/part-000 \
+            tools/driving_payload_v2/part-001 \
+            tools/driving_payload_v2/part-002 \
+            tools/driving_payload_v2/part-003 \
+            tools/driving_payload_v2/part-004 \
+            tools/driving_payload_v2/part-005 \
+            tools/driving_payload_v2/part-006 \
+            tools/driving_payload_v2/part-007 \
+            tools/driving_payload_v2/part-008 \
+            tools/driving_payload_v2/part-009 \
+            tools/driving_payload_v2/part-010 \
+            > /tmp/driving-overhaul.b64
           base64 --decode /tmp/driving-overhaul.b64 > /tmp/driving-overhaul.tar.gz
           echo '920929862107bc95b4a2978ab1467dbd66c52f45ae1e4257fa56c4b72afde360  /tmp/driving-overhaul.tar.gz' | sha256sum -c -
           tar -xzf /tmp/driving-overhaul.tar.gz -C .
