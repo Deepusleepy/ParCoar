@@ -1,9 +1,9 @@
 name: Apply driving overhaul v2
 
 on:
-  push:
+  pull_request:
     branches:
-      - work/driving-overhaul-v2
+      - main
 
 permissions:
   contents: write
@@ -47,5 +47,3 @@ jobs:
           git add README.md backend shared frontend/public/lot.json frontend/src tests/README.md tests/simcheck
           git commit -m 'feat: rebuild manual driving and POV mode'
           git push origin HEAD:work/driving-overhaul-v2
-
-# trigger after workflow registration
