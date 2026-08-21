@@ -1,0 +1,49 @@
+name: Apply driving overhaul v2
+
+on:
+  push:
+    branches:
+      - work/driving-overhaul-v2
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/driving-overhaul-v2
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Apply verified source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode tools/driving-overhaul.tar.gz.b64 > /tmp/driving-overhaul.tar.gz
+          echo '920929862107bc95b4a2978ab1467dbd66c52f45ae1e4257fa56c4b72afde360  /tmp/driving-overhaul.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/driving-overhaul.tar.gz -C .
+          rm -f frontend/src/sim/roadSegments.ts frontend/src/sim/roadSegments.test.ts
+
+          python backend/generate_lot.py
+          python -m pip install -r backend/requirements.txt
+          python -m unittest discover -s tests -t . -v
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+          npm test --prefix frontend
+          git diff --exit-code shared/lot.json frontend/public/lot.json
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md backend shared frontend/public/lot.json frontend/src tests/README.md tests/simcheck
+          git commit -m 'feat: rebuild manual driving and POV mode'
+          git push origin HEAD:work/driving-overhaul-v2
