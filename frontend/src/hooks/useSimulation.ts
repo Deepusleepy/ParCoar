@@ -2,23 +2,27 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ActiveCar,
   BoardCar,
-  CarColor,
   CarRoute,
-  Direction,
   InstructionSign,
   InstructionsMessage,
   LotData,
-  LotEdge,
   NodeSign,
   ServerMessage,
   StateMessage,
 } from "../types";
-import { resolvePath } from "../sim/paths";
+import {
+  directionAt,
+  isRoadBlocked,
+  nextNodeForDirection,
+  nodeGap,
+} from "../sim/traffic";
+import {
+  generatePreParked,
+  type GarageFill,
+  type ParkedCarData,
+} from "../sim/fill";
 import { setSpeedScale } from "../sim/simSpeed";
 import {
-  AISLE_SPACING,
-  CAR_LENGTH,
-  FLOOR_HEIGHT,
   nextCarId,
   randomColor,
   randomPlate,
@@ -36,37 +40,7 @@ const MAX_STAY_MS = 90_000;
 const DEV_PUBLISH_MS = 50;
 const BOARD_ROWS = 3;
 
-export type GarageFill = "quiet" | "normal" | "busy";
-
-const FILL_PRESETS: Record<GarageFill, Record<number, [number, number]>> = {
-  quiet: {
-    0: [0.7, 0.3],
-    1: [0.5, 0.08],
-    2: [0.3, 0.02],
-  },
-  normal: {
-    0: [0.995, 0.93],
-    1: [0.98, 0.3],
-    2: [0.75, 0.05],
-  },
-  busy: {
-    0: [0.999, 0.985],
-    1: [0.995, 0.82],
-    2: [0.95, 0.4],
-  },
-};
-const DEFAULT_FILL: [number, number] = [0.8, 0.1];
-
-export interface ParkedCarData {
-  key: string;
-  slotNode: string;
-  color: CarColor;
-  plate: string;
-  /** Visual model only. It is not sent to Python or used for assignment. */
-  size: ActiveCar["size"];
-  parkedAt?: number;
-  stayMs?: number;
-}
+export type { GarageFill, ParkedCarData } from "../sim/fill";
 
 export interface SimSettings {
   targetCars: number;
@@ -101,173 +75,6 @@ export interface SimulationState {
   spawnNow: () => void;
   clearRoad: () => void;
   resetGarage: () => void;
-}
-
-function directionAt(lot: LotData, route: string[], hop: number): Direction {
-  if (hop + 1 >= route.length) return "arrived";
-  const edge = lot.edges[route[hop]]?.find((candidate) => candidate.to === route[hop + 1]);
-  return edge?.dir ?? "arrived";
-}
-
-/** Real path length used only by the frontend's collision/queue safety gate. */
-const legLengthCache = new Map<string, number>();
-function legLength(lot: LotData, fromId: string, toId: string): number {
-  const key = `${fromId}>${toId}`;
-  const cached = legLengthCache.get(key);
-  if (cached !== undefined) return cached;
-  const from = lot.nodes[fromId];
-  const to = lot.nodes[toId];
-  let length = 0;
-  if (from && to) {
-    const points = resolvePath(from, to, lot);
-    for (let index = 1; index < points.length; index += 1) {
-      length += points[index].distanceTo(points[index - 1]);
-    }
-  }
-  if (!(length > 1e-6)) length = nodeGap(lot, fromId, toId);
-  legLengthCache.set(key, length);
-  return length;
-}
-
-function nodeGap(lot: LotData, first: string, second: string): number {
-  const a = lot.nodes[first];
-  const b = lot.nodes[second];
-  if (!a || !b) return Infinity;
-  return Math.hypot(a.x - b.x, a.y - b.y, (a.floor - b.floor) * FLOOR_HEIGHT);
-}
-
-function roadDirection(lot: LotData, fromId: string, toId: string): 1 | -1 | null {
-  const from = lot.nodes[fromId];
-  const to = lot.nodes[toId];
-  if (!from || !to || fromId === toId || from.type === "slot" || to.type === "slot") {
-    return null;
-  }
-
-  const turn = from.type === "turn" ? from : to.type === "turn" ? to : null;
-  if (turn) {
-    const other = from.type === "turn" ? to : from;
-    const fromIsTurn = from.type === "turn";
-    const otherIsNear = Math.abs(other.y - turn.y) < 0.01;
-    return fromIsTurn === otherIsNear ? -1 : 1;
-  }
-
-  if (from.type === "ramp_up" && to.type === "ramp_in") return 1;
-  if (from.type === "ramp_in" && to.type === "ramp_up") return -1;
-  if (from.type === "ramp_up" || to.type === "ramp_up") return to.type === "ramp_up" ? 1 : -1;
-  if (from.type === "ramp_in" || to.type === "ramp_in") return from.type === "ramp_in" ? 1 : -1;
-
-  const dx = to.x - from.x;
-  if (Math.abs(dx) > 0.01) {
-    const aisle = Math.round(((from.y + to.y) / 2) / AISLE_SPACING);
-    const originalDirection = aisle % 2 === 0 ? 1 : -1;
-    return dx * originalDirection > 0 ? 1 : -1;
-  }
-  return to.floor > from.floor ? 1 : -1;
-}
-
-function carRoadDirection(
-  lot: LotData,
-  car: ActiveCar,
-  instructions: Map<string, InstructionSign>,
-): 1 | -1 | null {
-  let target = car.toNode;
-  if (target === car.fromNode) {
-    const instruction = instructions.get(car.id);
-    target = instruction?.node === car.fromNode ? instruction.path[1] ?? target : target;
-  }
-  return roadDirection(lot, car.fromNode, target);
-}
-
-/**
- * Traffic safety only: stop a car entering a physically occupied lane segment.
- * This does not influence Python's bay selection or calculate alternate routes.
- */
-function isRoadBlocked(
-  lot: LotData,
-  cars: ActiveCar[],
-  self: ActiveCar,
-  node: string,
-  beyond: string | undefined,
-  instructions: Map<string, InstructionSign>,
-): boolean {
-  const direction = roadDirection(lot, self.fromNode, node);
-  const blocks = (other: ActiveCar, target: string) => {
-    if (other === self || other.parked) return false;
-    if (other.fromNode !== target && other.toNode !== target) return false;
-    if (lot.nodes[target]?.type === "slot") return true;
-
-    if (other.fromNode === target && other.toNode !== target) {
-      const length = legLength(lot, other.fromNode, other.toNode);
-      if (other.progress * length > CAR_LENGTH * 1.5) return false;
-    }
-
-    if (other.toNode === target && other.fromNode !== target) {
-      const length = legLength(lot, other.fromNode, other.toNode);
-      if (other.fromNode === self.fromNode) {
-        if (other.progress * length > CAR_LENGTH * 1.6) return false;
-      } else if ((1 - other.progress) * length > CAR_LENGTH * 2) {
-        return false;
-      }
-    }
-
-    const otherDirection = carRoadDirection(lot, other, instructions);
-    return direction === null || otherDirection === null || direction === otherDirection;
-  };
-
-  if (cars.some((other) => blocks(other, node))) return true;
-  if (!beyond || lot.nodes[node]?.type === "slot" || nodeGap(lot, node, beyond) > CAR_LENGTH) {
-    return false;
-  }
-  return cars.some((other) => blocks(other, beyond));
-}
-
-function nextNodeForDirection(
-  lot: LotData,
-  fromNode: string,
-  direction: LotEdge["dir"],
-): string | null {
-  return lot.edges[fromNode]?.find((edge) => edge.dir === direction)?.to ?? null;
-}
-
-function generatePreParked(lot: LotData, fillLevel: GarageFill = "normal"): ParkedCarData[] {
-  const slots = Object.entries(lot.nodes)
-    .filter(([, node]) => node.type === "slot")
-    .sort(([, a], [, b]) => {
-      if (a.floor !== b.floor) return a.floor - b.floor;
-      const aisleA = Math.round(a.y / AISLE_SPACING);
-      const aisleB = Math.round(b.y / AISLE_SPACING);
-      if (aisleA !== aisleB) return aisleA - aisleB;
-      const travel = aisleA % 2 === 0 ? 1 : -1;
-      if (a.x !== b.x) return (a.x - b.x) * travel;
-      return a.y - b.y;
-    });
-
-  const rankInFloor = new Map<string, number>();
-  const totals = new Map<number, number>();
-  for (const [id, node] of slots) {
-    const rank = totals.get(node.floor) ?? 0;
-    rankInFloor.set(id, rank);
-    totals.set(node.floor, rank + 1);
-  }
-
-  const cars: ParkedCarData[] = [];
-  for (let index = 0; index < slots.length; index += 1) {
-    const [id, node] = slots[index];
-    const total = totals.get(node.floor) ?? 1;
-    const depth = total > 1 ? (rankInFloor.get(id) ?? 0) / (total - 1) : 0;
-    const [start, end] = FILL_PRESETS[fillLevel][node.floor] ?? DEFAULT_FILL;
-    const fill = start + (end - start) * depth;
-    const noise = ((index * 2654435761) >>> 0) / 4294967296;
-    if (noise >= fill) continue;
-    cars.push({
-      key: `pre-${id}`,
-      slotNode: id,
-      color: randomColor(),
-      plate: randomPlate(),
-      size: randomSize(),
-    });
-  }
-  return cars;
 }
 
 function spawnCar(): ActiveCar {
