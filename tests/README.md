@@ -30,4 +30,7 @@ node tests/simcheck/check.mjs
 ```
 
 This opens the simulator in a real browser and checks for stuck cars, overlaps,
-jumps, unexpected reversals, mid-route reassignment and missing guidance.
+jumps, unexpected reversals, mid-route reassignment and missing guidance. It
+needs the frontend dev server rather than `vite preview`: the sim-state
+publisher it reads only runs in dev builds. See [simcheck](simcheck) for the
+invariants, the `SIMCHECK_DURATION_MS` override and the blind-run guard.
