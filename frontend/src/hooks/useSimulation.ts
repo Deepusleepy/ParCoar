@@ -24,6 +24,8 @@ import {
 import { setSpeedScale } from "../sim/simSpeed";
 import {
   nextCarId,
+  PLAYER_ID,
+  PLAYER_PLATE,
   randomColor,
   randomPlate,
   randomSize,
@@ -39,6 +41,8 @@ const MIN_STAY_MS = 30_000;
 const MAX_STAY_MS = 90_000;
 const DEV_PUBLISH_MS = 50;
 const BOARD_ROWS = 3;
+/** After the drivable car reaches the exit, respawn it at the entry. */
+const PLAYER_RESPAWN_DELAY_MS = 2500;
 
 export type { GarageFill, ParkedCarData } from "../sim/fill";
 
@@ -69,12 +73,26 @@ export interface SimulationState {
   lotFull: boolean;
   nodeSigns: NodeSign[];
   carRoutes: CarRoute[];
+  /** True while the drivable car is in the garage as a participant. */
+  playerDriving: boolean;
+  /**
+   * Bumped every time the drivable car should teleport back to its spawn
+   * (entering the garage, respawn after exiting, garage reset). The car
+   * component watches this to reset its physics.
+   */
+  playerRunId: number;
   onArrive: (carId: string, node: string) => void;
   settings: SimSettings;
   updateSettings: (patch: Partial<SimSettings>) => void;
   spawnNow: () => void;
   clearRoad: () => void;
   resetGarage: () => void;
+  enterCar: () => void;
+  exitCar: () => void;
+  /** Report the graph node the drivable car is physically at. */
+  reportPlayerNode: (nodeId: string) => void;
+  /** Leave the assigned bay and follow guidance to the exit. */
+  playerLeaveBay: () => void;
 }
 
 function spawnCar(): ActiveCar {
@@ -111,6 +129,26 @@ function departCar(car: ParkedCarData): ActiveCar {
   };
 }
 
+/** The drivable car enters the garage like any other car: same wire format,
+ *  same assignment, its plate ("YOU") on the overhead boards. */
+function spawnPlayerCar(): ActiveCar {
+  return {
+    id: PLAYER_ID,
+    player: true,
+    color: "red",
+    plate: PLAYER_PLATE,
+    size: "large",
+    fromNode: ENTRY_NODE,
+    toNode: ENTRY_NODE,
+    progress: 0,
+    slot: null,
+    status: "routing",
+    parked: false,
+    leaving: false,
+    vacating: null,
+  };
+}
+
 export function useSimulation(): SimulationState {
   const [lot, setLot] = useState<LotData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -123,6 +161,8 @@ export function useSimulation(): SimulationState {
   const [settings, setSettings] = useState<SimSettings>(DEFAULT_SETTINGS);
   const [nodeSigns, setNodeSigns] = useState<NodeSign[]>([]);
   const [carRoutes, setCarRoutes] = useState<CarRoute[]>([]);
+  const [playerDriving, setPlayerDriving] = useState(false);
+  const [playerRunId, setPlayerRunId] = useState(0);
 
   const settingsRef = useRef(settings);
   const activeCarsRef = useRef<ActiveCar[]>([]);
@@ -136,6 +176,7 @@ export function useSimulation(): SimulationState {
   const lastRouteSignatureRef = useRef("");
   const nodeSignsRef = useRef<NodeSign[]>([]);
   const removalTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const playerRespawnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   settingsRef.current = settings;
   activeCarsRef.current = activeCars;
@@ -182,7 +223,7 @@ export function useSimulation(): SimulationState {
     if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
 
     const cars = activeCarsRef.current
-      .filter((car) => !car.parked)
+      .filter((car) => !car.parked || car.player)
       .map((car) => ({
         id: car.id,
         color: car.color,
@@ -200,6 +241,9 @@ export function useSimulation(): SimulationState {
     for (const car of parkedRef.current) occupiedSlots.add(car.slotNode);
     for (const car of activeCarsRef.current) {
       if (car.vacating && car.fromNode === car.vacating) occupiedSlots.add(car.vacating);
+      // The player's bay never enters the parked list, so report it occupied
+      // directly for as long as the player holds it.
+      if (car.player && car.parked && car.slot) occupiedSlots.add(car.slot);
     }
 
     const message: StateMessage = {
@@ -232,6 +276,26 @@ export function useSimulation(): SimulationState {
       const instruction = map.get(car.id);
       if (!instruction) continue;
       if (instruction.node !== car.fromNode || car.toNode !== car.fromNode) continue;
+
+      // The drivable car is a participant but not a puppet: guidance is
+      // recorded for the HUD and boards, while its position stays physical.
+      // It is never moved by instructions, never evicted on failure, and
+      // never converted into a static parked car.
+      if (car.player) {
+        if (instruction.status === "parked") {
+          car.status = "parked";
+          car.parked = true;
+          car.slot = instruction.slot ?? car.fromNode;
+          changed = true;
+        } else if (instruction.status === "left") {
+          car.vacating = null;
+          schedulePlayerRespawn();
+        } else {
+          car.slot = instruction.slot ?? car.slot;
+          car.status = instruction.status;
+        }
+        continue;
+      }
 
       if (instruction.status === "no_slot" || instruction.status === "no_path") {
         if (car.status === instruction.status) continue;
@@ -313,8 +377,8 @@ export function useSimulation(): SimulationState {
 
       const gone = new Set(departed);
       setActiveCars((current) =>
-        current.some((car) => car.parked || gone.has(car.id))
-          ? current.filter((car) => !car.parked && !gone.has(car.id))
+        current.some((car) => (car.parked && !car.player) || gone.has(car.id))
+          ? current.filter((car) => (!car.parked || car.player) && !gone.has(car.id))
           : current,
       );
     }
@@ -388,6 +452,7 @@ export function useSimulation(): SimulationState {
         routeDistance: instruction.route_distance,
         estimatedSeconds: instruction.estimated_seconds,
         destinationType: instruction.destination_type,
+        nextDirection: instruction.next_direction,
       });
     }
     const routeSignature = routes
@@ -508,9 +573,14 @@ export function useSimulation(): SimulationState {
     if (!lot) return;
     const interval = setInterval(() => {
       const now = Date.now();
-      const incomingCount = activeCarsRef.current.filter((car) => !car.leaving).length;
+      const incomingCount = activeCarsRef.current.filter(
+        (car) => !car.leaving && !car.player,
+      ).length;
       const entryBlocked = activeCarsRef.current.some(
-        (car) => car.fromNode === ENTRY_NODE && car.toNode === ENTRY_NODE,
+        (car) =>
+          !car.player &&
+          car.fromNode === ENTRY_NODE &&
+          car.toNode === ENTRY_NODE,
       );
       const current = settingsRef.current;
       if (current.speed === 0) return;
@@ -536,7 +606,7 @@ export function useSimulation(): SimulationState {
     const interval = setInterval(() => {
       const current = settingsRef.current;
       if (current.speed === 0) return;
-      const leavingCount = activeCarsRef.current.filter((car) => car.leaving).length;
+      const leavingCount = activeCarsRef.current.filter((car) => car.leaving && !car.player).length;
       if (leavingCount >= current.maxLeaving) return;
 
       const now = Date.now();
@@ -563,7 +633,10 @@ export function useSimulation(): SimulationState {
   const spawnNow = useCallback(() => {
     if (
       activeCarsRef.current.some(
-        (car) => car.fromNode === ENTRY_NODE && car.toNode === ENTRY_NODE,
+        (car) =>
+          !car.player &&
+          car.fromNode === ENTRY_NODE &&
+          car.toNode === ENTRY_NODE,
       )
     ) {
       return;
@@ -572,19 +645,108 @@ export function useSimulation(): SimulationState {
     lastSpawnRef.current = Date.now();
   }, []);
 
+  /** Reset the drivable car to the entry approach and bump the run id so the
+   *  3D car teleports and zeroes its physics. */
+  const respawnPlayer = useCallback(() => {
+    setActiveCars((current) =>
+      current.map((car) =>
+        car.player
+          ? {
+              ...car,
+              fromNode: ENTRY_NODE,
+              toNode: ENTRY_NODE,
+              progress: 0,
+              slot: null,
+              status: "routing",
+              parked: false,
+              leaving: false,
+              vacating: null,
+            }
+          : car,
+      ),
+    );
+    setPlayerRunId((runId) => runId + 1);
+  }, []);
+
+  const schedulePlayerRespawn = useCallback(() => {
+    if (playerRespawnTimerRef.current) clearTimeout(playerRespawnTimerRef.current);
+    playerRespawnTimerRef.current = setTimeout(() => {
+      playerRespawnTimerRef.current = null;
+      respawnPlayer();
+    }, PLAYER_RESPAWN_DELAY_MS);
+  }, [respawnPlayer]);
+
+  const enterCar = useCallback(() => {
+    setActiveCars((current) =>
+      current.some((car) => car.player) ? current : [...current, spawnPlayerCar()],
+    );
+    setPlayerDriving(true);
+    setPlayerRunId((runId) => runId + 1);
+  }, []);
+
+  const exitCar = useCallback(() => {
+    if (playerRespawnTimerRef.current) {
+      clearTimeout(playerRespawnTimerRef.current);
+      playerRespawnTimerRef.current = null;
+    }
+    instructionsRef.current.delete(PLAYER_ID);
+    setActiveCars((current) => current.filter((car) => !car.player));
+    setPlayerDriving(false);
+  }, []);
+
+  const reportPlayerNode = useCallback((nodeId: string) => {
+    setActiveCars((current) =>
+      current.map((car) => {
+        if (!car.player || car.fromNode === nodeId) return car;
+        return { ...car, fromNode: nodeId, toNode: nodeId };
+      }),
+    );
+  }, []);
+
+  const playerLeaveBay = useCallback(() => {
+    let requested = false;
+    setActiveCars((current) =>
+      current.map((car) => {
+        if (!car.player || car.leaving) return car;
+        requested = true;
+        return {
+          ...car,
+          leaving: true,
+          parked: false,
+          vacating: car.slot ?? car.fromNode,
+          slot: null,
+          status: "routing",
+        };
+      }),
+    );
+    if (requested) sendState();
+  }, [sendState]);
+
   const clearRoad = useCallback(() => {
-    setActiveCars([]);
-    instructionsRef.current.clear();
+    // The drivable car survives a road clear; only the traffic goes.
+    setActiveCars((current) => current.filter((car) => car.player));
+    for (const id of [...instructionsRef.current.keys()]) {
+      if (id !== PLAYER_ID) instructionsRef.current.delete(id);
+    }
   }, []);
 
   const resetGarage = useCallback(() => {
     const current = lotRef.current;
     if (!current) return;
-    setActiveCars([]);
+    setActiveCars((cars) => cars.filter((car) => car.player));
     setParked([]);
     setPreParked(generatePreParked(current, settingsRef.current.fill));
-    instructionsRef.current.clear();
+    for (const id of [...instructionsRef.current.keys()]) {
+      if (id !== PLAYER_ID) instructionsRef.current.delete(id);
+    }
     lastSpawnRef.current = Date.now();
+    respawnPlayer();
+  }, [respawnPlayer]);
+
+  useEffect(() => {
+    return () => {
+      if (playerRespawnTimerRef.current) clearTimeout(playerRespawnTimerRef.current);
+    };
   }, []);
 
   return {
@@ -598,11 +760,17 @@ export function useSimulation(): SimulationState {
     lotFull,
     nodeSigns,
     carRoutes,
+    playerDriving,
+    playerRunId,
     onArrive,
     settings,
     updateSettings,
     spawnNow,
     clearRoad,
     resetGarage,
+    enterCar,
+    exitCar,
+    reportPlayerNode,
+    playerLeaveBay,
   };
 }

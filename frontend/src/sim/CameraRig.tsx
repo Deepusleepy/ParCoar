@@ -75,6 +75,14 @@ const MOUSE_LOOK_SENSITIVITY = 0.0011;
 /** Pitch clamp: stop just shy of straight up/down so the view never flips. */
 const PITCH_LIMIT = Math.PI / 2 - 0.05;
 
+/** POV look-around range: how far the driver can turn their head. */
+const POV_YAW_LIMIT = Math.PI * 0.6;
+const POV_PITCH_LIMIT = Math.PI * 0.25;
+/** How much of the remaining view offset closes per second of movement. */
+const POV_RECENTER_SPEED = 0.25;
+/** Player speed above which the POV view starts re-centring (u/s). */
+const POV_RECENTER_MIN_SPEED = 2;
+
 /** Default vantage for Reset View: a high 3/4 aerial over the lot. */
 /** Where "Reset View" puts you: the same opening shot the app starts on. Keep
  *  this in step with `cameraPos` in Scene.tsx, or resetting moves you
@@ -154,6 +162,19 @@ export function CameraRig({
   // a car mode into free flight.
   const prevModeRef = useRef<CameraMode>(mode);
 
+  // POV look-around offsets (radians) applied in car space. While the pointer
+  // is locked the mouse steers them; they re-centre themselves once the car
+  // moves off, so looking back while reversing costs no keypresses.
+  const povYawOffsetRef = useRef(0);
+  const povPitchOffsetRef = useRef(0);
+  // Live mode mirror so event handlers read the current mode without
+  // rebinding every render.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  // Previous-frame player position, for measuring speed in the rig.
+  const prevPlayerPosRef = useRef(new THREE.Vector3());
+  const hasPrevPlayerPosRef = useRef(false);
+
   // Reusable temp vectors (avoid per-frame allocation).
   const tmpDir = useRef(new THREE.Vector3());
   const fwd = useRef(new THREE.Vector3());
@@ -166,6 +187,9 @@ export function CameraRig({
   const tmpUp = useRef(new THREE.Vector3());
   const tmpEuler = useRef(new THREE.Euler());
   const tmpQuat = useRef(new THREE.Quaternion());
+  const tmpQuatLook = useRef(new THREE.Quaternion());
+  /** Smoothed look target for the drive chase cam. */
+  const driveLookRef = useRef(new THREE.Vector3());
 
   /** Orient the free camera to look at `target`, deriving yaw/pitch from the
    *  direction vector. Uses the lookDir convention:
@@ -273,6 +297,21 @@ export function CameraRig({
     };
     const onPointerMove = (e: PointerEvent) => {
       if (locked()) {
+        if (modeRef.current === "pov") {
+          // Look around the cabin instead of flying: raw deltas steer the
+          // POV view offsets, clamped to a natural neck range.
+          povYawOffsetRef.current = THREE.MathUtils.clamp(
+            povYawOffsetRef.current - e.movementX * MOUSE_LOOK_SENSITIVITY,
+            -POV_YAW_LIMIT,
+            POV_YAW_LIMIT,
+          );
+          povPitchOffsetRef.current = THREE.MathUtils.clamp(
+            povPitchOffsetRef.current - e.movementY * MOUSE_LOOK_SENSITIVITY,
+            -POV_PITCH_LIMIT,
+            POV_PITCH_LIMIT,
+          );
+          return;
+        }
         // movementX/Y are raw deltas; there is no cursor position to track.
         yawRef.current -= e.movementX * MOUSE_LOOK_SENSITIVITY;
         // MINUS: movementY is positive when the mouse is pushed DOWN, and
@@ -374,6 +413,14 @@ export function CameraRig({
     }
   }, [handle, controlsRef]);
 
+  // --- Mode transitions: fresh look-around state whenever the driver gets
+  //     in, and no stale speed sample when handing between rigs. ---
+  useEffect(() => {
+    povYawOffsetRef.current = 0;
+    povPitchOffsetRef.current = 0;
+    hasPrevPlayerPosRef.current = false;
+  }, [mode]);
+
   // --- Per-frame camera driving. ---
   useFrame((_, delta) => {
     const dt = Math.min(delta, 1 / 30);
@@ -387,8 +434,12 @@ export function CameraRig({
             : null
           : (carGroupsRef?.current.get("player") ?? null);
       if (!carGroup) {
-        // Car gone (parked / despawned): release to free flight so the user
-        // isn't frozen on a stale frame.
+        // Car gone (parked AI car removed, player unmounted mid-load): hold
+        // the last pose this frame instead of writing garbage, and reset the
+        // look-around state so a later re-entry starts centred.
+        povYawOffsetRef.current = 0;
+        povPitchOffsetRef.current = 0;
+        hasPrevPlayerPosRef.current = false;
         return;
       }
 
@@ -409,8 +460,7 @@ export function CameraRig({
           .copy(carPos)
           .add(tmpFwd2.current.copy(fwd.current).multiplyScalar(5))
           .add(tmpUp.current.set(0, 1.5, 0));
-        const k = lerpK(0.9, dt);
-        camera.position.lerp(tmpPos.current, k);
+        camera.position.lerp(tmpPos.current, lerpK(0.94, dt));
         camera.lookAt(tmpLook.current);
       } else if (mode === "drive") {
         tmpPos.current
@@ -421,32 +471,58 @@ export function CameraRig({
           .copy(carPos)
           .add(tmpFwd2.current.copy(fwd.current).multiplyScalar(6))
           .add(tmpUp.current.set(0, 1.2, 0));
-        const k = lerpK(0.98, dt);
-        camera.position.lerp(tmpPos.current, k);
-        camera.lookAt(tmpLook.current);
+        // Damped chase: position eases toward the ideal anchor and the look
+        // target is smoothed in the same breath, so physics micro-jitter
+        // arrives at the screen attenuated rather than 1:1.
+        if (!hasPrevPlayerPosRef.current) {
+          camera.position.copy(tmpPos.current);
+          driveLookRef.current.copy(tmpLook.current);
+        } else {
+          camera.position.lerp(tmpPos.current, lerpK(0.97, dt));
+          driveLookRef.current.lerp(tmpLook.current, lerpK(0.995, dt));
+        }
+        camera.lookAt(driveLookRef.current);
       } else {
         // POV: driver's-eye position inside the cabin (right-hand drive).
-        // EYE_FWD sits behind the steering rim so the rim does not fill the
-        // frame; EYE_UP clears the dash top (~y=1.06) so the sightline reaches
-        // the road while staying below the windscreen header so the cabin
-        // still frames the view.
         const EYE_FWD = -0.05;
         const EYE_RIGHT = 0.42;
-        // Cabin floor is at y=0.26; EYE_UP sits between the dash top and the
-        // windscreen header so the road is visible and the cabin frames the
-        // view.
         const EYE_UP = 1.20;
-        tmpPos.current.set(EYE_FWD, EYE_UP, -EYE_RIGHT);
-        tmpLook.current.set(EYE_FWD + 14, EYE_UP - 0.25, -EYE_RIGHT);
+        // Mirror the car's own orientation convention (Euler XYZ of yaw about
+        // Y and slope pitch about Z), then compose the head-look quaternion
+        // on top so looking around happens in cabin space. Only the LOOK
+        // direction turns with the head; the eye stays fixed like a neck.
         tmpEuler.current.set(0, yaw, pitch, "XYZ");
         tmpQuat.current.setFromEuler(tmpEuler.current);
-        const lex = tmpPos.current.x, ley = tmpPos.current.y, lez = tmpPos.current.z;
-        const llx = tmpLook.current.x, lly = tmpLook.current.y, llz = tmpLook.current.z;
-        tmpPos.current.applyQuaternion(tmpQuat.current).add(carPos);
-        tmpLook.current.set(llx, lly, llz).applyQuaternion(tmpQuat.current).add(carPos);
-        camera.position.copy(tmpPos.current);
+        tmpFwd2.current.set(EYE_FWD, EYE_UP, -EYE_RIGHT).applyQuaternion(tmpQuat.current).add(carPos);
+        camera.position.copy(tmpFwd2.current);
+
+        // Re-centre the view while the car moves; measure speed from the
+        // group itself so no external wiring is needed.
+        let speed = 0;
+        if (hasPrevPlayerPosRef.current && dt > 1e-5) {
+          speed = prevPlayerPosRef.current.distanceTo(carPos) / dt;
+        }
+        prevPlayerPosRef.current.copy(carPos);
+        hasPrevPlayerPosRef.current = true;
+        if (speed > POV_RECENTER_MIN_SPEED) {
+          const k = lerpK(POV_RECENTER_SPEED, dt);
+          povYawOffsetRef.current *= 1 - k;
+          povPitchOffsetRef.current *= 1 - k;
+        }
+
+        tmpEuler.current.set(
+          povPitchOffsetRef.current,
+          povYawOffsetRef.current,
+          0,
+          "YXZ",
+        );
+        tmpQuatLook.current.setFromEuler(tmpEuler.current);
+        tmpQuatLook.current.premultiply(tmpQuat.current);
+        tmpLook.current
+          .set(EYE_FWD + 14, EYE_UP - 0.25, -EYE_RIGHT)
+          .applyQuaternion(tmpQuatLook.current)
+          .add(carPos);
         camera.lookAt(tmpLook.current);
-        tmpPos.current.set(lex, ley, lez);
       }
       return;
     }
