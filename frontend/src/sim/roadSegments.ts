@@ -25,7 +25,10 @@ export function buildRoadSegments(lot: LotData): RoadSegment[] {
     aisles.set(key, value);
   }
 
-  const connections = new Set<NodeType>(["entry", "exit", "ramp_up", "ramp_in"]);
+  // Approach roads sit on the same centrelines as their entry/exit, and the
+  // drivable car spawns back on the approach, so include them or the first
+  // road-edge clamp would yank the car sideways at spawn.
+  const connections = new Set<NodeType>(["entry", "exit", "ramp_up", "ramp_in", "approach"]);
   for (const node of Object.values(lot.nodes)) {
     if (!connections.has(node.type)) continue;
     const aisle = Math.round(node.y / AISLE_SPACING);
