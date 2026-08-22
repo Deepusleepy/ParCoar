@@ -60,7 +60,9 @@ jobs:
         run: |
           python backend/server.py > /tmp/simcheck-backend.log 2>&1 &
           echo $! > /tmp/simcheck-backend.pid
-          (cd frontend && exec npm run dev -- --port 5180 --strictPort) > /tmp/simcheck-frontend.log 2>&1 &
+          # --host pins IPv4: a bare "localhost" bind is ::1 on some runners,
+          # which an http probe against 127.0.0.1 never reaches.
+          (cd frontend && exec npm run dev -- --port 5180 --strictPort --host 127.0.0.1) > /tmp/simcheck-frontend.log 2>&1 &
           echo $! > /tmp/simcheck-frontend.pid
       - name: Wait for ports 8765 and 5180
         run: |
