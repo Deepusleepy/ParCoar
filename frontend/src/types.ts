@@ -129,6 +129,9 @@ export interface ActiveCar {
   parked: boolean;
   vacating: string | null;
   leaving: boolean;
+  /** The player-drivable car. It reports nodes from physical position and
+   *  never follows waypoints; the sim must not move it or evict it. */
+  player?: boolean;
 }
 
 export interface CarRoute {
@@ -141,6 +144,8 @@ export interface CarRoute {
   routeDistance: number;
   estimatedSeconds: number;
   destinationType: DestinationType;
+  /** The move to make after the next node, as the boards show it. */
+  nextDirection: Direction | null;
 }
 
 export interface BoardCar {

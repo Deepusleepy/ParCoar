@@ -35,7 +35,10 @@ Open `http://localhost:5180`.
 - **M**: route map
 - **P**: pause
 - Camera buttons: overview, floor views, car follow, POV and drive
-- Driving: **WASD**
+- Driving: **WASD**, mouse look in POV (click to capture)
+- In drive/POV the car joins the garage like any other: it gets its own bay
+  (the boards show it as YOU), parks by settling inside the assigned bay,
+  and **L** hands the bay back and routes to the exit
 
 ![The controls drawer and route map](docs/images/controls.png)
 

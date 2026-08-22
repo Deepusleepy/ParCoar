@@ -265,6 +265,11 @@ export const Scene = memo(function Scene({
   // down inside the garage driving a car.
   const inCar = cameraMode === "pov" || cameraMode === "drive" || cameraMode === "follow";
 
+  // In-car views fill the screen with nearby geometry and the cockpit, so a
+  // slightly softer pixel budget costs nothing perceptible and buys back
+  // frames on Retina displays.
+  const dpr = inCar ? Math.min(dprForViewport(), 1.5) : dprForViewport();
+
   const lightTarget = useMemo(() => {
     const obj = new THREE.Object3D();
     obj.position.set(LOT_CENTER_X, 0, LOT_CENTER_Z);
@@ -282,7 +287,7 @@ export const Scene = memo(function Scene({
          over ten million shaded pixels per frame with shadows on, which is
          its own kind of slow. This renders at native density on normal
          windows and steps down only when the window is genuinely huge. */
-      dpr={dprForViewport()}
+      dpr={dpr}
       camera={{ position: cameraPos, fov: 45, near: 0.1, far: 500 }}
       gl={{
         antialias: true,

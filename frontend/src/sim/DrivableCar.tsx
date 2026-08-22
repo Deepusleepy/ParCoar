@@ -2,11 +2,11 @@ import { Suspense, useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { Text, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
-import type { LotData, LotEdge, NodeType } from "../types";
+import type { CarStatus, LotData, LotEdge } from "../types";
 import { useKeyboard } from "../hooks/useKeyboard";
-import { aisleOf, rampPoints, semicirclePoints, slabBounds } from "./geometry";
+import { rampPoints, slabBounds } from "./geometry";
+import type { RoadSegment } from "./roadSegments";
 import {
-  AISLE_SPACING,
   CAR_Y_OFFSET,
   FLOOR_HEIGHT,
   LANE_WIDTH,
@@ -40,10 +40,21 @@ interface DrivableCarProps {
   parkedCars: ParkedCarPos[];
   /** Road centerline segments for road-edge clamping (guardrails/dividers). */
   roadSegments: RoadSegment[];
-  /** When true the camera is inside the car (POV mode); the exterior GLTF
-   *  body is hidden so its opaque panels don't block the cockpit view. The
-   *  procedural CarInterior provides the visible dashboard/seats/wheel. */
+  /** When true the camera is inside the car (POV mode); the procedural
+   *  CarInterior provides the visible dashboard/seats/wheel. */
   pov?: boolean;
+  /** The bay the backend has reserved for the player, if any. */
+  assignedSlot: string | null;
+  /** Latest lifecycle status the backend reports for the player. */
+  playerStatus: CarStatus;
+  /** True once the player has asked to leave and is routed to the exit. */
+  leaving: boolean;
+  /** Bumped whenever the car should teleport back to its spawn pose. */
+  runId: number;
+  /** Report the graph node the car is physically at (drives the guidance). */
+  onReportNode: (nodeId: string) => void;
+  /** Request to vacate the current bay and follow guidance to the exit. */
+  onLeaveBay: () => void;
 }
 
 /* ------------------------------------------------------------------ *
@@ -53,10 +64,10 @@ const ACCEL_RATE = 12; // units/sec^2 when pressing W
 const BRAKE_RATE = 28; // units/sec^2 when pressing S
 const MAX_SPEED = 9; // forward speed cap (parking-appropriate)
 const MAX_REVERSE = MAX_SPEED / 2; // reverse speed cap
-const TURN_RATE = 1.6; // rad/sec at full steering
+const TURN_RATE = 1.9; // rad/sec at full steering
 const FRICTION = 0.97; // velocity decay per frame when coasting (at 60fps)
 const DRAG = 0.006; // quadratic drag — creates natural acceleration curve
-const STEER_SPEED = 4.0; // how fast steering angle ramps (rad/sec)
+const STEER_SPEED = 6.0; // how fast steering angle ramps (rad/sec)
 const STEER_RETURN = 5.0; // how fast steering returns to center (rad/sec)
 const MAX_STEER_ANGLE = 0.55; // max steering angle (~31°)
 const GRIP = 0.88; // lateral grip: 1 = on rails, 0 = ice (0.85-0.92 sweet spot)
@@ -135,6 +146,72 @@ function closestPointOnSegment2D(
   return [ax + t * dx, az + t * dz];
 }
 
+/** Projection of an XZ point onto a polyline: nearest segment index, the
+ *  parameter within it, and the distance to it. One shared implementation
+ *  for height sampling, pitch sampling, and the ramp edge clamp — the three
+ *  near-identical loops this file used to carry. */
+interface PolylineProjection {
+  index: number;
+  t: number;
+  dist: number;
+}
+
+function projectOnPolyline(
+  pts: THREE.Vector3[],
+  x: number,
+  z: number,
+): PolylineProjection {
+  let bestIndex = 0;
+  let bestT = 0;
+  let bestDistSq = Infinity;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const ax = pts[i].x;
+    const az = pts[i].z;
+    const bx = pts[i + 1].x;
+    const bz = pts[i + 1].z;
+    const dx = bx - ax;
+    const dz = bz - az;
+    const lenSq = dx * dx + dz * dz;
+    const t = lenSq < 1e-6 ? 0 : ((x - ax) * dx + (z - az) * dz) / lenSq;
+    const tc = Math.max(0, Math.min(1, t));
+    const px = ax + tc * dx;
+    const pz = az + tc * dz;
+    const d = (px - x) ** 2 + (pz - z) ** 2;
+    if (d < bestDistSq) {
+      bestDistSq = d;
+      bestIndex = i;
+      bestT = tc;
+    }
+  }
+  return { index: bestIndex, t: bestT, dist: Math.sqrt(bestDistSq) };
+}
+
+/** Y of the ramp surface at an XZ position (before the ROAD_Y lift). */
+function rampHeightAt(curve: RampCurve, x: number, z: number): number {
+  const { index, t } = projectOnPolyline(curve.points, x, z);
+  const p0 = curve.points[index];
+  const p1 = curve.points[index + 1] ?? p0;
+  return p0.y + (p1.y - p0.y) * t;
+}
+
+/** Pitch matching the ramp slope at an XZ position: samples the surface
+ *  height here and a look-ahead point along `heading`, then takes the
+ *  arctangent of the rise over the run. Positive when climbing. */
+function rampPitchAt(
+  curve: RampCurve,
+  x: number,
+  z: number,
+  heading: number,
+  lookAhead: number,
+): number {
+  const yHere = rampHeightAt(curve, x, z);
+  // Forward vector for heading (car faces +X at yaw 0): (cos, 0, -sin).
+  const laX = x + Math.cos(heading) * lookAhead;
+  const laZ = z - Math.sin(heading) * lookAhead;
+  const yAhead = rampHeightAt(curve, laX, laZ);
+  return Math.atan2(yAhead - yHere, lookAhead);
+}
+
 /** Build a sampled centerline + from/to floors for every ramp_up -> ramp_in edge. */
 function buildRampCurves(lot: LotData): RampCurve[] {
   const curves: RampCurve[] = [];
@@ -156,179 +233,6 @@ function buildRampCurves(lot: LotData): RampCurve[] {
     }
   }
   return curves;
-}
-
-/* ------------------------------------------------------------------ *
- *  Road centerline segments (for road-edge clamping)
- * ------------------------------------------------------------------ */
-
-/** A road centerline segment in world XZ coordinates, on a specific floor. */
-export interface RoadSegment {
-  x1: number;
-  z1: number;
-  x2: number;
-  z2: number;
-  floor: number;
-}
-
-/** Build road centerline segments from the lot graph for road-edge clamping.
- *  Includes aisle centerlines and turn semicircle paths. Ramps are excluded
- *  (they have their own edge clamp in the DrivableCar useFrame loop). */
-export function buildRoadSegments(lot: LotData): RoadSegment[] {
-  const segs: RoadSegment[] = [];
-  const nodes = lot.nodes;
-
-  // --- Aisles: group junctions by (floor, aisle) ---
-  const aisleMap = new Map<string, { floor: number; y: number; xs: number[] }>();
-  for (const [id, node] of Object.entries(nodes)) {
-    if (node.type !== "junction") continue;
-    const aisle = aisleOf(id);
-    if (aisle === null) continue;
-    const key = `${node.floor}:${aisle}`;
-    const entry = aisleMap.get(key) ?? { floor: node.floor, y: node.y, xs: [] };
-    entry.xs.push(node.x);
-    aisleMap.set(key, entry);
-  }
-  // Include entry/exit/ramp nodes that sit on an aisle centreline so the
-  // road segment covers the gap between the first junction and the portal.
-  const connectionTypes = new Set<NodeType>(["entry", "exit", "ramp_up", "ramp_in"]);
-  for (const node of Object.values(nodes)) {
-    if (!connectionTypes.has(node.type)) continue;
-    const aisle = Math.round(node.y / AISLE_SPACING);
-    const entry = aisleMap.get(`${node.floor}:${aisle}`);
-    if (entry) entry.xs.push(node.x);
-  }
-  for (const { floor, y, xs } of aisleMap.values()) {
-    const x0 = Math.min(...xs);
-    const x1 = Math.max(...xs);
-    segs.push({ x1: x0, z1: y, x2: x1, z2: y, floor });
-  }
-
-  // --- Turns: semicircle paths (where guardrails are) ---
-  const incomingOf = new Map<string, string>();
-  for (const [fromId, edgeList] of Object.entries(lot.edges)) {
-    for (const edge of edgeList) {
-      const target = nodes[edge.to];
-      if (target?.type === "turn") incomingOf.set(edge.to, fromId);
-    }
-  }
-  for (const [id, node] of Object.entries(nodes)) {
-    if (node.type !== "turn") continue;
-    const inId = incomingOf.get(id);
-    const outId = lot.edges[id]?.[0]?.to;
-    const a = inId ? nodes[inId] : undefined;
-    const b = outId ? nodes[outId] : undefined;
-    if (!a || !b) continue;
-    const bulgeDir = node.x >= a.x ? 1 : -1;
-    const semi = semicirclePoints(node.x, a.y, b.y, bulgeDir, node.floor);
-    for (let i = 0; i < semi.length - 1; i++) {
-      segs.push({
-        x1: semi[i].x,
-        z1: semi[i].z,
-        x2: semi[i + 1].x,
-        z2: semi[i + 1].z,
-        floor: node.floor,
-      });
-    }
-  }
-
-  return segs;
-}
-
-/** Find the Y of the nearest centerline point to a given XZ position.
- *  Projects the car position onto the nearest segment of the ramp centerline
- *  and linearly interpolates Y along that segment for smooth height follow. */
-function rampHeightAt(curve: RampCurve, x: number, z: number): number {
-  const pts = curve.points;
-  let bestI = 0;
-  let bestDistSq = Infinity;
-  let bestT = 0;
-  // Find the nearest segment (i, i+1) by computing the distance from the
-  // car position to each segment, then interpolate Y along that segment.
-  for (let i = 0; i < pts.length - 1; i++) {
-    const ax = pts[i].x, az = pts[i].z;
-    const bx = pts[i + 1].x, bz = pts[i + 1].z;
-    const dx = bx - ax, dz = bz - az;
-    const lenSq = dx * dx + dz * dz;
-    let t = lenSq < 1e-6 ? 0 : ((x - ax) * dx + (z - az) * dz) / lenSq;
-    t = Math.max(0, Math.min(1, t));
-    const px = ax + t * dx, pz = az + t * dz;
-    const d = (px - x) ** 2 + (pz - z) ** 2;
-    if (d < bestDistSq) {
-      bestDistSq = d;
-      bestI = i;
-      bestT = t;
-    }
-  }
-  const p0 = pts[bestI];
-  const p1 = pts[bestI + 1] ?? p0;
-  return p0.y + (p1.y - p0.y) * bestT;
-}
-
-/** Compute the pitch angle (rotation about the car's local X axis) that
- *  matches the ramp slope at a given XZ position. Samples the ramp height
- *  at the car position and a small look-ahead point along the heading,
- *  then returns the arctangent of the height difference over the distance. */
-function rampPitchAt(
-  curve: RampCurve,
-  x: number,
-  z: number,
-  heading: number,
-  lookAhead: number,
-): number {
-  const pts = curve.points;
-  // Find nearest segment index + t (reuse the same projection logic).
-  let bestI = 0;
-  let bestT = 0;
-  let bestDistSq = Infinity;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const ax = pts[i].x, az = pts[i].z;
-    const bx = pts[i + 1].x, bz = pts[i + 1].z;
-    const dx = bx - ax, dz = bz - az;
-    const lenSq = dx * dx + dz * dz;
-    let t = lenSq < 1e-6 ? 0 : ((x - ax) * dx + (z - az) * dz) / lenSq;
-    t = Math.max(0, Math.min(1, t));
-    const px = ax + t * dx, pz = az + t * dz;
-    const d = (px - x) ** 2 + (pz - z) ** 2;
-    if (d < bestDistSq) {
-      bestDistSq = d;
-      bestI = i;
-      bestT = t;
-    }
-  }
-  // Sample height at current position.
-  const p0 = pts[bestI];
-  const p1 = pts[bestI + 1] ?? p0;
-  const yHere = p0.y + (p1.y - p0.y) * bestT;
-  // Sample height at a look-ahead point along the car's heading direction.
-  const fwdX = Math.cos(heading);
-  const fwdZ = -Math.sin(heading);
-  const laX = x + fwdX * lookAhead;
-  const laZ = z + fwdZ * lookAhead;
-  let yAhead = yHere;
-  let bestLaI = 0;
-  let bestLaT = 0;
-  let bestLaDistSq = Infinity;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const ax = pts[i].x, az = pts[i].z;
-    const bx = pts[i + 1].x, bz = pts[i + 1].z;
-    const dx = bx - ax, dz = bz - az;
-    const lenSq = dx * dx + dz * dz;
-    let t = lenSq < 1e-6 ? 0 : ((laX - ax) * dx + (laZ - az) * dz) / lenSq;
-    t = Math.max(0, Math.min(1, t));
-    const px = ax + t * dx, pz = az + t * dz;
-    const d = (px - laX) ** 2 + (pz - laZ) ** 2;
-    if (d < bestLaDistSq) {
-      bestLaDistSq = d;
-      bestLaI = i;
-      bestLaT = t;
-    }
-  }
-  const la0 = pts[bestLaI];
-  const la1 = pts[bestLaI + 1] ?? la0;
-  yAhead = la0.y + (la1.y - la0.y) * bestLaT;
-  // Pitch = atan(dy / dx). Positive when climbing (nose up).
-  return Math.atan2(yAhead - yHere, lookAhead);
 }
 
 /* ------------------------------------------------------------------ *
@@ -588,8 +492,6 @@ const WHEEL_POSITIONS: [number, number, number][] = [
 ];
 
 interface CarExteriorProps {
-  /** Hide the GLTF shell (POV only): from inside, its panels block the view. */
-  bodyVisible?: boolean;
   /** Refs to the 4 wheel spin groups (animated in DrivableCar's useFrame).
    *  Spin is applied as a rotation about the spin group's local Y, which
    *  maps to the axle direction after the axle-orienting parent rotation. */
@@ -607,13 +509,12 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
   const { bodyMat, glassMat, scene: cloned } = useMemo(() => {
     const s = scene.clone();
 
-    // Race-red clearcoat paint, distinct from AI car colours. DoubleSide
-    // matters: in POV the camera is INSIDE this shell, and front-side-only
-    // rendering would cull the body panels from within, leaving the cabin
-    // with no walls and letting parked cars show through where the driver's
-    // door should be.
+    // Race-red clearcoat paint, distinct from AI car colours. FrontSide on
+    // purpose: in POV the camera sits INSIDE this shell, and DoubleSide made
+    // the opaque body panels wall off the cabin. With front-side culling the
+    // body renders solidly from outside and vanishes from inside, where the
+    // procedural CarInterior supplies every surface the driver sees.
     const body = new THREE.MeshPhysicalMaterial({
-      side: THREE.DoubleSide,
       color: new THREE.Color("#e0141b"),
       metalness: 0.6,
       roughness: 0.35,
@@ -621,7 +522,7 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
       clearcoatRoughness: 0.08,
       envMapIntensity: 1.2,
     });
-    // Tinted transparent glass.
+    // Tinted transparent glass, same inside/outside deal as the body.
     const glass = new THREE.MeshPhysicalMaterial({
       color: new THREE.Color("#0a0e14"),
       metalness: 0.0,
@@ -731,7 +632,8 @@ function CarExterior(props: CarExteriorProps) {
  *  CarInterior — hand-built Octavia VRS-inspired cockpit
  *
  *  Local space: +X = forward, +Y = up, -Z = driver side. The composition is
- *  centred on the fixed driver's eye at (0.3, 1.22, -0.42), looking down +X.
+ *  framed for the fixed driver's eye at (-0.30, 1.31, -0.42) looking down
+ *  +X, just above the wheel rim so the road reads over the dash.
  * ------------------------------------------------------------------ */
 interface InteriorInstrumentProps {
   speedoRef: React.MutableRefObject<THREE.Mesh | null>;
@@ -1175,7 +1077,20 @@ function CarInterior({
  * basic collision. Renders a simple box exterior (visible from outside) and
  * a detailed 3D interior (visible from the POV camera).
  */
-export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegments, pov = false }: DrivableCarProps) {
+export function DrivableCar({
+  lot,
+  carGroupsRef,
+  speedRef,
+  parkedCars,
+  roadSegments,
+  pov = false,
+  assignedSlot,
+  playerStatus,
+  leaving,
+  runId,
+  onReportNode,
+  onLeaveBay,
+}: DrivableCarProps) {
   const groupRef = useRef<THREE.Group>(null);
   const shadowRef = useRef<THREE.Mesh>(null);
   const velocityRef = useRef(0); // forward speed (negative = reverse)
@@ -1193,6 +1108,11 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
   const liveSpeedRef = useRef(0); // numeric speed feed for the interior speedometer
   const wheelRefs = useRef<(THREE.Group | null)[]>([null, null, null, null]);
   const steerRefs = useRef<(THREE.Group | null)[]>([null, null, null, null]);
+  // Node bookkeeping: which node was last reported to the sim, when the area
+  // scan last ran, and how long the car has been nearly stopped (parking).
+  const reportedNodeRef = useRef<string | null>(null);
+  const nodeScanAtRef = useRef(0);
+  const slowSinceRef = useRef<number | null>(null);
   const keys = useKeyboard();
 
   // Pre-compute ramp curves for height sampling.
@@ -1217,24 +1137,98 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
     return out;
   }, [lot]);
 
-  // Spawn at the entry node E0, in the right-hand driving lane, facing +X.
-  // The approach road (ENTRY_ROAD, x=-15) is outside the lot bounds clamp
-  // (slabBounds excludes approach/entry/exit nodes, so minX=-13) and is not
-  // covered by road segments, so spawning there would teleport the car on the
-  // first frame. E0 is on the entry aisle's road segment, so the spawn is
-  // stable. AI-car overlap at E0 is handled by the push-out collision below.
-  const spawn = useMemo(() => {
-    const entry = lot.nodes["E0"];
-    if (!entry) return { pos: [0, ROAD_Y + CAR_Y_OFFSET, 0] as [number, number, number], heading: 0 };
-    const [x, y, z] = toWorld(entry.x, entry.y, entry.floor);
-    return { pos: [x, y + ROAD_Y + CAR_Y_OFFSET, z + LANE_SHIFT] as [number, number, number], heading: 0 };
+  // World-space XZ positions of every non-slot node per floor, for reporting
+  // where the car physically is. Slots are handled separately so that only
+  // the player's own assigned bay can ever be reported as a slot node.
+  const guideNodes = useMemo(() => {
+    const out: { id: string; x: number; z: number; floor: number; type: string }[] = [];
+    for (const [id, node] of Object.entries(lot.nodes)) {
+      if (node.type === "slot" || node.type === "approach") continue;
+      const [x, , z] = toWorld(node.x, node.y, node.floor);
+      out.push({ id, x, z, floor: node.floor, type: node.type });
+    }
+    return out;
   }, [lot]);
 
-  useEffect(() => {
+  const exitNodeId = useMemo(
+    () =>
+      Object.entries(lot.nodes).find(([, node]) => node.type === "exit")?.[0] ?? null,
+    [lot],
+  );
+  const assignedSlotPos = useMemo(() => {
+    if (!assignedSlot) return null;
+    const node = lot.nodes[assignedSlot];
+    if (!node) return null;
+    const [x, , z] = toWorld(node.x, node.y, node.floor);
+    return { x, z, floor: node.floor };
+  }, [assignedSlot, lot]);
+
+  // Spawn behind the entry gate on the approach road, in the lane the entry
+  // aisle flows (+x traffic at z = centreline - LANE_WIDTH/2), facing the
+  // portal. The approach segment is covered by roadSegments (which includes
+  // approach nodes) and sits inside the slab bounds clamp, so the first
+  // clamped frame does not move the car.
+  const spawn = useMemo(() => {
+    const approach = lot.nodes["ENTRY_ROAD"] ?? lot.nodes["E0"];
+    const [x, y, z] = toWorld(approach.x, approach.y, approach.floor);
+    const spawnX = Math.max(x, bounds.minX + 1);
+    return {
+      pos: [spawnX, y + ROAD_Y + CAR_Y_OFFSET, z + LANE_SHIFT] as [number, number, number],
+      heading: 0,
+    };
+  }, [lot, bounds]);
+
+  /** Reset pose + physics to the spawn state. Used on mount and whenever a
+   *  new run starts (entering the garage, respawn after exiting, reset). */
+  const teleportToSpawn = () => {
+    const g = groupRef.current;
+    if (!g) return;
+    g.position.set(spawn.pos[0], spawn.pos[1], spawn.pos[2]);
+    g.rotation.set(0, spawn.heading, 0);
     headingRef.current = spawn.heading;
     prevHeadingRef.current = spawn.heading;
+    velocityRef.current = 0;
+    lateralVelRef.current = 0;
+    steerAngleRef.current = 0;
     floorRef.current = 0;
-  }, [spawn.heading]);
+    reportedNodeRef.current = null;
+    slowSinceRef.current = null;
+    if (shadowRef.current) {
+      shadowRef.current.position.set(spawn.pos[0], spawn.pos[1] - CAR_Y_OFFSET - ROAD_Y + 0.01, spawn.pos[2]);
+    }
+  };
+
+  useEffect(() => {
+    teleportToSpawn();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Every run bump (entering drive mode, respawn at the entry, garage reset)
+  // puts the car back on the approach road.
+  const firstRunRef = useRef(true);
+  useEffect(() => {
+    if (firstRunRef.current) {
+      firstRunRef.current = false;
+      return;
+    }
+    teleportToSpawn();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId]);
+
+  // L vacates the current bay and asks the backend for exit guidance. Only
+  // meaningful once the backend agrees the car is parked.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.code !== "KeyL") return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (playerStatus !== "parked") return;
+      const active = document.activeElement;
+      if (active instanceof HTMLInputElement || active instanceof HTMLSelectElement) return;
+      onLeaveBay();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onLeaveBay, playerStatus]);
 
   // Clean up the carGroups entry on unmount so the camera rig doesn't track
   // a stale group after the user exits POV mode.
@@ -1249,8 +1243,10 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
     const g = groupRef.current;
     if (!g) return;
 
-    // Register this car every frame so the camera rig can find it.
+    // Register this car every frame so the camera rig can find it. The group
+    // is also named so scene-graph probes can find it by id.
     carGroupsRef.current.set(PLAYER_CAR_KEY, g);
+    if (g.name !== PLAYER_CAR_KEY) g.name = PLAYER_CAR_KEY;
 
     // --- Input (WASD + arrow keys) ---
     const accel = keys.current["KeyW"] || keys.current["ArrowUp"] ? 1 : 0;
@@ -1296,7 +1292,10 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
     }
 
     // --- Apply steering to heading (proportional to speed; can't turn when stopped) ---
-    const speedFactor = Math.min(1, speed / 3);
+    // Full steering authority arrives at 1.5 u/s instead of 3, so creeping
+    // into a bay still steers. The old /3 divisor made low-speed turns feel
+    // dead and then suddenly grab.
+    const speedFactor = Math.min(1, speed / 1.5);
     const turn = steerAngleRef.current * TURN_RATE * dt * speedFactor;
     // Invert steering when reversing (matches real car behaviour).
     headingRef.current += velocityRef.current >= 0 ? turn : -turn;
@@ -1361,20 +1360,7 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
     for (const ramp of rampCurves) {
       if (ramp.fromFloor !== floorRef.current && ramp.toFloor !== floorRef.current) continue;
 
-      let rampDist = Infinity;
-      for (let i = 0; i < ramp.points.length - 1; i++) {
-        rampDist = Math.min(
-          rampDist,
-          distToSegment2D(
-            g.position.x,
-            g.position.z,
-            ramp.points[i].x,
-            ramp.points[i].z,
-            ramp.points[i + 1].x,
-            ramp.points[i + 1].z,
-          ),
-        );
-      }
+      const rampDist = projectOnPolyline(ramp.points, g.position.x, g.position.z).dist;
       if (rampDist >= RAMP_TRIGGER_DIST) continue;
 
       const rampSurfaceY = rampHeightAt(ramp, g.position.x, g.position.z) + ROAD_Y;
@@ -1404,17 +1390,17 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
     // after ramp detection (which sets onRamp/bestRamp) but before the
     // height/pitch sampling so the sampled height is valid.
     if (onRamp && bestRamp) {
-      const centerlinePts = bestRamp.points;
-      // Find nearest centerline point and push car toward it if too far.
-      let nearestX = 0, nearestZ = 0, nearestDist = Infinity;
-      for (const p of centerlinePts) {
-        const d = Math.hypot(g.position.x - p.x, g.position.z - p.z);
-        if (d < nearestDist) { nearestDist = d; nearestX = p.x; nearestZ = p.z; }
-      }
+      // Project onto the centreline polyline (segment-accurate, not just the
+      // nearest sample point) and push the car back inside the road width.
+      const projection = projectOnPolyline(bestRamp.points, g.position.x, g.position.z);
+      const a = bestRamp.points[projection.index];
+      const b = bestRamp.points[projection.index + 1] ?? a;
+      const nearestX = a.x + (b.x - a.x) * projection.t;
+      const nearestZ = a.z + (b.z - a.z) * projection.t;
       const maxDist = ROAD_WIDTH / 2 - 0.5;
-      if (nearestDist > maxDist) {
-        const dxn = (nearestX - g.position.x) / nearestDist;
-        const dzn = (nearestZ - g.position.z) / nearestDist;
+      if (projection.dist > maxDist) {
+        const dxn = (nearestX - g.position.x) / projection.dist;
+        const dzn = (nearestZ - g.position.z) / projection.dist;
         g.position.x = nearestX - dxn * maxDist;
         g.position.z = nearestZ - dzn * maxDist;
         bestRampSurfaceY = rampHeightAt(bestRamp, g.position.x, g.position.z) + ROAD_Y;
@@ -1574,6 +1560,59 @@ export function DrivableCar({ lot, carGroupsRef, speedRef, parkedCars, roadSegme
     liveSpeedRef.current = velocityRef.current;
     if (speedRef) {
       speedRef.current.speed = velocityRef.current;
+    }
+
+    // --- Guidance reporting: where is the car on the graph? ---
+    // The sim needs a node id to route from. Every ~150 ms, find the nearest
+    // non-slot node on the current floor; report it when the car is close
+    // enough that "at" is honest. Slot nodes are special: only the player's
+    // own assigned bay can be reported as a slot node, and only after the car
+    // has sat nearly still inside it briefly — that is what "parked" means.
+    const now = performance.now();
+    if (now - nodeScanAtRef.current > 150) {
+      nodeScanAtRef.current = now;
+      let bestId: string | null = null;
+      let bestDist = Infinity;
+      for (const candidate of guideNodes) {
+        if (candidate.floor !== floorRef.current) continue;
+        const d = Math.hypot(g.position.x - candidate.x, g.position.z - candidate.z);
+        if (d < bestDist) {
+          bestDist = d;
+          bestId = candidate.id;
+        }
+      }
+      let toReport: string | null = null;
+      if (bestId && bestDist < 3.5) {
+        toReport = bestId;
+      }
+      // Parking detection: settled inside the assigned bay.
+      if (assignedSlotPos && !leaving) {
+        const nearBay =
+          assignedSlotPos.floor === floorRef.current &&
+          Math.hypot(g.position.x - assignedSlotPos.x, g.position.z - assignedSlotPos.z) < 2.4;
+        const settled = Math.abs(velocityRef.current) < 0.4;
+        if (nearBay && settled) {
+          if (slowSinceRef.current === null) slowSinceRef.current = now;
+          else if (now - slowSinceRef.current > 600) toReport = assignedSlot;
+        } else {
+          slowSinceRef.current = null;
+        }
+      }
+      // Leaving: report the exit node when reached so the backend closes out
+      // the run ("left").
+      if (leaving && exitNodeId) {
+        const exitNode = lot.nodes[exitNodeId];
+        if (exitNode.floor === floorRef.current) {
+          const [ex, , ez] = toWorld(exitNode.x, exitNode.y, exitNode.floor);
+          if (Math.hypot(g.position.x - ex, g.position.z - ez) < 4) {
+            toReport = exitNodeId;
+          }
+        }
+      }
+      if (toReport && toReport !== reportedNodeRef.current) {
+        reportedNodeRef.current = toReport;
+        onReportNode(toReport);
+      }
     }
 
     // --- Wheel spin + front wheel steering animation ---
