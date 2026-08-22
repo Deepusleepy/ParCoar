@@ -149,6 +149,7 @@ export function App() {
         cameraMode={cameraMode}
         followCarId={followCarId}
         carGroupsRef={carGroupsRef}
+        lot={lot}
         nodeSigns={overlays.boardGuidance ? sim.nodeSigns : EMPTY_SIGNS}
       >
         <Suspense fallback={<SceneLoadingFallback />}>
