@@ -29,10 +29,12 @@ import { aisleOf, makeBox, rampPoints, semicirclePoints, slabBounds, type SlabBo
  *  Lot loading
  * ================================================================== */
 
-/** Fetch and cache the lot graph from public/lot.json. */
-function useLot(): LotData | null {
+/** Fetch and cache the lot graph from public/lot.json. Skipped entirely
+ *  when a lot was handed down as a prop (the app already fetched it). */
+function useLot(enabled: boolean): LotData | null {
   const [lot, setLot] = useState<LotData | null>(null);
   useEffect(() => {
+    if (!enabled) return;
     let alive = true;
     fetch("/lot.json")
       .then((r) => r.json())
@@ -45,7 +47,7 @@ function useLot(): LotData | null {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [enabled]);
   return lot;
 }
 
@@ -1366,10 +1368,16 @@ const AreaSignboard = memo(function AreaSignboard({ sign }: { sign: AreaSignDesc
 
 export const ParkingLot = memo(function ParkingLot({
   nodeSigns,
+  /** Lot graph handed down from the app (which fetches it once). When
+   *  absent the component still fetches it itself, so it stays usable
+   *  standalone — but the normal render path no longer double-fetches. */
+  lot: lotProp,
 }: {
   nodeSigns?: NodeSign[];
+  lot?: LotData;
 }) {
-  const lot = useLot();
+  const fetched = useLot(!lotProp);
+  const lot = lotProp ?? fetched;
 
   const geo = useMemo(() => (lot ? buildGeometry(lot) : null), [lot]);
   const bounds = useMemo(() => (lot ? slabBounds(lot) : null), [lot]);
