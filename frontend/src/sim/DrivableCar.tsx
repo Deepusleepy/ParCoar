@@ -509,13 +509,12 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
   const { bodyMat, glassMat, scene: cloned } = useMemo(() => {
     const s = scene.clone();
 
-    // Race-red clearcoat paint, distinct from AI car colours. DoubleSide
-    // matters: in POV the camera is INSIDE this shell, and front-side-only
-    // rendering would cull the body panels from within, leaving the cabin
-    // with no walls and letting parked cars show through where the driver's
-    // door should be.
+    // Race-red clearcoat paint, distinct from AI car colours. FrontSide on
+    // purpose: in POV the camera sits INSIDE this shell, and DoubleSide made
+    // the opaque body panels wall off the cabin. With front-side culling the
+    // body renders solidly from outside and vanishes from inside, where the
+    // procedural CarInterior supplies every surface the driver sees.
     const body = new THREE.MeshPhysicalMaterial({
-      side: THREE.DoubleSide,
       color: new THREE.Color("#e0141b"),
       metalness: 0.6,
       roughness: 0.35,
@@ -523,7 +522,7 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
       clearcoatRoughness: 0.08,
       envMapIntensity: 1.2,
     });
-    // Tinted transparent glass.
+    // Tinted transparent glass, same inside/outside deal as the body.
     const glass = new THREE.MeshPhysicalMaterial({
       color: new THREE.Color("#0a0e14"),
       metalness: 0.0,
@@ -633,7 +632,8 @@ function CarExterior(props: CarExteriorProps) {
  *  CarInterior — hand-built Octavia VRS-inspired cockpit
  *
  *  Local space: +X = forward, +Y = up, -Z = driver side. The composition is
- *  centred on the fixed driver's eye at (0.3, 1.22, -0.42), looking down +X.
+ *  framed for the fixed driver's eye at (-0.30, 1.31, -0.42) looking down
+ *  +X, just above the wheel rim so the road reads over the dash.
  * ------------------------------------------------------------------ */
 interface InteriorInstrumentProps {
   speedoRef: React.MutableRefObject<THREE.Mesh | null>;
@@ -1243,8 +1243,10 @@ export function DrivableCar({
     const g = groupRef.current;
     if (!g) return;
 
-    // Register this car every frame so the camera rig can find it.
+    // Register this car every frame so the camera rig can find it. The group
+    // is also named so scene-graph probes can find it by id.
     carGroupsRef.current.set(PLAYER_CAR_KEY, g);
+    if (g.name !== PLAYER_CAR_KEY) g.name = PLAYER_CAR_KEY;
 
     // --- Input (WASD + arrow keys) ---
     const accel = keys.current["KeyW"] || keys.current["ArrowUp"] ? 1 : 0;
