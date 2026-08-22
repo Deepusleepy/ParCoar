@@ -85,10 +85,18 @@ jobs:
               await new Promise((r) => setTimeout(r, 1000));
             }
           };
-          const deadline = Date.now() + 90000;
-          await untilUp(() => tryTcp(8765), "backend websocket :8765", deadline);
-          await untilUp(() => tryHttp("http://127.0.0.1:5180/"), "frontend dev server :5180", deadline);
-          console.log("both ports up");
+          // Wrapped in an async IIFE: top-level await plus require() makes
+          // Node refuse to pick a module format (this failed exactly that
+          // way on the first CI run of this workflow).
+          (async () => {
+            const deadline = Date.now() + 90000;
+            await untilUp(() => tryTcp(8765), "backend websocket :8765", deadline);
+            await untilUp(() => tryHttp("http://127.0.0.1:5180/"), "frontend dev server :5180", deadline);
+            console.log("both ports up");
+          })().catch((error) => {
+            console.error(error.message);
+            process.exit(1);
+          });
           EOF
       - run: SIMCHECK_DURATION_MS=45000 node tests/simcheck/check.mjs
       - name: Stop servers
