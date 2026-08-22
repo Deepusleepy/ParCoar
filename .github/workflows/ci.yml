@@ -51,7 +51,11 @@ jobs:
       - run: pip install -r backend/requirements.txt
       - run: npm ci
         working-directory: frontend
+      - run: npm ci
+        working-directory: tests/simcheck
       # The playwright npm package ships no browser binaries of its own.
+      # This must run AFTER the npm ci above, so npx resolves the locally
+      # installed playwright (and its browsers) instead of an ad-hoc copy.
       - run: npx playwright install --with-deps chromium
         working-directory: tests/simcheck
       # exec makes the subshell BE the npm process, so the pid file names
