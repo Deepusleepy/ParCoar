@@ -98,6 +98,13 @@ jobs:
             process.exit(1);
           });
           EOF
+      # The servers' output goes to files, invisible when a later step
+      # fails. Print them before failing so a red run explains itself.
+      - name: Show server logs
+        if: failure()
+        run: |
+          echo "--- backend ---"; tail -40 /tmp/simcheck-backend.log || true
+          echo "--- frontend ---"; tail -60 /tmp/simcheck-frontend.log || true
       - run: SIMCHECK_DURATION_MS=45000 node tests/simcheck/check.mjs
       - name: Stop servers
         if: always()
