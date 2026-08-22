@@ -6,17 +6,23 @@ broken happened.
 
 ## Running it
 
-Both servers must already be up: the Python backend, and the frontend (dev or
-preview).
+Both servers must already be up: the Python backend, and the frontend dev
+server (`npm run dev`). A preview or production build does not work: the page
+only publishes `window.__parcoarSim` in dev builds (`import.meta.env.DEV` in
+`useSimulation.ts`), so under preview this gate would be checking nothing.
 
 ```
 python3 backend/server.py &          # or backend/.venv/bin/python
 cd frontend && npm run dev &
 node tests/simcheck/check.mjs                                 # 180s, localhost:5180
+SIMCHECK_DURATION_MS=60000 node tests/simcheck/check.mjs      # 60s instead of 180s
 node tests/simcheck/check.mjs http://localhost:5180/ 300      # longer run
 ```
 
 Exit code 0 means every invariant held. Non-zero prints what broke.
+
+`SIMCHECK_DURATION_MS` sets the soak length in milliseconds (default 180000);
+the positional seconds argument still overrides it.
 
 Playwright is the only dependency: `npx playwright install chromium` once.
 

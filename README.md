@@ -106,7 +106,8 @@ tests/       Backend tests and browser movement checks
 ```bash
 python -m unittest discover -s tests -t . -v
 cd frontend && npm run build && npm test
-node tests/simcheck/check.mjs   # both servers must already be running
+node tests/simcheck/check.mjs   # both servers already running; needs the dev server, not preview
+SIMCHECK_DURATION_MS=60000 node tests/simcheck/check.mjs   # shorter or longer soak
 ```
 
 ## Licence
