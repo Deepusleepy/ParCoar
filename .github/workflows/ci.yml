@@ -39,7 +39,7 @@ jobs:
   # sampling gaps. Locally on real graphics this gate runs strict and is
   # the authoritative check; here it records drift without blocking merges.
   simcheck:
-    continues-on-error: true
+    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
