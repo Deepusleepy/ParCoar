@@ -79,7 +79,7 @@ const PITCH_LIMIT = Math.PI / 2 - 0.05;
 const POV_YAW_LIMIT = Math.PI * 0.6;
 const POV_PITCH_LIMIT = Math.PI * 0.25;
 /** How much of the remaining view offset closes per second of movement. */
-const POV_RECENTER_SPEED = 0.25;
+const POV_RECENTER_SPEED = 0.6;
 /** Player speed above which the POV view starts re-centring (u/s). */
 const POV_RECENTER_MIN_SPEED = 2;
 
@@ -216,13 +216,21 @@ export function CameraRig({
     if (!import.meta.env.DEV) return;
     const w = window as unknown as {
       __parcoarFly?: (pos: [number, number, number], look: [number, number, number]) => void;
+      __parcoarPovLook?: (yaw: number, pitch: number) => void;
     };
     w.__parcoarFly = (pos, look) => {
       camera.position.set(pos[0], pos[1], pos[2]);
       lookAtTarget(new THREE.Vector3(look[0], look[1], look[2]));
     };
+    // Head-look offsets for POV (radians), same state the pointer drives —
+    // headless browsers reject pointer lock, so tests go through here.
+    w.__parcoarPovLook = (yaw, pitch) => {
+      povYawOffsetRef.current = yaw;
+      povPitchOffsetRef.current = pitch;
+    };
     return () => {
       delete w.__parcoarFly;
+      delete w.__parcoarPovLook;
     };
   });
 
@@ -484,9 +492,13 @@ export function CameraRig({
         camera.lookAt(driveLookRef.current);
       } else {
         // POV: driver's-eye position inside the cabin (right-hand drive).
-        const EYE_FWD = -0.05;
+        // The eye sits ABOVE the wheel rim top (~y=1.24) and a hand back of
+        // it, so the rim reads across the bottom third like a real driving
+        // position and the road stays visible over the dash. The earlier
+        // pose levelled with the rim and filled the frame with wheel.
+        const EYE_FWD = -0.3;
         const EYE_RIGHT = 0.42;
-        const EYE_UP = 1.20;
+        const EYE_UP = 1.31;
         // Mirror the car's own orientation convention (Euler XYZ of yaw about
         // Y and slope pitch about Z), then compose the head-look quaternion
         // on top so looking around happens in cabin space. Only the LOOK
@@ -519,7 +531,7 @@ export function CameraRig({
         tmpQuatLook.current.setFromEuler(tmpEuler.current);
         tmpQuatLook.current.premultiply(tmpQuat.current);
         tmpLook.current
-          .set(EYE_FWD + 14, EYE_UP - 0.25, -EYE_RIGHT)
+          .set(EYE_FWD + 14, EYE_UP - 0.5, -EYE_RIGHT)
           .applyQuaternion(tmpQuatLook.current)
           .add(carPos);
         camera.lookAt(tmpLook.current);
