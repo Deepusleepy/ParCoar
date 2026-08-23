@@ -65,13 +65,52 @@ const BRAKE_RATE = 28; // units/sec^2 when pressing S
 const MAX_SPEED = 9; // forward speed cap (parking-appropriate)
 const MAX_REVERSE = MAX_SPEED / 2; // reverse speed cap
 const TURN_RATE = 1.9; // rad/sec at full steering
+/** Speed above which full-lock steering starts to fade back off.
+ *  Everything at or below this keeps IDENTICAL authority to before — parking
+ *  manoeuvres must not get harder. */
+const STEER_FADE_START = 2;
+/** Fraction of steering authority removed at MAX_SPEED, ramping linearly
+ *  from STEER_FADE_START up. A constant 1.9 rad/s yaw rate at 9 u/s whips the
+ *  car through hairpins a real car would sweep; trimming toward high speed
+ *  keeps low speeds nimble and high speeds stable. */
+const STEER_HIGH_SPEED_FADE = 0.45;
 const FRICTION = 0.97; // velocity decay per frame when coasting (at 60fps)
 const DRAG = 0.006; // quadratic drag — creates natural acceleration curve
+/** Reverse throttle once S has braked all the way to zero. Deliberately much
+ *  softer than BRAKE_RATE: the brake pedal and the reverse pedal are not the
+ *  same thing, and engaging reverse at -28 u/s^2 from standstill made the
+ *  car lurch backwards. */
+const REVERSE_ACCEL = 10;
+/** Forward speed under which S stops braking and starts reversing. Only has
+ *  to cover floating-point residue: the brake clamps to exactly zero. */
+const BRAKE_TO_REVERSE_EPSILON = 0.05;
 const STEER_SPEED = 6.0; // how fast steering angle ramps (rad/sec)
 const STEER_RETURN = 5.0; // how fast steering returns to center (rad/sec)
 const MAX_STEER_ANGLE = 0.55; // max steering angle (~31°)
 const GRIP = 0.88; // lateral grip: 1 = on rails, 0 = ice (0.85-0.92 sweet spot)
 const ROLLING_RESISTANCE = 0.4; // drag while throttling (prevents linear accel)
+
+/* ------------------------------------------------------------------ *
+ *  Collision tuning
+ * ------------------------------------------------------------------ */
+
+/** Capsule collider for the player car: two discs of this radius centred
+ *  ±CAPSULE_DISC_OFFSET along the heading. The body is ~4.5 long and ~1.8
+ *  wide; one 1.6-radius circle let the nose and corners clip straight through
+ *  parked cars, while two of these discs span 2*(1.1+0.9)=4.0 end to end and
+ *  1.8 across — close enough that what you see is what collides. */
+const CAPSULE_DISC_RADIUS = 0.9;
+const CAPSULE_DISC_OFFSET = 1.1;
+
+/** Collision radius of other cars (parked or AI). They stay point-like:
+ *  their half-width is ~0.9, which is everything the player capsule needs to
+ *  respect at gameplay level. */
+const OTHER_CAR_RADIUS = 0.9;
+
+/** Bounciness of car-vs-car contacts. Only the velocity component along the
+ *  contact normal responds; this is how much of it reflects back. Small on
+ *  purpose — a parking garage is not a pinball table. */
+const COLLISION_RESTITUTION = 0.2;
 
 /** Height of the road surface above the floor slab top (mirrors ParkingLot). */
 const ROAD_Y = 0.15;
@@ -79,6 +118,27 @@ const ROAD_Y = 0.15;
 /** Ramp capture extends only one movement step beyond its 7-unit road.
  *  Invariant: `onRamp` never disables the lot clamp for a car out in space. */
 const RAMP_TRIGGER_DIST = ROAD_WIDTH / 2 + 0.35;
+
+/** Vertical gate on ramp candidacy: a ramp whose surface is more than this
+ *  far above or below the car's current ground height can never capture it,
+ *  no matter how close the XZ distance is.
+ *
+ *  This kills the spawn teleport: the entrance sits ~1.77 units from the
+ *  A->B ramp deck's centreline (well inside RAMP_TRIGGER_DIST) but that deck
+ *  passes ~13 units overhead — its surface height gives it away. Legitimate
+ *  captures never come close to this limit: the ramp foot eases its grade
+ *  in over RAMP_VERTICAL_CURVE, so at the moment of capture the surface is
+ *  within a few tenths of the flat floor (measured: ≤0.07 at driving speed).
+ *  Generous enough for a full-speed frame step (~0.06 rise), strict enough
+ *  to reject any stacked deck a floor up or down. */
+const MAX_RAMP_CAPTURE_DELTA = 2.5;
+
+/** How far from a road centreline the car may sit before being clamped
+ *  back, shared by the flat-road corridor clamp and the ramp band clamp.
+ *  These MUST be the same value: they used to differ by 0.2 (ramps allowed
+ *  3.0, flat roads 3.2), which snapped the car sideways whenever it crossed
+ *  a ramp boundary near the road edge. */
+const ROAD_CORRIDOR_HALF_WIDTH = ROAD_WIDTH / 2 - 0.3;
 
 /** Vertical dead-zone for FLOOR TRANSFER only: how close to a ramp endpoint
  *  the car must get before it is considered to belong to the other storey.
@@ -194,22 +254,70 @@ function rampHeightAt(curve: RampCurve, x: number, z: number): number {
   return p0.y + (p1.y - p0.y) * t;
 }
 
-/** Pitch matching the ramp slope at an XZ position: samples the surface
- *  height here and a look-ahead point along `heading`, then takes the
- *  arctangent of the rise over the run. Positive when climbing. */
-function rampPitchAt(
+/** Pitch matching the ramp slope at an XZ position: walks `lookAhead` units
+ *  ALONG the ramp centreline from the car's projection and takes the
+ *  arctangent of the rise over that run. Positive when climbing.
+ *
+ *  The previous version ray-cast a straight look-ahead point along the car's
+ *  heading; on the ramp's rounded corners that ray leaves the deck entirely
+ *  and lands on an unrelated segment, kicking the nose up or down mid-corner.
+ *  Following the curve parameter is just as cheap (points are spaced 0.5
+ *  apart, so this walks a handful of segments) and is exact by construction. */
+function rampPitchAlongCurve(
   curve: RampCurve,
   x: number,
   z: number,
-  heading: number,
   lookAhead: number,
 ): number {
-  const yHere = rampHeightAt(curve, x, z);
-  // Forward vector for heading (car faces +X at yaw 0): (cos, 0, -sin).
-  const laX = x + Math.cos(heading) * lookAhead;
-  const laZ = z - Math.sin(heading) * lookAhead;
-  const yAhead = rampHeightAt(curve, laX, laZ);
+  const pts = curve.points;
+  const { index, t } = projectOnPolyline(pts, x, z);
+  const p0 = pts[index];
+  const p1 = pts[index + 1] ?? pts[index];
+  const yHere = p0.y + (p1.y - p0.y) * t;
+
+  // Walk forward from the projection point, accumulating segment lengths,
+  // until `lookAhead` is consumed; interpolate Y inside the landing segment.
+  let remaining = lookAhead;
+  let from = p0;
+  let to = p1;
+  // Distance still to travel inside the current (partially consumed) segment.
+  let segRoom = Math.hypot(to.x - from.x, to.z - from.z) * (1 - t);
+  let i = index;
+  while (remaining > segRoom && i < pts.length - 1) {
+    remaining -= segRoom;
+    i++;
+    from = pts[i];
+    to = pts[i + 1] ?? pts[i];
+    segRoom = Math.hypot(to.x - from.x, to.z - from.z);
+  }
+  const segLen = Math.hypot(to.x - from.x, to.z - from.z);
+  const f = segLen > 1e-6 ? Math.min(1, remaining / segLen) : 0;
+  const yAhead = from.y + (to.y - from.y) * f;
   return Math.atan2(yAhead - yHere, lookAhead);
+}
+
+/** Push a position back inside the ramp road band (ROAD_CORRIDOR_HALF_WIDTH
+ *  of the centreline) and return the ramp surface Y at the clamped position.
+ *
+ *  Runs twice per frame on purpose: once BEFORE height/pitch sampling (so
+ *  the sampled surface belongs to the deck the car will actually stand on),
+ *  and once AFTER collisions as part of the final boundary pass (so a car
+ *  shoved sideways by contact can never end the frame hanging off the deck).
+ *  Sharing one implementation also guarantees both passes use the same band
+ *  width as the flat-road clamp — see ROAD_CORRIDOR_HALF_WIDTH. */
+function clampIntoRampBand(ramp: RampCurve, pos: THREE.Vector3): number {
+  const projection = projectOnPolyline(ramp.points, pos.x, pos.z);
+  const a = ramp.points[projection.index];
+  const b = ramp.points[projection.index + 1] ?? a;
+  const nearestX = a.x + (b.x - a.x) * projection.t;
+  const nearestZ = a.z + (b.z - a.z) * projection.t;
+  if (projection.dist > ROAD_CORRIDOR_HALF_WIDTH) {
+    const dxn = (nearestX - pos.x) / projection.dist;
+    const dzn = (nearestZ - pos.z) / projection.dist;
+    pos.x = nearestX - dxn * ROAD_CORRIDOR_HALF_WIDTH;
+    pos.z = nearestZ - dzn * ROAD_CORRIDOR_HALF_WIDTH;
+  }
+  return rampHeightAt(ramp, pos.x, pos.z) + ROAD_Y;
 }
 
 /** Build a sampled centerline + from/to floors for every ramp_up -> ramp_in edge. */
@@ -632,8 +740,9 @@ function CarExterior(props: CarExteriorProps) {
  *  CarInterior — hand-built Octavia VRS-inspired cockpit
  *
  *  Local space: +X = forward, +Y = up, -Z = driver side. The composition is
- *  framed for the fixed driver's eye at (-0.30, 1.31, -0.42) looking down
- *  +X, just above the wheel rim so the road reads over the dash.
+ *  framed for the fixed driver's eye at (-0.10, 1.42, -0.42) looking down
+ *  +X — headrest height, above the wheel rim and dash crest so the road and
+ *  a wide slice of exterior stay visible (CameraRig matches this eye).
  * ------------------------------------------------------------------ */
 interface InteriorInstrumentProps {
   speedoRef: React.MutableRefObject<THREE.Mesh | null>;
@@ -1255,8 +1364,21 @@ export function DrivableCar({
     const steerRight = keys.current["KeyD"] || keys.current["ArrowRight"] ? 1 : 0;
 
     // --- Longitudinal physics with drag + rolling resistance ---
-    velocityRef.current += accel * ACCEL_RATE * dt;
-    velocityRef.current -= brake * BRAKE_RATE * dt;
+    // S is a brake first and a reverse throttle second: while rolling forward
+    // it decelerates toward zero, and only from (almost) standstill does it
+    // start driving backwards — with a gentler pedal than the brake. The old
+    // code applied -28 u/s^2 the instant S went down, so tapping S at rest
+    // lurched the car straight into reverse.
+    if (accel) velocityRef.current += ACCEL_RATE * dt;
+    if (brake) {
+      if (velocityRef.current > BRAKE_TO_REVERSE_EPSILON) {
+        // Braking phase: clamp at zero so one long frame can't overshoot
+        // into reverse without the dead band being honoured.
+        velocityRef.current = Math.max(0, velocityRef.current - BRAKE_RATE * dt);
+      } else {
+        velocityRef.current -= REVERSE_ACCEL * dt;
+      }
+    }
     // Quadratic drag always applies (creates natural acceleration curve).
     const speed = Math.abs(velocityRef.current);
     velocityRef.current -= velocityRef.current * speed * DRAG * dt;
@@ -1295,8 +1417,18 @@ export function DrivableCar({
     // Full steering authority arrives at 1.5 u/s instead of 3, so creeping
     // into a bay still steers. The old /3 divisor made low-speed turns feel
     // dead and then suddenly grab.
+    // Above STEER_FADE_START the authority bleeds back off linearly, removing
+    // up to STEER_HIGH_SPEED_FADE of it at MAX_SPEED — otherwise the yaw rate
+    // is identical at a crawl and at flat out, which reads as the car
+    // pirouetting on its own axis at speed.
     const speedFactor = Math.min(1, speed / 1.5);
-    const turn = steerAngleRef.current * TURN_RATE * dt * speedFactor;
+    const fadeT = Math.min(
+      1,
+      Math.max(0, (speed - STEER_FADE_START) / (MAX_SPEED - STEER_FADE_START)),
+    );
+    const highSpeedFactor = 1 - STEER_HIGH_SPEED_FADE * fadeT;
+    const turn =
+      steerAngleRef.current * TURN_RATE * dt * speedFactor * highSpeedFactor;
     // Invert steering when reversing (matches real car behaviour).
     headingRef.current += velocityRef.current >= 0 ? turn : -turn;
 
@@ -1364,7 +1496,14 @@ export function DrivableCar({
       if (rampDist >= RAMP_TRIGGER_DIST) continue;
 
       const rampSurfaceY = rampHeightAt(ramp, g.position.x, g.position.z) + ROAD_Y;
-      const verticalDelta = Math.abs(rampSurfaceY - g.position.y);
+      // Ground-to-ground delta (g.position.y carries CAR_Y_OFFSET; the ramp
+      // surface does not).
+      const verticalDelta = Math.abs(rampSurfaceY - (g.position.y - CAR_Y_OFFSET));
+      // A deck floating more than MAX_RAMP_CAPTURE_DELTA above or below the
+      // car is scenery, not road — most importantly the A->B ramp passing
+      // ~13 units over the entrance, which used to yank the freshly spawned
+      // car up onto it on frame one because candidacy only checked floors.
+      if (verticalDelta >= MAX_RAMP_CAPTURE_DELTA) continue;
       // Stacked ramps have identical XZ paths. Vertical continuity, then XZ
       // distance, makes the ramp touching the car the only valid candidate.
       // Invariant: floor 1's upper ramp can never sample floor 0's ramp height.
@@ -1390,33 +1529,22 @@ export function DrivableCar({
     // after ramp detection (which sets onRamp/bestRamp) but before the
     // height/pitch sampling so the sampled height is valid.
     if (onRamp && bestRamp) {
-      // Project onto the centreline polyline (segment-accurate, not just the
-      // nearest sample point) and push the car back inside the road width.
-      const projection = projectOnPolyline(bestRamp.points, g.position.x, g.position.z);
-      const a = bestRamp.points[projection.index];
-      const b = bestRamp.points[projection.index + 1] ?? a;
-      const nearestX = a.x + (b.x - a.x) * projection.t;
-      const nearestZ = a.z + (b.z - a.z) * projection.t;
-      const maxDist = ROAD_WIDTH / 2 - 0.5;
-      if (projection.dist > maxDist) {
-        const dxn = (nearestX - g.position.x) / projection.dist;
-        const dzn = (nearestZ - g.position.z) / projection.dist;
-        g.position.x = nearestX - dxn * maxDist;
-        g.position.z = nearestZ - dzn * maxDist;
-        bestRampSurfaceY = rampHeightAt(bestRamp, g.position.x, g.position.z) + ROAD_Y;
-      }
+      // Segment-accurate projection + push-back inside the shared band
+      // width; returns the surface Y at the clamped spot for sampling below.
+      bestRampSurfaceY = clampIntoRampBand(bestRamp, g.position);
     }
 
     let targetPitch = 0;
     if (onRamp && bestRamp) {
       groundY = bestRampSurfaceY;
-      // Compute pitch from the ramp slope: sample height at the car and a
-      // look-ahead point along the heading, then set rotation.z to match.
+      // Compute pitch from the ramp slope: walk a look-ahead run ALONG the
+      // centreline curve, then set rotation.z to match the rise over run.
       // The car model faces +X, so pitch is rotation about the Z axis.
       // In three.js, a positive rotation.z tilts the nose UP for a +X-facing
-      // car, and rampPitchAt returns positive when climbing, so no negation.
+      // car, and rampPitchAlongCurve returns positive when climbing, so no
+      // negation.
       const lookAhead = 2.0;
-      targetPitch = rampPitchAt(bestRamp, g.position.x, g.position.z, heading, lookAhead);
+      targetPitch = rampPitchAlongCurve(bestRamp, g.position.x, g.position.z, lookAhead);
 
       const fromFloorY = bestRamp.fromFloor * FLOOR_HEIGHT + ROAD_Y;
       const toFloorY = bestRamp.toFloor * FLOOR_HEIGHT + ROAD_Y;
@@ -1464,16 +1592,108 @@ export function DrivableCar({
       Math.min(maxFloor * FLOOR_HEIGHT + ROAD_Y + CAR_Y_OFFSET, g.position.y),
     );
 
-    // --- Road-edge clamp: keep the car on the road surface ---
-    // Prevents driving through guardrails and off the road edges on turns.
-    // Skipped on ramps (they have their own edge clamp above) and near slot
-    // nodes (allows driving into parking bays that extend beyond the road
-    // width). Only segments on the current floor are considered.
+    // --- Collision: two-disc capsule vs other cars -------------------------
+    // The old single circle (r=1.6) sat at the car centre, so the 4.5-long
+    // body's nose and corners clipped straight through parked cars while its
+    // flanks could not reach gaps the car visibly fits through. Two discs of
+    // r=0.9 at ±1.1 along the heading track the body instead. Response is
+    // resolved nearest-penetration-first; each correction moves the car out
+    // by exactly the penetration depth along the contact normal (no
+    // teleporting to a fixed radius), and only the velocity component along
+    // that normal responds — tangential momentum survives, so scraping along
+    // a row of cars scrubs speed honestly instead of the old blanket
+    // *= 0.3 stop.
+    interface CarContact {
+      ox: number;
+      oz: number;
+      pen: number;
+    }
+    const contacts: CarContact[] = [];
+    const consider = (ox: number, oz: number) => {
+      for (const sign of [1, -1] as const) {
+        const discX = g.position.x + Math.cos(heading) * CAPSULE_DISC_OFFSET * sign;
+        const discZ = g.position.z - Math.sin(heading) * CAPSULE_DISC_OFFSET * sign;
+        const dist = Math.hypot(discX - ox, discZ - oz);
+        const pen = CAPSULE_DISC_RADIUS + OTHER_CAR_RADIUS - dist;
+        if (pen > 0) {
+          contacts.push({ ox, oz, pen });
+          return;
+        }
+      }
+    };
+    for (const [id, otherGroup] of carGroupsRef.current) {
+      if (id === PLAYER_CAR_KEY) continue;
+      // Skip cars on a different floor (cross-floor false collisions).
+      if (Math.abs(g.position.y - otherGroup.position.y) > 2.0) continue;
+      consider(otherGroup.position.x, otherGroup.position.z);
+    }
+    for (const pc of parkedCars) {
+      // Skip parked cars on a different floor (cross-floor false collisions).
+      if (Math.abs(g.position.y - pc.y) > 2.0) continue;
+      consider(pc.x, pc.z);
+    }
+
+    if (contacts.length > 0) {
+      // Shallowest penetration first: resolving glancing contacts before
+      // deep ones keeps the push-out direction stable when several cars
+      // overlap the capsule.
+      contacts.sort((a, b) => a.pen - b.pen);
+
+      // World velocity in the CURRENT heading basis (prevHeadingRef was set
+      // to `heading` after the move above, so this is exact).
+      let worldVx = cosH * velocityRef.current + sinH * lateralVelRef.current;
+      let worldVz = -sinH * velocityRef.current + cosH * lateralVelRef.current;
+
+      for (const contact of contacts) {
+        // Nearest own disc to this obstacle — the contact lives on it.
+        const d0X = g.position.x + cosH * CAPSULE_DISC_OFFSET;
+        const d0Z = g.position.z - sinH * CAPSULE_DISC_OFFSET;
+        const d1X = g.position.x - cosH * CAPSULE_DISC_OFFSET;
+        const d1Z = g.position.z + sinH * CAPSULE_DISC_OFFSET;
+        const dist0 = Math.hypot(d0X - contact.ox, d0Z - contact.oz);
+        const dist1 = Math.hypot(d1X - contact.ox, d1Z - contact.oz);
+        const discX = dist0 <= dist1 ? d0X : d1X;
+        const discZ = dist0 <= dist1 ? d0Z : d1Z;
+        const dist = Math.min(dist0, dist1);
+        if (dist < 1e-4) continue; // dead centre overlap; no sane normal exists
+        const nx = (discX - contact.ox) / dist;
+        const nz = (discZ - contact.oz) / dist;
+        const pen = CAPSULE_DISC_RADIUS + OTHER_CAR_RADIUS - dist;
+        if (pen <= 0) continue; // an earlier push already cleared this one
+
+        // Positional correction only up to the penetration depth.
+        g.position.x += nx * pen;
+        g.position.z += nz * pen;
+
+        // Velocity responds only along the normal; keep tangential flow.
+        const vn = worldVx * nx + worldVz * nz;
+        if (vn < 0) {
+          worldVx -= nx * vn * (1 + COLLISION_RESTITUTION);
+          worldVz -= nz * vn * (1 + COLLISION_RESTITUTION);
+        }
+      }
+
+      velocityRef.current = worldVx * cosH - worldVz * sinH;
+      lateralVelRef.current = worldVx * sinH + worldVz * cosH;
+    }
+
+    // --- Final boundary pass ----------------------------------------------
+    // Runs LAST so the frame can never end outside the corridor: collisions
+    // above may shove the car across a guardrail or off the ramp band, and
+    // they used to run after these clamps and win. Flat ground re-applies
+    // the road-edge corridor; ramps re-apply their band clamp (and re-sample
+    // height, since the clamp can move the car along the slope).
+    //
+    // Road-edge rules: skipped on ramps (they have their own band clamp) and
+    // near slot nodes (allows driving into parking bays that extend beyond
+    // the road width). Only segments on the current floor are considered.
     // The slot-exception radius is SLOT_WIDTH/2 + 1 (≈2.25) — small enough
     // that it only fires when the car is actually at a slot entrance, not
     // when it's on the aisle (the aisle centerline is SLOT_OFFSET=6 units
     // from the nearest slot, so a radius of 2.25 never fires on the aisle).
-    if (!onRamp) {
+    if (onRamp && bestRamp) {
+      g.position.y = clampIntoRampBand(bestRamp, g.position) + CAR_Y_OFFSET;
+    } else {
       let nearSlot = false;
       const slotExceptionRadius = SLOT_WIDTH / 2 + 1;
       for (const s of slotPositions) {
@@ -1509,50 +1729,12 @@ export function DrivableCar({
             );
           }
         }
-        const maxRoadDist = ROAD_WIDTH / 2 - 0.3;
-        if (bestDist > maxRoadDist && bestDist < Infinity) {
+        if (bestDist > ROAD_CORRIDOR_HALF_WIDTH && bestDist < Infinity) {
           const nx = (bestX - g.position.x) / bestDist;
           const nz = (bestZ - g.position.z) / bestDist;
-          g.position.x = bestX - nx * maxRoadDist;
-          g.position.z = bestZ - nz * maxRoadDist;
+          g.position.x = bestX - nx * ROAD_CORRIDOR_HALF_WIDTH;
+          g.position.z = bestZ - nz * ROAD_CORRIDOR_HALF_WIDTH;
         }
-      }
-    }
-
-    // --- Collision: AI cars (push out + bleed speed) ---
-    // Use a capsule-friendly radius: smaller than before (1.4 vs 2.5) so
-    // the car can squeeze between parked cars. The OBB would be ideal but
-    // a smaller circle is a good quick fix.
-    const CAR_RADIUS = 1.6;
-    for (const [id, otherGroup] of carGroupsRef.current) {
-      if (id === PLAYER_CAR_KEY) continue;
-      // Skip cars on a different floor (cross-floor false collisions).
-      if (Math.abs(g.position.y - otherGroup.position.y) > 2.0) continue;
-      const cdx = g.position.x - otherGroup.position.x;
-      const cdz = g.position.z - otherGroup.position.z;
-      const cdist = Math.hypot(cdx, cdz);
-      if (cdist < CAR_RADIUS && cdist > 1e-4) {
-        const nx = cdx / cdist;
-        const nz = cdz / cdist;
-        g.position.x = otherGroup.position.x + nx * CAR_RADIUS;
-        g.position.z = otherGroup.position.z + nz * CAR_RADIUS;
-        velocityRef.current *= 0.3;
-      }
-    }
-
-    // --- Collision: parked cars ---
-    for (const pc of parkedCars) {
-      // Skip parked cars on a different floor (cross-floor false collisions).
-      if (Math.abs(g.position.y - pc.y) > 2.0) continue;
-      const pdx = g.position.x - pc.x;
-      const pdz = g.position.z - pc.z;
-      const pdist = Math.hypot(pdx, pdz);
-      if (pdist < CAR_RADIUS && pdist > 1e-4) {
-        const nx = pdx / pdist;
-        const nz = pdz / pdist;
-        g.position.x = pc.x + nx * CAR_RADIUS;
-        g.position.z = pc.z + nz * CAR_RADIUS;
-        velocityRef.current *= 0.3;
       }
     }
 
@@ -1622,7 +1804,9 @@ export function DrivableCar({
     // the π/2 X parent); steer is on the outermost group (world Y).
     // Correct angular velocity: v / r. Wheel radius is 0.34.
     const wheelSpin = velocityRef.current / 0.34 * dt;
-    const visualSteer = steerAngleRef.current * 0.6;
+    // Render the SAME angle the physics steers by. The old *0.6 made the
+    // wheels lie about where the car was going.
+    const visualSteer = steerAngleRef.current;
     for (let i = 0; i < wheelRefs.current.length; i++) {
       const wr = wheelRefs.current[i];
       if (wr) wr.rotation.y -= wheelSpin;
