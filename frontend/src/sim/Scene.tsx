@@ -1,7 +1,8 @@
-import { memo, Suspense, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import { Canvas } from "@react-three/fiber";
-import { Billboard, Environment, Html, Text } from "@react-three/drei";
+import { Billboard, Html, Text } from "@react-three/drei";
 import * as THREE from "three";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { NodeSign } from "../types";
 import {
   FLOOR_HEIGHT,
@@ -316,15 +317,32 @@ export const Scene = memo(function Scene({
         // (in-garage distances are <60) while far=220 lets distant floors
         // and the far apron edge fade from outside aerial views.
         scene.fog = new THREE.Fog(0x0a0b0e, 80, 220);
-        // Keep the city environment for car-paint reflections but cut its
-        // ambient lift so it stops flattening the mid tones.
-        scene.environmentIntensity = 0.35;
+        // Car paint (clearcoat) and glass need SOMETHING to reflect. The old
+        // <Environment preset="city"> fetched an HDR from a CDN at runtime;
+        // offline or behind a blocker it silently loaded nothing and the
+        // scene went reflection-less (plus it dragged a Suspense boundary
+        // into first paint). RoomEnvironment is generated locally from
+        // procedural geometry - no network fetch, no async - and PMREM
+        // prefiltered exactly once here.
+        const pmrem = new THREE.PMREMGenerator(gl);
+        const room = new RoomEnvironment();
+        scene.environment = pmrem.fromScene(room, 0.04).texture;
+        room.dispose();
+        pmrem.dispose();
+        // Raised from 0.35: at the old level clearcoat went muddy and the
+        // dark glass read flat once reflections were actually guaranteed to
+        // exist. 0.75 gives paint a readable highlight; the ambient +
+        // hemisphere fills below were compensated down proportionally so the
+        // shell stays dark and the real lights keep carrying contrast.
+        scene.environmentIntensity = 0.75;
       }}
     >
       {/* Ambient + hemisphere cut hard so the shell reads dark and the real
-          lights + emissive strips carry contrast. */}
-      <ambientLight intensity={0.15} />
-      <hemisphereLight args={["#3a4258", "#05060a", 0.18]} />
+          lights + emissive strips carry contrast. Lowered again (from 0.15 /
+          0.18) when environmentIntensity went 0.35 -> 0.75 so total fill
+          stays put while reflections do the work. */}
+      <ambientLight intensity={0.1} />
+      <hemisphereLight args={["#3a4258", "#05060a", 0.12]} />
 
       {/* Single shadow-casting directional "skylight" — weak, cool, retuned
           to the lot footprint. Floor slabs are opaque so shadows don't bleed
@@ -378,11 +396,9 @@ export const Scene = memo(function Scene({
       {/* Visible ceiling strip fixtures (emissive, instanced). */}
       <CeilingFixtures />
 
-      {/* Environment map for car-paint clearcoat reflections. Wrapped in
-          Suspense because the preset loads asynchronously. */}
-      <Suspense fallback={null}>
-        <Environment preset="city" background={false} />
-      </Suspense>
+      {/* Environment map is built offline in onCreated (RoomEnvironment ->
+          PMREM) - no CDN fetch, no Suspense boundary, reflections always
+          present. */}
 
       {/* Dark ground plane below the garage for grounding/depth. */}
       <mesh

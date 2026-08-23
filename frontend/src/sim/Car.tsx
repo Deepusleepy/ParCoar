@@ -2,6 +2,7 @@ import { Suspense, memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
+import { toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { ActiveCar, CarColor, CarSize, LotData, LotNode } from "../types";
 import {
   AISLE_SPACING,
@@ -37,6 +38,108 @@ const MODEL_SCALE: Record<CarSize, number> = {
 const FORWARD_ROT = Math.PI / 2;
 const NON_BODY = new Set(["Windows", "Black", "Grey", "Headlights", "TailLights"]);
 
+/* ------------------------------------------------------------------ *
+ *  Crease-aware normal smoothing
+ * ------------------------------------------------------------------
+ *  The Quaternius GLBs come out of obj2gltf with every hard edge split
+ *  into duplicated vertices (~73% duplicated verts), so each panel shades
+ *  like an isolated facet and random edges read across the body. Passing
+ *  each mesh through toCreasedNormals() rebuilds averaged normals wherever
+ *  the dihedral angle stays under 30°, restoring smooth shading on curved
+ *  panels while genuine creases (door shutlines, wheel arches) stay crisp.
+ *
+ *  Strategy: CLONE-THEN-MODIFY, cached per source geometry. useGLTF caches
+ *  scenes and scene.clone() SHARES geometry between all consumers, so
+ *  mutating a geometry in place would couple every consumer to one call
+ *  site (and toCreasedNormals writes its input in place when handed a
+ *  non-indexed geometry). Instead each cached source is converted exactly
+ *  once and the result lives in a WeakMap keyed by the source; AI cars
+ *  here, the parked InstancedMesh field below, and the player exterior in
+ *  DrivableCar all then share one smoothed instance and agree on shading.
+ *  Entries live as long as the GLTF cache itself (app lifetime), matching
+ *  how this codebase treats module-scope materials; because nothing is
+ *  allocated per mount, active-car mount/unmount churn cannot grow GPU
+ *  memory. Originals are never touched, so ActiveCar's wheel-geometry
+ *  disposal path (which clones again per car) keeps working unchanged.
+ */
+/** Dihedral angle below which neighbouring faces shade as one surface. */
+const CREASE_ANGLE = THREE.MathUtils.degToRad(30);
+
+const smoothedGeometryCache = new WeakMap<THREE.BufferGeometry, THREE.BufferGeometry>();
+
+/** One material-sized piece of a car mesh, ready for instancing. */
+export interface SmoothedPart {
+  geometry: THREE.BufferGeometry;
+  /** Index into the source mesh's material array. */
+  materialIndex: number;
+}
+
+const smoothedPartsCache = new WeakMap<THREE.BufferGeometry, SmoothedPart[]>();
+
+/**
+ * Whole-mesh variant for meshes that keep their full multi-material draw
+ * (AI CarModel, player exterior): normals smoothed, groups intact (three's
+ * indexed path de-indexes via toNonIndexed(), which re-registers groups),
+ * so the existing material array keeps driving per-group rendering.
+ */
+export function creaseSmoothed(source: THREE.BufferGeometry): THREE.BufferGeometry {
+  const cached = smoothedGeometryCache.get(source);
+  if (cached) return cached;
+  // Only the indexed path is safe to convert: with no index,
+  // toCreasedNormals overwrites the SHARED normal attribute in place.
+  const smoothed = source.index ? toCreasedNormals(source, CREASE_ANGLE) : source;
+  smoothedGeometryCache.set(source, smoothed);
+  return smoothed;
+}
+
+/**
+ * Split an indexed mesh geometry into one smoothed geometry per material
+ * group. ParkedCarSizeGroup needs this to instance body / glass / trim
+ * separately without ever drawing the whole index buffer with one material.
+ * Material boundaries are natural hard edges, so smoothing each part on its
+ * own loses nothing across them.
+ */
+export function smoothedParts(source: THREE.BufferGeometry): SmoothedPart[] {
+  const cached = smoothedPartsCache.get(source);
+  if (cached) return cached;
+  if (!source.index) {
+    const fallback: SmoothedPart[] = [{ geometry: source, materialIndex: 0 }];
+    smoothedPartsCache.set(source, fallback);
+    return fallback;
+  }
+  const ranges =
+    source.groups.length > 0
+      ? source.groups
+      : [{ start: 0, count: source.index.count, materialIndex: 0 }];
+  const parts: SmoothedPart[] = ranges.map((group) => ({
+    geometry: toCreasedNormals(sliceIndexed(source, group.start, group.count), CREASE_ANGLE),
+    materialIndex: group.materialIndex ?? 0,
+  }));
+  smoothedPartsCache.set(source, parts);
+  return parts;
+}
+
+/** Zero-copy view of one index range of an indexed geometry. Shares the
+ *  source attribute objects; only the index buffer is narrowed. Safe as a
+ *  toCreasedNormals input precisely because the view is still indexed. */
+function sliceIndexed(
+  source: THREE.BufferGeometry,
+  start: number,
+  count: number,
+): THREE.BufferGeometry {
+  const index = source.getIndex();
+  if (!index || count <= 0) return source;
+  const view = new THREE.BufferGeometry();
+  for (const name of Object.keys(source.attributes)) {
+    const attribute = source.getAttribute(name);
+    if (attribute) view.setAttribute(name, attribute);
+  }
+  view.setIndex(
+    new THREE.BufferAttribute(index.array.subarray(start, start + count), index.itemSize),
+  );
+  return view;
+}
+
 useGLTF.preload(MODEL_PATHS.small);
 useGLTF.preload(MODEL_PATHS.medium);
 useGLTF.preload(MODEL_PATHS.large);
@@ -68,26 +171,34 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
           metalness: 0.5,
           roughness: 0.4,
         });
+    // Near-opaque dark glass, opacity 1 / transparent:false. The old
+    // half-transparent pane composited ground markings straight through the
+    // shell (the "mirror is transparent" report) and dragged every car into
+    // the transparent-sort lottery. Any residual alpha would still blend the
+    // road behind the glass, so 1.0 it is: #1a1d24 at roughness 0.08 reads
+    // as tinted glass purely through its environment reflections - the same
+    // recipe the instanced parked path already renders correctly.
     const glass: THREE.MeshStandardMaterial = highQuality
       ? new THREE.MeshPhysicalMaterial({
-          color: new THREE.Color("#0a0e14"),
-          metalness: 0,
-          roughness: 0.05,
-          transparent: true,
-          opacity: 0.5,
-          ior: 1.45,
+          color: new THREE.Color("#1a1d24"),
+          metalness: 0.1,
+          roughness: 0.08,
           envMapIntensity: 1.5,
         })
       : new THREE.MeshStandardMaterial({
           color: new THREE.Color("#1a1d24"),
-          metalness: 0.3,
-          roughness: 0.1,
+          metalness: 0.1,
+          roughness: 0.08,
         });
 
     object.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
       child.castShadow = true;
       child.receiveShadow = true;
+      // Smooth the hard-split GLTF normals (shared cached conversion - see
+      // the crease-smoothing block comment). The material array below keeps
+      // driving per-group rendering because groups survive the conversion.
+      child.geometry = creaseSmoothed(child.geometry);
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       const replaced = materials.map((material) => {
         if (!(material instanceof THREE.Material)) return material;
@@ -166,6 +277,12 @@ export function ParkedCarField({ cars }: { cars: ParkedCarInstance[] }) {
 
 const PARKED_CAPACITY = 512;
 
+interface ParkedMesh {
+  mesh: THREE.InstancedMesh;
+  isBody: boolean;
+  local: THREE.Matrix4;
+}
+
 function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInstance[] }) {
   const { scene } = useGLTF(MODEL_PATHS[size]);
 
@@ -181,40 +298,68 @@ function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInst
       metalness: 0.5,
       roughness: 0.4,
     });
+    // Same near-opaque dark gloss as the per-car replacement glass above, so
+    // a parked car's glazing matches the cars driving past it.
     const glassMaterial = new THREE.MeshStandardMaterial({
       color: new THREE.Color("#1a1d24"),
-      metalness: 0.3,
-      roughness: 0.1,
+      metalness: 0.1,
+      roughness: 0.08,
     });
 
-    const meshes: {
-      mesh: THREE.InstancedMesh;
+    // Classify PER MATERIAL GROUP, not per mesh node. A GLTF mesh node can
+    // carry several material groups (body, windows, lights in one node);
+    // classifying by material[0] and issuing ONE InstancedMesh for the node
+    // made three draw the FULL index buffer with that material - every
+    // parked car's windows/headlights/taillights rendered in body paint.
+    // Each group now becomes its own InstancedMesh:
+    //   (a) body-classified primitives share the white base material whose
+    //       instances are tinted via setColorAt below, exactly as before;
+    //   (b) everything else keeps its ORIGINAL opaque GLTF material, shared
+    //       across all instances (Windows swaps to the dark glass).
+    // Draw calls rise from ~1 to ~5 per size class - noise next to cars
+    // that look like cars.
+    interface ParkedPart {
+      geometry: THREE.BufferGeometry;
+      material: THREE.Material;
       isBody: boolean;
       local: THREE.Matrix4;
-    }[] = [];
-
+    }
+    const parts: ParkedPart[] = [];
     scene.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
-      const sourceMaterial = (
-        Array.isArray(object.material) ? object.material[0] : object.material
-      ) as THREE.Material | undefined;
-      if (!sourceMaterial) return;
-      const isBody = !NON_BODY.has(sourceMaterial.name);
-      const material = isBody
-        ? bodyMaterial
-        : sourceMaterial.name === "Windows"
-          ? glassMaterial
-          : sourceMaterial;
-      const mesh = new THREE.InstancedMesh(object.geometry, material, PARKED_CAPACITY);
+      const materials = (
+        Array.isArray(object.material) ? object.material : [object.material]
+      ).filter((material): material is THREE.Material => material instanceof THREE.Material);
+      if (materials.length === 0) return;
+      const local = new THREE.Matrix4().copy(base).multiply(object.matrixWorld);
+      for (const part of smoothedParts(object.geometry)) {
+        // A group's materialIndex can point past the array on malformed
+        // assets; clamp rather than crash the whole field.
+        const sourceMaterial =
+          materials[Math.min(part.materialIndex, materials.length - 1)];
+        if (!sourceMaterial) continue;
+        const isBody = !NON_BODY.has(sourceMaterial.name);
+        const material = isBody
+          ? bodyMaterial
+          : sourceMaterial.name === "Windows"
+            ? glassMaterial
+            : sourceMaterial;
+        parts.push({
+          geometry: part.geometry,
+          material,
+          isBody,
+          local,
+        });
+      }
+    });
+
+    const meshes: ParkedMesh[] = parts.map(({ geometry, material, isBody, local }) => {
+      const mesh = new THREE.InstancedMesh(geometry, material, PARKED_CAPACITY);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.count = 0;
       mesh.frustumCulled = false;
-      meshes.push({
-        mesh,
-        isBody,
-        local: new THREE.Matrix4().copy(base).multiply(object.matrixWorld),
-      });
+      return { mesh, isBody, local };
     });
 
     return { meshes, bodyMaterial, glassMaterial };
