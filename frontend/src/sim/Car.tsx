@@ -533,6 +533,26 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({
 
     let points = waypoints.current;
     if (points.length < 2) {
+      // Standstill: if a route plan was cached (e.g. the entry road was
+      // blocked when the server replied), try to depart every frame instead
+      // of waiting for the next server reply. This mirrors the heldNode
+      // retry that mid-route crossings use, so standstill-to-moving
+      // transitions are frame-gated (~16ms) not reply-gated (~400ms).
+      if (car.fromNode === car.toNode) {
+        const nextNode = heldNode.current ?? upcomingNodes.current.shift() ?? null;
+        if (nextNode !== null) {
+          if (!isNodeEntryBlocked(car, nextNode, upcomingNodes.current[0])) {
+            heldNode.current = null;
+            car.toNode = nextNode;
+            car.status = "routing";
+            // Re-resolve waypoints for the new leg on the next frame.
+            currentLeg.current = "";
+            return;
+          }
+          // Still blocked: hold the node and retry next frame.
+          heldNode.current = nextNode;
+        }
+      }
       const world = toWorld(fromNode.x, fromNode.y, fromNode.floor);
       const offset = fromNode.type === "slot" ? 0 : LANE_WIDTH / 2;
       const yaw = object.rotation.y;

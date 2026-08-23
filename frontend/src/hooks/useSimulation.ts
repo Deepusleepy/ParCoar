@@ -476,8 +476,15 @@ export function useSimulation(): SimulationState {
       if (instruction.path[0] !== car.fromNode) continue;
       const next = instruction.path[1] ?? null;
       const beyond = instruction.path[2];
-      if (next && isRoadBlocked(lotData, cars, car, next, beyond, map)) continue;
       if (!next || next === car.toNode) continue;
+      if (next && isRoadBlocked(lotData, cars, car, next, beyond, map)) {
+        // Road is blocked: cache the full path (including the first hop)
+        // so Car.tsx can retry the departure every frame via its heldNode
+        // mechanism instead of waiting for the next server reply (~400ms).
+        car.slot = instruction.slot;
+        publishRoutePlan(car, instruction.path.slice(1));
+        continue;
+      }
       car.toNode = next;
       car.status = "routing";
       car.slot = instruction.slot;
@@ -748,12 +755,14 @@ export function useSimulation(): SimulationState {
         now - lastSpawnRef.current > current.spawnEverySec * 1000
       ) {
         const car = spawnCar();
-        setActiveCars((existing) =>
-          existing.filter((candidate) => !candidate.leaving).length >= current.targetCars
-            ? existing
-            : [...existing, car],
-        );
-        lastSpawnRef.current = now;
+        let spawned = false;
+        setActiveCars((existing) => {
+          const activeAi = existing.filter((c) => !c.leaving && !c.player).length;
+          if (activeAi >= current.targetCars) return existing;
+          spawned = true;
+          return [...existing, car];
+        });
+        if (spawned) lastSpawnRef.current = now;
       }
     }, 400);
     return () => clearInterval(interval);
