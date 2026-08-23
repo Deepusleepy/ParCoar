@@ -85,6 +85,12 @@ export const STATE_TICK_MS = 200;
 export const TARGET_ACTIVE_CARS = 3;
 export const SPAWN_INTERVAL_MS = 6000;
 
+/** The drivable car participates like any other car: same id on the wire,
+ *  same boards, same bay assignment. The plate is what the overhead boards
+ *  print for it. */
+export const PLAYER_ID = "P0";
+export const PLAYER_PLATE = "YOU";
+
 export const CAR_COLORS: CarColor[] = [
   "red",
   "blue",

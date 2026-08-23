@@ -9,7 +9,7 @@ import {
   type PlayerSpeedRef,
 } from "./sim/DrivableCar";
 import { buildRoadSegments } from "./sim/roadSegments";
-import { AISLE_SPACING, CAR_Y_OFFSET, COLOR_HEX, toWorld } from "./sim/constants";
+import { AISLE_SPACING, bayLabel, CAR_Y_OFFSET, COLOR_HEX, toWorld } from "./sim/constants";
 import type { CameraMode } from "./sim/CameraRig";
 import { RoutePanel, type RoutePanelCar } from "./ui/RoutePanel";
 import {
@@ -31,14 +31,13 @@ export function App() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [overlays, setOverlays] = useState<Overlays>(DEFAULT_OVERLAYS);
   const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0 });
-  const [playerSpeed, setPlayerSpeed] = useState(0);
 
   const patchOverlays = (patch: Partial<Overlays>) =>
     setOverlays((current) => ({ ...current, ...patch }));
 
   useEffect(() => {
     if (cameraMode !== "follow") return;
-    const ids = sim.activeCars.map((car) => car.id);
+    const ids = sim.activeCars.filter((car) => !car.player).map((car) => car.id);
     if (followCarId && !ids.includes(followCarId)) setFollowCarId(null);
     if (!followCarId && ids.length > 0) setFollowCarId(ids[0]);
   }, [cameraMode, followCarId, sim.activeCars]);
@@ -49,11 +48,13 @@ export function App() {
     else if (!routeCarId && ids.length > 0) setRouteCarId(ids[0]);
   }, [sim.carRoutes, routeCarId]);
 
+  // Entering a driving mode puts the player car in the garage as a real
+  // participant; leaving removes it. The sim keeps the connection and all
+  // other state across the switch.
   useEffect(() => {
-    if (cameraMode !== "pov" && cameraMode !== "drive") return;
-    const interval = setInterval(() => setPlayerSpeed(playerSpeedRef.current.speed), 100);
-    return () => clearInterval(interval);
-  }, [cameraMode]);
+    if (cameraMode === "pov" || cameraMode === "drive") sim.enterCar();
+    else sim.exitCar();
+  }, [cameraMode, sim.enterCar, sim.exitCar]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -118,6 +119,11 @@ export function App() {
   );
   const roadSegments = useMemo(() => (lot ? buildRoadSegments(lot) : []), [lot]);
 
+  // The drivable car's live guidance, derived from the same instructions the
+  // boards use. No separate channel: the player is just another car.
+  const playerCar = sim.activeCars.find((car) => car.player) ?? null;
+  const playerRoute = sim.carRoutes.find((route) => route.carId === "P0") ?? null;
+
   if (sim.loading) return <LoadingScreen />;
   if (sim.error || !lot) {
     return (
@@ -154,7 +160,7 @@ export function App() {
       >
         <Suspense fallback={<SceneLoadingFallback />}>
           <ParkedCarField cars={parkedCars} />
-          {sim.activeCars.map((car) => (
+          {sim.activeCars.filter((car) => !car.player).map((car) => (
             <ActiveCarMesh
               key={car.id}
               car={car}
@@ -171,12 +177,28 @@ export function App() {
               parkedCars={parkedCarPositions}
               roadSegments={roadSegments}
               pov={cameraMode === "pov"}
+              assignedSlot={playerCar?.slot ?? null}
+              playerStatus={playerCar?.status ?? "routing"}
+              leaving={playerCar?.leaving ?? false}
+              runId={sim.playerRunId}
+              onReportNode={sim.reportPlayerNode}
+              onLeaveBay={sim.playerLeaveBay}
             />
           )}
         </Suspense>
       </Scene>
 
       <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-4">
+        {(cameraMode === "pov" || cameraMode === "drive") && (
+          <PlayerGuidance
+            status={playerCar?.status ?? "routing"}
+            leaving={playerCar?.leaving ?? false}
+            slot={playerRoute?.slot ?? null}
+            destinationType={playerRoute?.destinationType ?? null}
+            distance={playerRoute?.routeDistance ?? 0}
+            nextDirection={playerRoute?.nextDirection ?? null}
+          />
+        )}
         <div className="flex items-start justify-between">
           <div className="rounded-lg border border-neutral-800 bg-black/60 px-3 py-2 backdrop-blur-sm">
             <div className="text-lg font-semibold tracking-tight text-white">ParCoar</div>
@@ -209,10 +231,7 @@ export function App() {
                   <span className="mx-1.5 text-neutral-600">|</span>
                   <span className="text-white">A/D</span> Steer
                 </div>
-                <div className="rounded border border-neutral-700 bg-black/70 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-neutral-200">
-                  {playerSpeed >= 0 ? "" : "R "}
-                  {Math.abs(playerSpeed).toFixed(1)} u/s
-                </div>
+                <SpeedHud speedRef={playerSpeedRef} />
               </div>
             ) : (
               <div
@@ -287,6 +306,75 @@ function LoadingScreen() {
   );
 }
 
+/**
+ * Live speed readout, isolated so the 10 Hz refresh re-renders only this
+ * component. Polling from App level re-rendered the whole tree including the
+ * Canvas subtree ten times a second while driving.
+ */
+function SpeedHud({ speedRef }: { speedRef: React.RefObject<PlayerSpeedRef> }) {
+  const [speed, setSpeed] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => setSpeed(speedRef.current?.speed ?? 0), 100);
+    return () => clearInterval(interval);
+  }, [speedRef]);
+  return (
+    <div className="rounded border border-neutral-700 bg-black/70 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-neutral-200">
+      {speed >= 0 ? "" : "R "}
+      {Math.abs(speed).toFixed(1)} u/s
+    </div>
+  );
+}
+
+const DIRECTION_WORD: Record<string, string> = {
+  left: "LEFT",
+  right: "RIGHT",
+  straight: "AHEAD",
+  up: "UP",
+  down: "DOWN",
+};
+
+/**
+ * The guidance strip shown while driving: where you are going and what to do
+ * next, from the same instruction the overhead boards carry.
+ */
+function PlayerGuidance({
+  status,
+  leaving,
+  slot,
+  destinationType,
+  distance,
+  nextDirection,
+}: {
+  status: string;
+  leaving: boolean;
+  slot: string | null;
+  destinationType: "bay" | "exit" | null;
+  distance: number;
+  nextDirection: string | null;
+}) {
+  let line: string;
+  if (status === "parked") {
+    line = `PARKED ${slot ? bayLabel(slot) : ""} — L TO LEAVE`;
+  } else if (status === "no_slot") {
+    line = "NO FREE BAY";
+  } else if (destinationType === "exit" && leaving) {
+    line = `${Math.round(distance)} m · ${DIRECTION_WORD[nextDirection ?? ""] ?? ""} → EXIT`;
+  } else if (slot) {
+    line = `BAY ${bayLabel(slot)} · ${Math.round(distance)} m · ${
+      DIRECTION_WORD[nextDirection ?? ""] ?? ""
+    }`;
+  } else {
+    line = "WAITING FOR GUIDANCE";
+  }
+  return (
+    <div className="absolute left-1/2 top-4 -translate-x-1/2">
+      <div className="rounded-md border border-sky-500/40 bg-black/70 px-3 py-1 text-[12px] font-semibold tracking-wide text-sky-300">
+        {line}
+      </div>
+    </div>
+  );
+}
+
 function CameraControls({
   mode,
   onModeChange,
@@ -298,7 +386,7 @@ function CameraControls({
   onModeChange: (mode: CameraMode) => void;
   followCarId: string | null;
   onFollowCarChange: (id: string | null) => void;
-  activeCars: { id: string; color: import("./types").CarColor; plate: string }[];
+  activeCars: { id: string; color: import("./types").CarColor; plate: string; player?: boolean }[];
 }) {
   const buttons: { id: CameraMode; label: string }[] = [
     { id: "orbit", label: "Orbit" },
@@ -310,6 +398,7 @@ function CameraControls({
     { id: "pov", label: "POV" },
     { id: "drive", label: "Drive" },
   ];
+  const followable = activeCars.filter((car) => !car.player);
 
   return (
     <div className="pointer-events-none absolute bottom-16 left-1/2 flex -translate-x-1/2 flex-col items-center gap-2">
@@ -336,7 +425,7 @@ function CameraControls({
       {mode === "follow" && (
         <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-neutral-800 bg-black/80 px-2 py-1 backdrop-blur-sm">
           <span className="text-[11px] font-semibold tracking-wide text-neutral-500">CAR</span>
-          {activeCars.length === 0 ? (
+          {followable.length === 0 ? (
             <span className="text-[11px] text-neutral-500">none active</span>
           ) : (
             <select
@@ -344,7 +433,7 @@ function CameraControls({
               onChange={(event: { target: { value: string } }) => onFollowCarChange(event.target.value || null)}
               className="bg-transparent text-[11px] font-medium text-neutral-100 outline-none [&>option]:bg-neutral-900"
             >
-              {activeCars.map((car) => (
+              {followable.map((car) => (
                 <option key={car.id} value={car.id}>{car.plate} · {car.color}</option>
               ))}
             </select>
@@ -354,7 +443,7 @@ function CameraControls({
               className="inline-block h-2 w-2 rounded-full"
               style={{
                 backgroundColor: COLOR_HEX[
-                  activeCars.find((car) => car.id === followCarId)?.color ?? "white"
+                  followable.find((car) => car.id === followCarId)?.color ?? "white"
                 ],
               }}
             />
