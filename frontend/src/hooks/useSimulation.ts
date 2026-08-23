@@ -755,14 +755,16 @@ export function useSimulation(): SimulationState {
         now - lastSpawnRef.current > current.spawnEverySec * 1000
       ) {
         const car = spawnCar();
-        let spawned = false;
         setActiveCars((existing) => {
           const activeAi = existing.filter((c) => !c.leaving && !c.player).length;
           if (activeAi >= current.targetCars) return existing;
-          spawned = true;
           return [...existing, car];
         });
-        if (spawned) lastSpawnRef.current = now;
+        // Reset cooldown based on the ref check we already did (not the
+        // setState callback, which runs async during render). The ref may
+        // be stale by one frame, but the entryBlocked + incomingCount guard
+        // above already proved the slot is free.
+        lastSpawnRef.current = now;
       }
     }, 400);
     return () => clearInterval(interval);
