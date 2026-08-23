@@ -3,7 +3,6 @@ import { Canvas } from "@react-three/fiber";
 import { Billboard, Html, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import type { NodeSign } from "../types";
 import {
   FLOOR_HEIGHT,
   LOT_CENTER_X,
@@ -47,14 +46,9 @@ function dprForViewport(): number {
  *  Real-light inventory (every real light multiplies lit-material shading
  *  cost, so this is kept to a handful):
  *    - 1 directional "skylight", shadow-casting, weak (0.5)
- *    - 2 warm pointLights per floor for floors 0 & 1 (enclosed storeys)
- *    - 1 warm pointLight on floor 2 (open top storey, also lit by skylight)
- *  Total: 1 directional + 5 pointLights = 6 real lights (same count as the
- *  previous rig, which had 3 overhead + 1 fill + sun + rim = 6).
- *
- *  Visible light sources are emissive geometry (free): two InstancedMeshes
- *  per covered floor (a dark housing + an emissive lamp panel), so 4 draw
- *  calls total for ceiling fixtures across the two enclosed storeys.
+ *    - 1 warm pointLight per enclosed storey (floors 0 & 1 only)
+ *  Total: 1 directional + 2 pointLights = 3 real lights. The open top
+ *  storey relies on the skylight + emissive strips alone.
  */
 
 /** Half-extents of the LIGHT's orthographic camera, not of the lot. The sun
@@ -174,6 +168,17 @@ function CeilingFixtures() {
     [],
   );
 
+  // Dispose GPU resources on unmount so HMR/route changes don't leak
+  // geometries and materials.
+  useEffect(() => {
+    return () => {
+      housingGeometry.dispose();
+      housingMaterial.dispose();
+      lampGeometry.dispose();
+      lampMaterial.dispose();
+    };
+  }, [housingGeometry, housingMaterial, lampGeometry, lampMaterial]);
+
   // Write instance matrices once for every floor's two InstancedMeshes. A
   // single effect (rather than one per floor) keeps the hook count stable.
   useLayoutEffect(() => {
@@ -235,8 +240,8 @@ export const Scene = memo(function Scene({
   cameraMode = "orbit",
   followCarId = null,
   carGroupsRef,
-  nodeSigns,
-  /** Lot graph passed down from the app to avoid a second /lot.json fetch. */
+  /** Lot graph passed down from the app to avoid a second /lot.json fetch.
+   *  May be null while the app is still fetching; <ParkingLot> waits. */
   lot,
 }: {
   children: ReactNode;
@@ -244,8 +249,7 @@ export const Scene = memo(function Scene({
   cameraMode?: CameraMode;
   followCarId?: string | null;
   carGroupsRef?: React.MutableRefObject<Map<string, THREE.Group>>;
-  nodeSigns?: NodeSign[];
-  lot?: import("../types").LotData;
+  lot?: import("../types").LotData | null;
 }) {
   // Opening shot: high and to the south-west for a three-quarter aerial view.
   // The free-fly rig reorients to face the lot centre on mount.
@@ -347,8 +351,8 @@ export const Scene = memo(function Scene({
         color="#cfd8ff"
         target={lightTarget}
         castShadow
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
+        shadow-mapSize-width={1024}
+        shadow-mapSize-height={1024}
         shadow-camera-near={10}
         shadow-camera-far={220}
         shadow-camera-left={-SHADOW_HALF_X}
@@ -361,31 +365,21 @@ export const Scene = memo(function Scene({
       {/* lightTarget must be in the scene graph for the light to use it. */}
       <primitive object={lightTarget} />
 
-      {/* Warm overhead point lights — 2 per enclosed storey (floors 0 & 1),
-          1 on the open top storey (floor 2). `distance` is sized to cover the
-          footprint (~55 x 63) so the pools reach the corners. */}
-      {FLOORS.map((f) => {
-        const ceilY = (f + 1) * FLOOR_HEIGHT - 1.0;
-        const count = f < 2 ? 2 : 1;
-        return Array.from({ length: count }, (_, i) => (
-          <pointLight
-            key={`oh-${f}-${i}`}
-            position={[
-              LOT_CENTER_X,
-              ceilY,
-              // Sit each light directly under a strip fixture (aisles at
-              // z = 0, 17, 34, 51). At +/-16 they sat at z 9.5 and 41.5, 8.5
-              // from the nearest fitting, so the brightest patch of ceiling
-              // was always somewhere no lamp existed.
-              LOT_CENTER_Z + (count === 1 ? 0 : (i === 0 ? -8.5 : 8.5)),
-            ]}
-            intensity={190}
-            distance={72}
-            decay={2}
-            color="#fff2e0"
-          />
-        ));
-      })}
+      {/* Warm overhead point lights — one per enclosed storey (floors 0 & 1)
+          only. The open top storey (floor 2) is lit by the directional
+          skylight alone. `distance` is kept tight (~40) so each light shades
+          far fewer fragments; the emissive ceiling strips already sell the
+          lighting, so these just add a warm pool near the aisle centre. */}
+      {COVERED_FLOORS.map((f) => (
+        <pointLight
+          key={`oh-${f}`}
+          position={[LOT_CENTER_X, (f + 1) * FLOOR_HEIGHT - 1.0, LOT_CENTER_Z]}
+          intensity={150}
+          distance={40}
+          decay={2}
+          color="#fff2e0"
+        />
+      ))}
 
       {/* Visible ceiling strip fixtures (emissive, instanced). */}
       <CeilingFixtures />
@@ -406,8 +400,9 @@ export const Scene = memo(function Scene({
         <meshStandardMaterial color="#08090c" roughness={1} metalness={0} />
       </mesh>
 
-      {/* The parking garage environment. */}
-      <ParkingLot nodeSigns={nodeSigns} lot={lot} />
+      {/* The parking garage environment. nodeSigns are read from context
+          inside ParkingLot so this shell does not re-render on sign updates. */}
+      <ParkingLot lot={lot} />
 
       {/* Floor labels, standing at the front edge of each storey.
           These were drei <Html> with distanceFactor, which is DOM scaled by

@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useRef } from "react";
+import { Suspense, memo, useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { Text, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
@@ -120,6 +120,31 @@ const OTHER_CAR_RADIUS = 0.9;
  *  purpose — a parking garage is not a pinball table. */
 const COLLISION_RESTITUTION = 0.2;
 
+/** Disc sign pairs used by the capsule collision check. Hoisted to module
+ *  scope so the `[1, -1]` tuple literal is not re-allocated every call. */
+const CAPSULE_SIGNS = [1, -1];
+
+/** Reusable contact record for the capsule-vs-car collision pass. The
+ *  contacts array is a fixed-capacity pool reset each frame (length = 0) so
+ *  the per-frame collision pass never allocates. */
+interface CarContact {
+  ox: number;
+  oz: number;
+  pen: number;
+}
+
+/** Cell size for the parked-car spatial hash. Covers ~2x the collision radius
+ *  (CAPSULE_DISC_RADIUS + OTHER_CAR_RADIUS = 1.8) so a 3x3 cell query around
+ *  the player always contains every candidate that can overlap the capsule. */
+const COLLISION_CELL_SIZE = 5;
+
+/** Per-floor uniform grid of parked-car indices, rebuilt only when the
+ *  parkedCars array changes. Keys are hashed cell coordinates. */
+interface FloorGrid {
+  cells: Map<number, number[]>;
+}
+
+
 /** Height of the road surface above the floor slab top (mirrors ParkingLot). */
 const ROAD_Y = 0.15;
 
@@ -194,6 +219,13 @@ interface RampCurve {
   fromFloor: number;
   /** Floor the ramp ends on (ramp_in node's floor). */
   toFloor: number;
+  /** XZ bounding box of the centerline, expanded by RAMP_TRIGGER_DIST so a
+   *  cheap bbox-distance test can skip the per-point projectOnPolyline for
+   *  ramps that are nowhere near the car. */
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
 }
 
 /** Distance from point (px,pz) to segment (a→b) in the XZ plane. */
@@ -214,7 +246,13 @@ function distToSegment2D(
   return Math.hypot(px - (ax + t * dx), pz - (az + t * dz));
 }
 
-/** Closest point on segment (a→b) to point (px,pz) in the XZ plane. */
+/** Reusable scratch pair for closestPointOnSegment2D — avoids a fresh
+ *  tuple allocation on every call from the per-frame road-corridor argmin. */
+const _closestPt: [number, number] = [0, 0];
+
+/** Closest point on segment (a→b) to point (px,pz) in the XZ plane.
+ *  Writes into the module-scope `_closestPt` scratch and returns it; callers
+ *  must read the values before the next call (destructuring is safe). */
 function closestPointOnSegment2D(
   px: number,
   pz: number,
@@ -226,10 +264,16 @@ function closestPointOnSegment2D(
   const dx = bx - ax;
   const dz = bz - az;
   const lenSq = dx * dx + dz * dz;
-  if (lenSq < 1e-6) return [ax, az];
+  if (lenSq < 1e-6) {
+    _closestPt[0] = ax;
+    _closestPt[1] = az;
+    return _closestPt;
+  }
   let t = ((px - ax) * dx + (pz - az) * dz) / lenSq;
   t = Math.max(0, Math.min(1, t));
-  return [ax + t * dx, az + t * dz];
+  _closestPt[0] = ax + t * dx;
+  _closestPt[1] = az + t * dz;
+  return _closestPt;
 }
 
 /** Projection of an XZ point onto a polyline: nearest segment index, the
@@ -241,6 +285,12 @@ interface PolylineProjection {
   t: number;
   dist: number;
 }
+
+/** Reusable scratch for projectOnPolyline. The returned reference is the SAME
+ *  object every call — callers must read index/t/dist before invoking
+ *  projectOnPolyline (or anything that calls it) again. This eliminates the
+ *  per-frame {index,t,dist} allocations on the hot driving path. */
+const _polylineProj: PolylineProjection = { index: 0, t: 0, dist: 0 };
 
 function projectOnPolyline(
   pts: THREE.Vector3[],
@@ -269,7 +319,10 @@ function projectOnPolyline(
       bestT = tc;
     }
   }
-  return { index: bestIndex, t: bestT, dist: Math.sqrt(bestDistSq) };
+  _polylineProj.index = bestIndex;
+  _polylineProj.t = bestT;
+  _polylineProj.dist = Math.sqrt(bestDistSq);
+  return _polylineProj;
 }
 
 /** Y of the ramp surface at an XZ position (before the ROAD_Y lift). */
@@ -359,15 +412,150 @@ function buildRampCurves(lot: LotData): RampCurve[] {
       const fromW = toWorld(from.x, from.y, from.floor);
       const toW = toWorld(to.x, to.y, to.floor);
       const pts = rampPoints(fromW, toW);
+      // Precompute the XZ bbox expanded by the trigger distance so the
+      // per-frame ramp loop can reject far ramps with a single bbox test
+      // instead of running projectOnPolyline over every centerline point.
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.z < minZ) minZ = p.z;
+        if (p.z > maxZ) maxZ = p.z;
+      }
       curves.push({
         points: pts,
         fromFloor: from.floor,
         toFloor: to.floor,
+        minX: minX - RAMP_TRIGGER_DIST,
+        maxX: maxX + RAMP_TRIGGER_DIST,
+        minZ: minZ - RAMP_TRIGGER_DIST,
+        maxZ: maxZ + RAMP_TRIGGER_DIST,
       });
     }
   }
   return curves;
 }
+
+/** Capsule-vs-point collision test. Pushes a contact into `contacts` if either
+ *  disc overlaps the obstacle at (ox,oz). Hoisted to module scope so the
+ *  per-frame collision pass does not allocate a fresh closure, and uses the
+ *  precomputed cosH/sinH instead of re-deriving them from heading. */
+function pushContact(
+  contacts: CarContact[],
+  posX: number,
+  posZ: number,
+  cosH: number,
+  sinH: number,
+  ox: number,
+  oz: number,
+): void {
+  for (let s = 0; s < 2; s++) {
+    const sign = CAPSULE_SIGNS[s];
+    const discX = posX + cosH * CAPSULE_DISC_OFFSET * sign;
+    const discZ = posZ - sinH * CAPSULE_DISC_OFFSET * sign;
+    const dist = Math.hypot(discX - ox, discZ - oz);
+    const pen = CAPSULE_DISC_RADIUS + OTHER_CAR_RADIUS - dist;
+    if (pen > 0) {
+      contacts.push({ ox, oz, pen });
+      return;
+    }
+  }
+}
+
+/** Lateral velocity dead-zone. The grip decay `Math.pow(1-GRIP, dt*60)` leaves
+ *  a steady-state lateral of only ~0.04 at 60fps / ~0.07 at 120fps, so the old
+ *  0.12 deadzone was an absorbing trap that zeroed legitimate drift every
+ *  frame and then let post-collision / post-corridor-clamp writes inject raw
+ *  lateral that survived a full frame. 0.02 sits just above the steady-state
+ *  noise floor so genuine drift reads through while float residue is clamped. */
+const LATERAL_DEADZONE = 0.02;
+
+/** Apply tire grip decay + lag-spike clamp + deadzone to a lateral velocity.
+ *  Hoisted to module scope so the per-frame grip pass AND the post-collision /
+ *  post-corridor-clamp lateral writes all go through the SAME treatment — a
+ *  raw write after the grip pass used to bypass all three and kick the car
+ *  sideways for a frame. latMax is scaled by dt (not a fixed 1/30) so the
+ *  single-frame injection cap is frame-rate aware: it bounds the lateral a
+ *  max-lock turn could bleed in THIS frame, no more. */
+function applyLateralGrip(lat: number, fwdSpeed: number, dt: number): number {
+  lat *= Math.pow(1 - GRIP, dt * 60);
+  const dTurnMax = TURN_RATE * MAX_STEER_ANGLE * dt;
+  const latMax = Math.abs(fwdSpeed) * Math.sin(dTurnMax);
+  if (lat > latMax) lat = latMax;
+  else if (lat < -latMax) lat = -latMax;
+  if (Math.abs(lat) < LATERAL_DEADZONE) lat = 0;
+  return lat;
+}
+
+/** Stable comparator for the contacts pool sort (shallowest penetration first).
+ *  Hoisted to module scope so contacts.sort does not allocate a fresh closure
+ *  every frame there is a contact. */
+function compareContactPen(a: CarContact, b: CarContact): number {
+  return a.pen - b.pen;
+}
+
+/** Scratch state for the AI-car collision forEach callback. Set before the
+ *  forEach call so the module-scope callback can read the player's pose and
+ *  contacts array without a per-frame closure or per-entry destructuring
+ *  arrays (Map.forEach passes value+key as args, not as a tuple). */
+const _aiCollisionScratch = {
+  posY: 0,
+  posX: 0,
+  posZ: 0,
+  cosH: 0,
+  sinH: 0,
+  contacts: null as CarContact[] | null,
+};
+
+/** Module-scope forEach callback for the AI-car collision pass. Reads the
+ *  player pose from _aiCollisionScratch, which is set immediately before the
+ *  forEach call in useFrame. */
+function _aiCollisionCallback(otherGroup: THREE.Group, id: string): void {
+  if (id === PLAYER_CAR_KEY) return;
+  const s = _aiCollisionScratch;
+  if (Math.abs(s.posY - otherGroup.position.y) > 2.0) return;
+  pushContact(
+    s.contacts as CarContact[],
+    s.posX,
+    s.posZ,
+    s.cosH,
+    s.sinH,
+    otherGroup.position.x,
+    otherGroup.position.z,
+  );
+}
+
+/** Build a per-floor uniform grid indexing parked-car positions. Rebuilt only
+ *  when the parkedCars array changes (memoized in the component). The player's
+ *  collision pass queries the 3x3 cells around each of its two discs on the
+ *  current floor, reducing candidate count from O(all parked cars) to ~5-10. */
+function buildParkedCarGrid(
+  parkedCars: ParkedCarPos[],
+): Map<number, FloorGrid> {
+  const byFloor = new Map<number, FloorGrid>();
+  for (let i = 0; i < parkedCars.length; i++) {
+    const pc = parkedCars[i];
+    const floor = Math.round(pc.y / FLOOR_HEIGHT);
+    let grid = byFloor.get(floor);
+    if (!grid) {
+      grid = { cells: new Map() };
+      byFloor.set(floor, grid);
+    }
+    const cx = Math.floor(pc.x / COLLISION_CELL_SIZE);
+    const cz = Math.floor(pc.z / COLLISION_CELL_SIZE);
+    // Numeric cell key; cell coords are bounded by lot size so this is unique.
+    const key = cx * 1000003 + cz;
+    let bucket = grid.cells.get(key);
+    if (!bucket) {
+      bucket = [];
+      grid.cells.set(key, bucket);
+    }
+    bucket.push(i);
+  }
+  return byFloor;
+}
+
 
 /* ------------------------------------------------------------------ *
  *  Car interior materials + shared geometry
@@ -1213,7 +1401,7 @@ function CarInterior({
  * basic collision. Renders a simple box exterior (visible from outside) and
  * a detailed 3D interior (visible from the POV camera).
  */
-export function DrivableCar({
+export const DrivableCar = memo(function DrivableCar({
   lot,
   carGroupsRef,
   speedRef,
@@ -1258,6 +1446,24 @@ export function DrivableCar({
   // Pre-compute ramp curves for height sampling.
   const rampCurves = useMemo(() => buildRampCurves(lot), [lot]);
 
+  // Ramps bucketed by floor (each ramp appears in both its fromFloor and
+  // toFloor buckets) so the per-frame ramp scan only iterates ramps that
+  // touch the current floor instead of all ramps every frame.
+  const rampsByFloor = useMemo(() => {
+    const m = new Map<number, RampCurve[]>();
+    for (const r of rampCurves) {
+      let b = m.get(r.fromFloor);
+      if (!b) { b = []; m.set(r.fromFloor, b); }
+      b.push(r);
+      if (r.toFloor !== r.fromFloor) {
+        let b2 = m.get(r.toFloor);
+        if (!b2) { b2 = []; m.set(r.toFloor, b2); }
+        b2.push(r);
+      }
+    }
+    return m;
+  }, [rampCurves]);
+
   // Lot bounds for collision clamping.
   const bounds = useMemo(() => slabBounds(lot), [lot]);
   const maxFloor = useMemo(
@@ -1267,34 +1473,86 @@ export function DrivableCar({
 
   // World-space XZ positions of all slot nodes, for the slot-area exception
   // in the road clamp (allows the car to drive off the road into parking bays).
-  const slotPositions = useMemo(() => {
-    const out: { x: number; z: number; floor: number }[] = [];
+  // Bucketed by floor so the per-frame slot-exception check only iterates the
+  // current floor's slots.
+  const slotPositionsByFloor = useMemo(() => {
+    const m = new Map<number, { x: number; z: number; floor: number }[]>();
     for (const node of Object.values(lot.nodes)) {
       if (node.type !== "slot") continue;
       const [x, , z] = toWorld(node.x, node.y, node.floor);
-      out.push({ x, z, floor: node.floor });
+      let b = m.get(node.floor);
+      if (!b) { b = []; m.set(node.floor, b); }
+      b.push({ x, z, floor: node.floor });
     }
-    return out;
+    return m;
   }, [lot]);
 
-  // World-space XZ positions of every non-slot node per floor, for reporting
-  // where the car physically is. Slots are handled separately so that only
-  // the player's own assigned bay can ever be reported as a slot node.
-  const guideNodes = useMemo(() => {
-    const out: { id: string; x: number; z: number; floor: number; type: string }[] = [];
+  // World-space XZ positions of every non-slot node, for reporting where the
+  // car physically is. Bucketed by floor so the 150ms node scan only iterates
+  // the current floor's nodes. Slots are handled separately so that only the
+  // player's own assigned bay can ever be reported as a slot node.
+  const guideNodesByFloor = useMemo(() => {
+    const m = new Map<number, { id: string; x: number; z: number; floor: number; type: string }[]>();
     for (const [id, node] of Object.entries(lot.nodes)) {
       if (node.type === "slot" || node.type === "approach") continue;
       const [x, , z] = toWorld(node.x, node.y, node.floor);
-      out.push({ id, x, z, floor: node.floor, type: node.type });
+      let b = m.get(node.floor);
+      if (!b) { b = []; m.set(node.floor, b); }
+      b.push({ id, x, z, floor: node.floor, type: node.type });
     }
-    return out;
+    return m;
   }, [lot]);
+
+  // Road segments bucketed by floor so the corridor argmin only iterates the
+  // current floor's segments instead of all segments every frame.
+  const roadSegmentsByFloor = useMemo(() => {
+    const m = new Map<number, RoadSegment[]>();
+    for (const seg of roadSegments) {
+      let b = m.get(seg.floor);
+      if (!b) { b = []; m.set(seg.floor, b); }
+      b.push(seg);
+    }
+    return m;
+  }, [roadSegments]);
+
+  // Per-floor spatial hash of parked cars, rebuilt only when parkedCars
+  // changes. The collision pass queries the 3x3 cells around each disc,
+  // reducing candidate count from O(all parked cars) to ~5-10.
+  const parkedCarGrid = useMemo(() => buildParkedCarGrid(parkedCars), [parkedCars]);
+
+  // Precomputed world-space XZ + inter-node gaps for the route path, so the
+  // per-frame route-distance scan never calls toWorld() or nodeGap() inside
+  // useFrame. Both are indexed by position in routePath.
+  const routePathData = useMemo(() => {
+    const nodes: { x: number; z: number; floor: number }[] = [];
+    for (let i = 0; i < routePath.length; i++) {
+      const n = lot.nodes[routePath[i]];
+      if (!n) { nodes.push({ x: NaN, z: NaN, floor: -1 }); continue; }
+      const [x, , z] = toWorld(n.x, n.y, n.floor);
+      nodes.push({ x, z, floor: n.floor });
+    }
+    const gaps: number[] = [];
+    for (let i = 0; i < routePath.length - 1; i++) {
+      gaps.push(nodeGap(lot, routePath[i], routePath[i + 1]));
+    }
+    return { nodes, gaps };
+  }, [routePath, lot]);
 
   const exitNodeId = useMemo(
     () =>
       Object.entries(lot.nodes).find(([, node]) => node.type === "exit")?.[0] ?? null,
     [lot],
   );
+  // Precomputed world-space XZ of the exit node, so the 150ms guidance scan
+  // does not call toWorld() inside useFrame.
+  const exitNodePos = useMemo(() => {
+    if (!exitNodeId) return null;
+    const node = lot.nodes[exitNodeId];
+    if (!node) return null;
+    const [x, , z] = toWorld(node.x, node.y, node.floor);
+    return { x, z, floor: node.floor };
+  }, [exitNodeId, lot]);
+
   const assignedSlotPos = useMemo(() => {
     if (!assignedSlot) return null;
     const node = lot.nodes[assignedSlot];
@@ -1302,6 +1560,11 @@ export function DrivableCar({
     const [x, , z] = toWorld(node.x, node.y, node.floor);
     return { x, z, floor: node.floor };
   }, [assignedSlot, lot]);
+
+  // Reusable contacts array for the capsule collision pass. Reset (length = 0)
+  // each frame instead of allocating a fresh array + closure. CarContact
+  // objects are only pushed on actual contact (rare), never on the empty path.
+  const contactsRef = useRef<CarContact[]>([]);
 
   // Spawn behind the entry gate on the approach road, in the lane the entry
   // aisle flows (+x traffic at z = centreline - LANE_WIDTH/2), facing the
@@ -1504,15 +1767,15 @@ export function DrivableCar({
     // shows up as lateral velocity — the drift bleed.
     velocityRef.current = worldVx * cosH - worldVz * sinH;
     lateralVelRef.current = worldVx * sinH + worldVz * cosH;
-    // Apply grip: lateral velocity decays (tires resist sideways motion).
-    lateralVelRef.current *= Math.pow(1 - GRIP, dt * 60);
-    // Clamp injected lateral on lag spikes so a single hiccup frame can't
-    // spike lateral velocity beyond what a max-lock turn at 30fps would bleed.
-    const dTurnMax = TURN_RATE * MAX_STEER_ANGLE * (1 / 30);
-    const latMax = Math.abs(velocityRef.current) * Math.sin(dTurnMax);
-    if (lateralVelRef.current > latMax) lateralVelRef.current = latMax;
-    else if (lateralVelRef.current < -latMax) lateralVelRef.current = -latMax;
-    if (Math.abs(lateralVelRef.current) < 0.12) lateralVelRef.current = 0;
+    // Apply grip + lag-spike clamp + deadzone via the shared helper. The same
+    // treatment is re-applied after collision and corridor-clamp lateral writes
+    // so no un-decayed lateral survives into the next frame's compose/decompose
+    // (which used to kick the car sideways for a frame at the corridor edge).
+    lateralVelRef.current = applyLateralGrip(
+      lateralVelRef.current,
+      velocityRef.current,
+      dt,
+    );
 
     // Move the car by the combined velocity, using the current heading basis.
     const totalVx = cosH * velocityRef.current + sinH * lateralVelRef.current;
@@ -1532,32 +1795,43 @@ export function DrivableCar({
     let bestRampSurfaceY = flatFloorY;
     let bestRampVerticalDelta = Infinity;
 
-    for (const ramp of rampCurves) {
-      if (ramp.fromFloor !== floorRef.current && ramp.toFloor !== floorRef.current) continue;
+    // Only iterate ramps that touch the current floor (floor-bucketed), and
+    // skip any whose expanded XZ bbox is farther than RAMP_TRIGGER_DIST before
+    // running the per-point projectOnPolyline.
+    const floorRamps = rampsByFloor.get(floorRef.current);
+    if (floorRamps) {
+      for (let ri = 0; ri < floorRamps.length; ri++) {
+        const ramp = floorRamps[ri];
+        // Cheap bbox-distance reject (bbox already expanded by RAMP_TRIGGER_DIST).
+        if (
+          g.position.x < ramp.minX || g.position.x > ramp.maxX ||
+          g.position.z < ramp.minZ || g.position.z > ramp.maxZ
+        ) continue;
 
-      const rampDist = projectOnPolyline(ramp.points, g.position.x, g.position.z).dist;
-      if (rampDist >= RAMP_TRIGGER_DIST) continue;
+        const rampDist = projectOnPolyline(ramp.points, g.position.x, g.position.z).dist;
+        if (rampDist >= RAMP_TRIGGER_DIST) continue;
 
-      const rampSurfaceY = rampHeightAt(ramp, g.position.x, g.position.z) + ROAD_Y;
-      // Ground-to-ground delta (g.position.y carries CAR_Y_OFFSET; the ramp
-      // surface does not).
-      const verticalDelta = Math.abs(rampSurfaceY - (g.position.y - CAR_Y_OFFSET));
-      // A deck floating more than MAX_RAMP_CAPTURE_DELTA above or below the
-      // car is scenery, not road — most importantly the A->B ramp passing
-      // ~13 units over the entrance, which used to yank the freshly spawned
-      // car up onto it on frame one because candidacy only checked floors.
-      if (verticalDelta >= MAX_RAMP_CAPTURE_DELTA) continue;
-      // Stacked ramps have identical XZ paths. Vertical continuity, then XZ
-      // distance, makes the ramp touching the car the only valid candidate.
-      // Invariant: floor 1's upper ramp can never sample floor 0's ramp height.
-      if (
-        verticalDelta < bestRampVerticalDelta - 1e-4 ||
-        (Math.abs(verticalDelta - bestRampVerticalDelta) <= 1e-4 && rampDist < bestRampDist)
-      ) {
-        bestRamp = ramp;
-        bestRampDist = rampDist;
-        bestRampSurfaceY = rampSurfaceY;
-        bestRampVerticalDelta = verticalDelta;
+        const rampSurfaceY = rampHeightAt(ramp, g.position.x, g.position.z) + ROAD_Y;
+        // Ground-to-ground delta (g.position.y carries CAR_Y_OFFSET; the ramp
+        // surface does not).
+        const verticalDelta = Math.abs(rampSurfaceY - (g.position.y - CAR_Y_OFFSET));
+        // A deck floating more than MAX_RAMP_CAPTURE_DELTA above or below the
+        // car is scenery, not road — most importantly the A->B ramp passing
+        // ~13 units over the entrance, which used to yank the freshly spawned
+        // car up onto it on frame one because candidacy only checked floors.
+        if (verticalDelta >= MAX_RAMP_CAPTURE_DELTA) continue;
+        // Stacked ramps have identical XZ paths. Vertical continuity, then XZ
+        // distance, makes the ramp touching the car the only valid candidate.
+        // Invariant: floor 1's upper ramp can never sample floor 0's ramp height.
+        if (
+          verticalDelta < bestRampVerticalDelta - 1e-4 ||
+          (Math.abs(verticalDelta - bestRampVerticalDelta) <= 1e-4 && rampDist < bestRampDist)
+        ) {
+          bestRamp = ramp;
+          bestRampDist = rampDist;
+          bestRampSurfaceY = rampSurfaceY;
+          bestRampVerticalDelta = verticalDelta;
+        }
       }
     }
 
@@ -1656,41 +1930,60 @@ export function DrivableCar({
     // that normal responds — tangential momentum survives, so scraping along
     // a row of cars scrubs speed honestly instead of the old blanket
     // *= 0.3 stop.
-    interface CarContact {
-      ox: number;
-      oz: number;
-      pen: number;
-    }
-    const contacts: CarContact[] = [];
-    const consider = (ox: number, oz: number) => {
-      for (const sign of [1, -1] as const) {
-        const discX = g.position.x + Math.cos(heading) * CAPSULE_DISC_OFFSET * sign;
-        const discZ = g.position.z - Math.sin(heading) * CAPSULE_DISC_OFFSET * sign;
-        const dist = Math.hypot(discX - ox, discZ - oz);
-        const pen = CAPSULE_DISC_RADIUS + OTHER_CAR_RADIUS - dist;
-        if (pen > 0) {
-          contacts.push({ ox, oz, pen });
-          return;
+    //
+    // The contacts array is a ref-stable pool reset each frame (length = 0)
+    // and the contact-test function is hoisted to module scope (pushContact),
+    // so the zero-contact hot path allocates nothing. Parked cars are queried
+    // through a per-floor spatial hash (3x3 cells around each disc) instead of
+    // a linear scan over every parked car; AI cars are few enough to keep a
+    // floor-filtered linear scan.
+    const contacts = contactsRef.current;
+    contacts.length = 0;
+
+    // AI cars: few enough that a floor-filtered linear scan is cheaper than
+    // rebuilding a grid each frame. The y-tolerance handles ramp transitions.
+    // Uses Map.forEach with a module-scope callback (_aiCollisionCallback) to
+    // avoid both the per-entry destructuring array allocations that
+    // `for (const [id, otherGroup] of map)` produces and a per-frame closure.
+    const aiScratch = _aiCollisionScratch;
+    aiScratch.posY = g.position.y;
+    aiScratch.posX = g.position.x;
+    aiScratch.posZ = g.position.z;
+    aiScratch.cosH = cosH;
+    aiScratch.sinH = sinH;
+    aiScratch.contacts = contacts;
+    carGroupsRef.current.forEach(_aiCollisionCallback);
+
+    // Parked cars: spatial hash on the current floor. Query the 3x3 cells
+    // around each of the two capsule discs and test only those candidates.
+    const pGrid = parkedCarGrid.get(floorRef.current);
+    if (pGrid) {
+      const invCell = 1 / COLLISION_CELL_SIZE;
+      for (let s = 0; s < 2; s++) {
+        const sign = CAPSULE_SIGNS[s];
+        const discX = g.position.x + cosH * CAPSULE_DISC_OFFSET * sign;
+        const discZ = g.position.z - sinH * CAPSULE_DISC_OFFSET * sign;
+        const ccx = Math.floor(discX * invCell);
+        const ccz = Math.floor(discZ * invCell);
+        for (let dz = -1; dz <= 1; dz++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const bucket = pGrid.cells.get((ccx + dx) * 1000003 + (ccz + dz));
+            if (!bucket) continue;
+            for (let bi = 0; bi < bucket.length; bi++) {
+              const pc = parkedCars[bucket[bi]];
+              pushContact(contacts, g.position.x, g.position.z, cosH, sinH, pc.x, pc.z);
+            }
+          }
         }
       }
-    };
-    for (const [id, otherGroup] of carGroupsRef.current) {
-      if (id === PLAYER_CAR_KEY) continue;
-      // Skip cars on a different floor (cross-floor false collisions).
-      if (Math.abs(g.position.y - otherGroup.position.y) > 2.0) continue;
-      consider(otherGroup.position.x, otherGroup.position.z);
-    }
-    for (const pc of parkedCars) {
-      // Skip parked cars on a different floor (cross-floor false collisions).
-      if (Math.abs(g.position.y - pc.y) > 2.0) continue;
-      consider(pc.x, pc.z);
     }
 
     if (contacts.length > 0) {
       // Shallowest penetration first: resolving glancing contacts before
       // deep ones keeps the push-out direction stable when several cars
-      // overlap the capsule.
-      contacts.sort((a, b) => a.pen - b.pen);
+      // overlap the capsule. The comparator is a hoisted module-scope function
+      // so this sort does not allocate a fresh closure every frame.
+      contacts.sort(compareContactPen);
 
       // World velocity in the CURRENT heading basis (prevHeadingRef was set
       // to `heading` after the move above, so this is exact).
@@ -1727,7 +2020,14 @@ export function DrivableCar({
       }
 
       velocityRef.current = worldVx * cosH - worldVz * sinH;
-      lateralVelRef.current = worldVx * sinH + worldVz * cosH;
+      // Route the post-collision lateral through the same grip + deadzone as
+      // the main pass so no un-decayed lateral survives into next frame's
+      // compose/decompose (which produced a one-frame sideways kick on contact).
+      lateralVelRef.current = applyLateralGrip(
+        worldVx * sinH + worldVz * cosH,
+        velocityRef.current,
+        dt,
+      );
     }
 
     // --- Final boundary pass ----------------------------------------------
@@ -1751,11 +2051,14 @@ export function DrivableCar({
     } else {
       let nearSlot = false;
       const slotExceptionRadius = SLOT_WIDTH / 2 + 1;
-      for (const s of slotPositions) {
-        if (s.floor !== floorRef.current) continue;
-        if (Math.hypot(g.position.x - s.x, g.position.z - s.z) < slotExceptionRadius) {
-          nearSlot = true;
-          break;
+      const floorSlots = slotPositionsByFloor.get(floorRef.current);
+      if (floorSlots) {
+        for (let si = 0; si < floorSlots.length; si++) {
+          const s = floorSlots[si];
+          if (Math.hypot(g.position.x - s.x, g.position.z - s.z) < slotExceptionRadius) {
+            nearSlot = true;
+            break;
+          }
         }
       }
       if (!nearSlot) {
@@ -1784,20 +2087,13 @@ export function DrivableCar({
         let bestX = 0;
         let bestZ = 0;
         let bestSeg: RoadSegment | null = null;
-        for (const seg of roadSegments) {
-          if (seg.floor !== floorRef.current) continue;
-          const d = distToSegment2D(
-            g.position.x,
-            g.position.z,
-            seg.x1,
-            seg.z1,
-            seg.x2,
-            seg.z2,
-          );
-          if (d < bestDist) {
-            bestDist = d;
-            bestSeg = seg;
-            [bestX, bestZ] = closestPointOnSegment2D(
+        // Only iterate the current floor's segments (floor-bucketed) instead
+        // of all segments every frame.
+        const floorSegs = roadSegmentsByFloor.get(floorRef.current);
+        if (floorSegs) {
+          for (let si = 0; si < floorSegs.length; si++) {
+            const seg = floorSegs[si];
+            const d = distToSegment2D(
               g.position.x,
               g.position.z,
               seg.x1,
@@ -1805,6 +2101,18 @@ export function DrivableCar({
               seg.x2,
               seg.z2,
             );
+            if (d < bestDist) {
+              bestDist = d;
+              bestSeg = seg;
+              [bestX, bestZ] = closestPointOnSegment2D(
+                g.position.x,
+                g.position.z,
+                seg.x1,
+                seg.z1,
+                seg.x2,
+                seg.z2,
+              );
+            }
           }
         }
 
@@ -1855,7 +2163,16 @@ export function DrivableCar({
             worldVx -= nx * vn;
             worldVz -= nz * vn;
             velocityRef.current = worldVx * cosH - worldVz * sinH;
-            lateralVelRef.current = worldVx * sinH + worldVz * cosH;
+            // Route the post-corridor-clamp lateral through the same grip +
+            // deadzone as the main pass. The corridor deadband lets the car
+            // drift back out before the clamp refires; writing lateral raw
+            // here used to re-inject a one-frame kick every time the car
+            // re-crossed the deadband, producing the periodic edge jitter.
+            lateralVelRef.current = applyLateralGrip(
+              worldVx * sinH + worldVz * cosH,
+              velocityRef.current,
+              dt,
+            );
           }
         }
       }
@@ -1882,39 +2199,36 @@ export function DrivableCar({
     // it lags by up to one node gap (~3.5 m). Compute the true remaining
     // distance every frame: find where the car sits on its route path, measure
     // from the car's position to the next node, then add the rest of the path.
+    // Uses the precomputed routePathData (world-space XZ + inter-node gaps) so
+    // no toWorld() or nodeGap() call happens inside useFrame.
     if (speedRef && routePath.length >= 2) {
+      const rpNodes = routePathData.nodes;
+      const rpGaps = routePathData.gaps;
       let liveDist = 0;
       // Find the nearest node in the route path on the current floor.
       let nearestIdx = -1;
       let nearestDist = Infinity;
-      for (let i = 0; i < routePath.length; i++) {
-        const n = lot.nodes[routePath[i]];
-        if (!n || n.floor !== floorRef.current) continue;
-        const [wx, , wz] = toWorld(n.x, n.y, n.floor);
-        const d = Math.hypot(g.position.x - wx, g.position.z - wz);
+      for (let i = 0; i < rpNodes.length; i++) {
+        const n = rpNodes[i];
+        if (n.floor !== floorRef.current) continue;
+        const d = Math.hypot(g.position.x - n.x, g.position.z - n.z);
         if (d < nearestDist) {
           nearestDist = d;
           nearestIdx = i;
         }
       }
-      if (nearestIdx >= 0 && nearestIdx < routePath.length - 1) {
+      if (nearestIdx >= 0 && nearestIdx < rpNodes.length - 1) {
         // Distance from car to the next node in the path.
-        const nextNode = lot.nodes[routePath[nearestIdx + 1]];
-        if (nextNode) {
-          const [nx, , nz] = toWorld(nextNode.x, nextNode.y, nextNode.floor);
-          liveDist = Math.hypot(g.position.x - nx, g.position.z - nz);
-          // Add the remaining node-to-node gaps.
-          for (let h = nearestIdx + 1; h < routePath.length - 1; h++) {
-            liveDist += nodeGap(lot, routePath[h], routePath[h + 1]);
-          }
+        const next = rpNodes[nearestIdx + 1];
+        liveDist = Math.hypot(g.position.x - next.x, g.position.z - next.z);
+        // Add the remaining node-to-node gaps (precomputed).
+        for (let h = nearestIdx + 1; h < rpNodes.length - 1; h++) {
+          liveDist += rpGaps[h];
         }
-      } else if (nearestIdx === routePath.length - 1) {
+      } else if (nearestIdx === rpNodes.length - 1) {
         // At the last node: distance is how far the car is from it.
-        const lastNode = lot.nodes[routePath[nearestIdx]];
-        if (lastNode) {
-          const [lx, , lz] = toWorld(lastNode.x, lastNode.y, lastNode.floor);
-          liveDist = Math.hypot(g.position.x - lx, g.position.z - lz);
-        }
+        const last = rpNodes[nearestIdx];
+        liveDist = Math.hypot(g.position.x - last.x, g.position.z - last.z);
       }
       speedRef.current.routeDistance = liveDist;
     } else if (speedRef) {
@@ -1932,12 +2246,16 @@ export function DrivableCar({
       nodeScanAtRef.current = now;
       let bestId: string | null = null;
       let bestDist = Infinity;
-      for (const candidate of guideNodes) {
-        if (candidate.floor !== floorRef.current) continue;
-        const d = Math.hypot(g.position.x - candidate.x, g.position.z - candidate.z);
-        if (d < bestDist) {
-          bestDist = d;
-          bestId = candidate.id;
+      // Only iterate the current floor's guide nodes (floor-bucketed).
+      const floorGuides = guideNodesByFloor.get(floorRef.current);
+      if (floorGuides) {
+        for (let gi = 0; gi < floorGuides.length; gi++) {
+          const candidate = floorGuides[gi];
+          const d = Math.hypot(g.position.x - candidate.x, g.position.z - candidate.z);
+          if (d < bestDist) {
+            bestDist = d;
+            bestId = candidate.id;
+          }
         }
       }
       let toReport: string | null = null;
@@ -1958,12 +2276,10 @@ export function DrivableCar({
         }
       }
       // Leaving: report the exit node when reached so the backend closes out
-      // the run ("left").
-      if (leaving && exitNodeId) {
-        const exitNode = lot.nodes[exitNodeId];
-        if (exitNode.floor === floorRef.current) {
-          const [ex, , ez] = toWorld(exitNode.x, exitNode.y, exitNode.floor);
-          if (Math.hypot(g.position.x - ex, g.position.z - ez) < 4) {
+      // the run ("left"). Uses the precomputed exit node world position.
+      if (leaving && exitNodeId && exitNodePos) {
+        if (exitNodePos.floor === floorRef.current) {
+          if (Math.hypot(g.position.x - exitNodePos.x, g.position.z - exitNodePos.z) < 4) {
             toReport = exitNodeId;
           }
         }
@@ -2014,4 +2330,4 @@ export function DrivableCar({
       </mesh>
     </>
   );
-}
+});

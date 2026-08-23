@@ -1,4 +1,4 @@
-import { Suspense, memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { Suspense, memo, useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
@@ -144,20 +144,29 @@ useGLTF.preload(MODEL_PATHS.small);
 useGLTF.preload(MODEL_PATHS.medium);
 useGLTF.preload(MODEL_PATHS.large);
 
-interface CarModelProps {
-  color: CarColor;
-  size: CarSize;
-  highQuality?: boolean;
-  onLoad?: (object: THREE.Object3D) => void;
-}
+/* ------------------------------------------------------------------ *
+ *  Shared material cache
+ * ------------------------------------------------------------------
+ *  CarModelInner used to allocate one MeshPhysicalMaterial per body and
+ *  one per glass inside its own useMemo, so N AI/static cars produced 2N
+ *  material objects - each with its own uniform uploads and its own
+ *  shader-program slot (clearcoat variants are among the heaviest
+ *  standard materials). The cache below keys body materials by
+ *  `${hex}|${quality}` and glass by quality alone (glass color is the
+ *  constant #1a1d24), so the whole app settles to ~14 body + 2 glass
+ *  materials regardless of car count. Cache entries live for the app
+ *  lifetime - matching how ParkingLot/DrivableCar already treat
+ *  module-scope materials - so active-car mount/unmount churn can no
+ *  longer grow renderer.info.memory.materials.
+ */
+const bodyMaterialCache = new Map<string, THREE.MeshStandardMaterial>();
+const glassMaterialCache = new Map<string, THREE.MeshStandardMaterial>();
 
-function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProps) {
-  const { scene } = useGLTF(MODEL_PATHS[size]);
-  const hex = COLOR_HEX[color];
-
-  const { bodyMaterial, glassMaterial, cloned } = useMemo(() => {
-    const object = scene.clone();
-    const body: THREE.MeshStandardMaterial = highQuality
+function getBodyMaterial(hex: string, highQuality: boolean): THREE.MeshStandardMaterial {
+  const key = `${hex}|${highQuality ? "hq" : "lq"}`;
+  let material = bodyMaterialCache.get(key);
+  if (!material) {
+    material = highQuality
       ? new THREE.MeshPhysicalMaterial({
           color: new THREE.Color(hex),
           metalness: 0.45,
@@ -171,14 +180,16 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
           metalness: 0.4,
           roughness: 0.45,
         });
-    // Near-opaque dark glass, opacity 1 / transparent:false. The old
-    // half-transparent pane composited ground markings straight through the
-    // shell (the "mirror is transparent" report) and dragged every car into
-    // the transparent-sort lottery. Any residual alpha would still blend the
-    // road behind the glass, so 1.0 it is: #1a1d24 at roughness 0.08 reads
-    // as tinted glass purely through its environment reflections - the same
-    // recipe the instanced parked path already renders correctly.
-    const glass: THREE.MeshStandardMaterial = highQuality
+    bodyMaterialCache.set(key, material);
+  }
+  return material;
+}
+
+function getGlassMaterial(highQuality: boolean): THREE.MeshStandardMaterial {
+  const key = highQuality ? "hq" : "lq";
+  let material = glassMaterialCache.get(key);
+  if (!material) {
+    material = highQuality
       ? new THREE.MeshPhysicalMaterial({
           color: new THREE.Color("#1a1d24"),
           metalness: 0.1,
@@ -190,7 +201,38 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
           metalness: 0.1,
           roughness: 0.08,
         });
+    glassMaterialCache.set(key, material);
+  }
+  return material;
+}
 
+interface CarModelProps {
+  color: CarColor;
+  size: CarSize;
+  highQuality?: boolean;
+  onLoad?: (object: THREE.Object3D) => void;
+}
+
+function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProps) {
+  const { scene } = useGLTF(MODEL_PATHS[size]);
+  const hex = COLOR_HEX[color];
+
+  // Materials come from the module-level cache (one body per color/quality,
+  // one glass per quality) so mounting N cars no longer allocates 2N
+  // PhysicalMaterials. The cache owns disposal; this component never disposes
+  // the shared materials. Only the cloned scene is per-instance.
+  const bodyMaterial = getBodyMaterial(hex, highQuality);
+  const glassMaterial = getGlassMaterial(highQuality);
+
+  const cloned = useMemo(() => {
+    const object = scene.clone();
+    // Near-opaque dark glass, opacity 1 / transparent:false. The old
+    // half-transparent pane composited ground markings straight through the
+    // shell (the "mirror is transparent" report) and dragged every car into
+    // the transparent-sort lottery. Any residual alpha would still blend the
+    // road behind the glass, so 1.0 it is: #1a1d24 at roughness 0.08 reads
+    // as tinted glass purely through its environment reflections - the same
+    // recipe the instanced parked path already renders correctly.
     object.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
       child.castShadow = true;
@@ -198,22 +240,14 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       const replaced = materials.map((material) => {
         if (!(material instanceof THREE.Material)) return material;
-        if (material.name === "Windows") return glass;
+        if (material.name === "Windows") return glassMaterial;
         if (NON_BODY.has(material.name)) return material;
-        return body;
+        return bodyMaterial;
       });
       child.material = replaced.length === 1 ? replaced[0] : replaced;
     });
-
-    return { bodyMaterial: body, glassMaterial: glass, cloned: object };
-  }, [scene, hex, highQuality]);
-
-  useEffect(() => {
-    return () => {
-      bodyMaterial.dispose();
-      glassMaterial.dispose();
-    };
-  }, [bodyMaterial, glassMaterial]);
+    return object;
+  }, [scene, bodyMaterial, glassMaterial]);
 
   useEffect(() => {
     onLoad?.(cloned);
@@ -251,7 +285,7 @@ export interface ParkedCarInstance {
   rotationY: number;
 }
 
-export function ParkedCarField({ cars }: { cars: ParkedCarInstance[] }) {
+export const ParkedCarField = memo(function ParkedCarField({ cars }: { cars: ParkedCarInstance[] }) {
   const bySize = useMemo(() => {
     const groups: Record<CarSize, ParkedCarInstance[]> = {
       small: [],
@@ -269,7 +303,7 @@ export function ParkedCarField({ cars }: { cars: ParkedCarInstance[] }) {
       <ParkedCarSizeGroup size="large" cars={bySize.large} />
     </>
   );
-}
+});
 
 const PARKED_CAPACITY = 512;
 
@@ -279,7 +313,7 @@ interface ParkedMesh {
   local: THREE.Matrix4;
 }
 
-function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInstance[] }) {
+const ParkedCarSizeGroup = memo(function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInstance[] }) {
   const { scene } = useGLTF(MODEL_PATHS[size]);
 
   const built = useMemo(() => {
@@ -366,29 +400,130 @@ function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInst
       for (const { mesh } of built.meshes) mesh.dispose();
       built.bodyMaterial.dispose();
       built.glassMaterial.dispose();
+      // Reset the incremental slot bookkeeping so a rebuilt `built` (or a
+      // remount) starts from a clean slate instead of indexing into the
+      // now-disposed InstancedMeshes.
+      slotsRef.current.clear();
+      freeIndicesRef.current.length = 0;
+      nextIndexRef.current = 0;
     };
   }, [built]);
 
-  useEffect(() => {
-    const transform = new THREE.Matrix4();
-    const rotation = new THREE.Matrix4();
-    const color = new THREE.Color();
-    const count = Math.min(cars.length, PARKED_CAPACITY);
+  // Incremental slot -> instance-index bookkeeping. Kept in refs so the
+  // write effect below can diff the incoming `cars` list against what is
+  // already on the GPU and touch only the instances that actually changed,
+  // instead of rewriting every instance matrix + colour and recomputing the
+  // bounding sphere on every park/depart. The spawn (3s) and depart (2s)
+  // loops beat against each other; their full-rewrite storms clustered
+  // every ~6s and stalled the main thread for several frames, which the
+  // dt-clamped chase camera then read as a periodic jitter burst.
+  interface SlotEntry {
+    index: number;
+    color: CarColor;
+    px: number;
+    py: number;
+    pz: number;
+    rotY: number;
+  }
+  const slotsRef = useRef<Map<string, SlotEntry>>(new Map());
+  const freeIndicesRef = useRef<number[]>([]);
+  const nextIndexRef = useRef(0);
 
-    for (const { mesh, isBody, local } of built.meshes) {
-      for (let index = 0; index < count; index++) {
-        const car = cars[index];
-        transform.makeTranslation(car.position[0], car.position[1], car.position[2]);
-        transform.multiply(rotation.makeRotationY(car.rotationY)).multiply(local);
-        mesh.setMatrixAt(index, transform);
-        if (isBody) mesh.setColorAt(index, color.set(COLOR_HEX[car.color]));
+  const scratch = useMemo(
+    () => ({
+      transform: new THREE.Matrix4(),
+      rotation: new THREE.Matrix4(),
+      color: new THREE.Color(),
+      // Zero-scale matrix used to tombstone a freed instance so it renders
+      // nothing without disturbing the indices of the cars still live.
+      degenerate: new THREE.Matrix4().makeScale(0, 0, 0),
+    }),
+    [],
+  );
+
+  useEffect(() => {
+    const slots = slotsRef.current;
+    const freeIndices = freeIndicesRef.current;
+    const newSlots = new Set<string>();
+    let changed = false;
+    let maxIndex = -1;
+
+    type Op =
+      | { kind: "write"; index: number; car: ParkedCarInstance }
+      | { kind: "tombstone"; index: number };
+    const ops: Op[] = [];
+
+    // Pass 1: assign/update every car in the new list.
+    for (const car of cars) {
+      newSlots.add(car.slotNode);
+      const existing = slots.get(car.slotNode);
+      if (!existing) {
+        const free = freeIndices.pop();
+        const index = free ?? nextIndexRef.current;
+        if (index >= PARKED_CAPACITY) continue; // field full; drop excess
+        nextIndexRef.current = Math.max(nextIndexRef.current, index + 1);
+        slots.set(car.slotNode, {
+          index,
+          color: car.color,
+          px: car.position[0],
+          py: car.position[1],
+          pz: car.position[2],
+          rotY: car.rotationY,
+        });
+        ops.push({ kind: "write", index, car });
+        changed = true;
+        if (index > maxIndex) maxIndex = index;
+      } else {
+        const moved =
+          existing.px !== car.position[0] ||
+          existing.py !== car.position[1] ||
+          existing.pz !== car.position[2] ||
+          existing.rotY !== car.rotationY;
+        const recolored = existing.color !== car.color;
+        if (moved || recolored) {
+          existing.color = car.color;
+          existing.px = car.position[0];
+          existing.py = car.position[1];
+          existing.pz = car.position[2];
+          existing.rotY = car.rotationY;
+          ops.push({ kind: "write", index: existing.index, car });
+          changed = true;
+        }
+        if (existing.index > maxIndex) maxIndex = existing.index;
       }
-      mesh.count = count;
+    }
+
+    // Pass 2: tombstone any car that left the list, recycling its index.
+    for (const [slot, entry] of slots) {
+      if (newSlots.has(slot)) continue;
+      ops.push({ kind: "tombstone", index: entry.index });
+      slots.delete(slot);
+      freeIndices.push(entry.index);
+      changed = true;
+    }
+
+    if (!changed) return;
+
+    const { transform, rotation, color, degenerate } = scratch;
+    for (const { mesh, isBody, local } of built.meshes) {
+      for (const op of ops) {
+        if (op.kind === "write") {
+          transform.makeTranslation(op.car.position[0], op.car.position[1], op.car.position[2]);
+          transform.multiply(rotation.makeRotationY(op.car.rotationY)).multiply(local);
+          mesh.setMatrixAt(op.index, transform);
+          if (isBody) mesh.setColorAt(op.index, color.set(COLOR_HEX[op.car.color]));
+        } else {
+          mesh.setMatrixAt(op.index, degenerate);
+        }
+      }
+      mesh.count = Math.min(maxIndex + 1, PARKED_CAPACITY);
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-      mesh.computeBoundingSphere();
+      // computeBoundingSphere skipped: frustumCulled is false on these
+      // meshes, so the sphere is never used for culling, and parked cars
+      // are never raycast. Recomputing it per park/depart was a pure cost.
     }
-  }, [built, cars]);
+  }, [built, cars, scratch]);
 
   return (
     <group>
@@ -397,323 +532,522 @@ function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInst
       ))}
     </group>
   );
-}
-
-interface ActiveCarProps {
-  car: ActiveCar;
-  lot: LotData;
-  onArrive: (carId: string, node: string) => void;
-  carGroupsRef?: React.MutableRefObject<Map<string, THREE.Group>>;
-}
+});
 
 function bayYaw(bay: LotNode): number {
   const aisleY = Math.round(bay.y / AISLE_SPACING) * AISLE_SPACING;
   return bay.y < aisleY ? Math.PI / 2 : -Math.PI / 2;
 }
 
-export const ActiveCarMesh = memo(function ActiveCarMesh({
-  car,
-  lot,
-  onArrive,
-  carGroupsRef,
-}: ActiveCarProps) {
-  const group = useRef<THREE.Group>(null);
-  const targetRotation = useRef(0);
-  const targetPitch = useRef(0);
-  const seeded = useRef(false);
-  const waypoints = useRef<THREE.Vector3[]>([]);
-  const segmentIndex = useRef(0);
-  const segmentProgress = useRef(0);
-  const currentLeg = useRef("");
+/* ------------------------------------------------------------------ *
+ *  Instanced active AI cars
+ * ------------------------------------------------------------------
+ *  Active AI cars used to render as one cloned GLTF scene per car, each
+ *  with its own materials and its own useFrame callback: 20 cars meant
+ *  ~100 draw calls, 20 PhysicalMaterials, 20 frame callbacks, and 20
+ *  per-car wheel-geometry clones. The path below collapses all of that
+ *  to ~5 InstancedMesh draw calls per size class (15 total) driven by a
+ *  single useFrame, with one shared body material (tinted per instance
+ *  via setColorAt) and one shared glass material. Wheel spin is dropped
+ *  - the original centring clones existed only to make spin rotate about
+ *  the hub, and wheels on moving traffic are barely visible, so the
+ *  whole per-car wheel-geometry churn disappears with it.
+ *
+ *  Per-car driving state (waypoints, segment index, route plan, etc.)
+ *  lives in a Map keyed by car id and is preserved across renders, so
+ *  the driving logic is identical to the old per-car useFrame - only the
+ *  rendering and the callback count change. A lightweight THREE.Group
+ *  per car holds the transform the camera rig reads (carGroupsRef), so
+ *  the follow/POV contract is unchanged; those groups are not added to
+ *  the scene graph, they are just transform holders updated each frame.
+ */
+const ACTIVE_CAPACITY = 64;
+
+/** One shared body material for all active AI cars; tinted per instance. */
+const activeBodyMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  metalness: 0.45,
+  roughness: 0.45,
+  clearcoat: 0.8,
+  clearcoatRoughness: 0.15,
+  envMapIntensity: 0.7,
+});
+/** One shared glass material for all active AI cars. */
+const activeGlassMaterial = new THREE.MeshPhysicalMaterial({
+  color: new THREE.Color("#1a1d24"),
+  metalness: 0.1,
+  roughness: 0.1,
+  envMapIntensity: 0.8,
+});
+
+interface ActiveMesh {
+  mesh: THREE.InstancedMesh;
+  isBody: boolean;
+  local: THREE.Matrix4;
+}
+
+interface ActiveSizeBuild {
+  meshes: ActiveMesh[];
+}
+
+function buildActiveSize(size: CarSize, scene: THREE.Object3D): ActiveSizeBuild {
+  scene.updateMatrixWorld(true);
+  const scale = MODEL_SCALE[size];
+  const base = new THREE.Matrix4()
+    .makeRotationY(FORWARD_ROT)
+    .multiply(new THREE.Matrix4().makeScale(scale, scale, scale));
+
+  // Classify per material group, exactly like ParkedCarSizeGroup: body
+  // groups share the white base material (tinted per instance), Windows
+  // groups share the dark glass, and the rest keep their original GLTF
+  // material (shared via the useGLTF cache across every consumer).
+  interface ActivePart {
+    geometry: THREE.BufferGeometry;
+    material: THREE.Material;
+    isBody: boolean;
+    local: THREE.Matrix4;
+  }
+  const parts: ActivePart[] = [];
+  scene.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const materials = (
+      Array.isArray(object.material) ? object.material : [object.material]
+    ).filter((material): material is THREE.Material => material instanceof THREE.Material);
+    if (materials.length === 0) return;
+    const local = new THREE.Matrix4().copy(base).multiply(object.matrixWorld);
+    for (const part of smoothedParts(object.geometry)) {
+      const sourceMaterial =
+        materials[Math.min(part.materialIndex, materials.length - 1)];
+      if (!sourceMaterial) continue;
+      const isBody = !NON_BODY.has(sourceMaterial.name);
+      const material = isBody
+        ? activeBodyMaterial
+        : sourceMaterial.name === "Windows"
+          ? activeGlassMaterial
+          : sourceMaterial;
+      parts.push({ geometry: part.geometry, material, isBody, local });
+    }
+  });
+
+  const meshes: ActiveMesh[] = parts.map(({ geometry, material, isBody, local }) => {
+    const mesh = new THREE.InstancedMesh(geometry, material, ACTIVE_CAPACITY);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.count = 0;
+    mesh.frustumCulled = false;
+    return { mesh, isBody, local };
+  });
+
+  return { meshes };
+}
+
+/** Per-car driving state, preserved across renders for one active AI car. */
+interface ActiveRuntime {
+  car: ActiveCar;
+  size: CarSize;
+  /** Instance index within this car's size-class InstancedMeshes. */
+  index: number;
+  seeded: boolean;
+  targetRotation: number;
+  targetPitch: number;
+  currentLeg: string;
+  waypoints: THREE.Vector3[];
+  segmentIndex: number;
+  segmentProgress: number;
   // Remaining nodes of the server-approved route AFTER the leg currently
   // being driven, plus the version of the last adopted plan so a fresh
   // reply replaces what remains of the queue instead of merging with it.
-  const upcomingNodes = useRef<string[]>([]);
-  const planVersion = useRef(0);
+  upcomingNodes: string[];
+  planVersion: number;
   /** Node the car is waiting to roll into while its entry is blocked. */
-  const heldNode = useRef<string | null>(null);
-  const wheelMeshes = useRef<THREE.Object3D[]>([]);
-  const clonedWheelGeometries = useRef<Set<THREE.BufferGeometry>>(new Set());
-  const lookAheadPoint = useRef(new THREE.Vector3());
+  heldNode: string | null;
+  /** Transform holder the camera rig reads via carGroupsRef. Not in the
+   *  scene graph; only its position/rotation are updated each frame. */
+  group: THREE.Group;
+  lookAhead: THREE.Vector3;
+}
 
-  useEffect(() => {
-    return () => {
-      carGroupsRef?.current.delete(car.id);
-      // Wheel centring clones GLTF geometries per active car. Dispose those
-      // clones when the car parks/leaves so long-running traffic does not grow
-      // renderer.info.memory.geometries forever.
-      for (const geometry of clonedWheelGeometries.current) geometry.dispose();
-      clonedWheelGeometries.current.clear();
-    };
-  }, [car.id, carGroupsRef]);
+/**
+ * Advance one active car's driving logic by one frame. Ported verbatim
+ * from the old per-car ActiveCarMesh useFrame (minus the wheel spin and
+ * the per-frame carGroupsRef/name writes, which now happen on mount via
+ * the sync effect). Writes the resulting pose to rt.group so the camera
+ * rig and the instance-matrix pass can both read it.
+ */
+function stepActiveCar(
+  rt: ActiveRuntime,
+  dt: number,
+  lot: LotData,
+  onArrive: (carId: string, node: string) => void,
+): void {
+  const object = rt.group;
+  const car = rt.car;
+  const fromNode = lot.nodes[car.fromNode];
+  const toNode = lot.nodes[car.toNode];
+  if (!fromNode || !toNode) return;
 
-  const handleModelLoad = useCallback((object: THREE.Object3D) => {
-    const isWheelName = (name: string) => {
-      const lower = name.toLowerCase();
-      return lower.includes("wheel") || lower.includes("tire") || lower.includes("rim");
-    };
-
-    const roots: THREE.Object3D[] = [];
-    object.traverse((child) => {
-      if (!isWheelName(child.name)) return;
-      if (child.parent && isWheelName(child.parent.name)) return;
-      roots.push(child);
-    });
-
-    for (const root of roots) {
-      if (root.userData.wheelCentred) continue;
-      root.userData.wheelCentred = true;
-      const box = new THREE.Box3();
-      root.traverse((child) => {
-        if (!(child instanceof THREE.Mesh)) return;
-        child.geometry.computeBoundingBox();
-        const bounds = child.geometry.boundingBox?.clone();
-        if (!bounds) return;
-        bounds.translate(child.position);
-        box.union(bounds);
-      });
-      if (box.isEmpty()) continue;
-      const centre = box.getCenter(new THREE.Vector3());
-
-      root.traverse((child) => {
-        if (!(child instanceof THREE.Mesh)) return;
-        const geometry = child.geometry.clone();
-        geometry.translate(-centre.x, -centre.y, -centre.z);
-        child.geometry = geometry;
-        clonedWheelGeometries.current.add(geometry);
-      });
-      root.position.add(centre);
+  if (!rt.seeded) {
+    rt.seeded = true;
+    if (fromNode.type === "slot") {
+      const yaw = bayYaw(fromNode);
+      object.rotation.y = yaw;
+      rt.targetRotation = yaw;
     }
+  }
 
-    wheelMeshes.current = roots;
-  }, []);
+  // Adopt the latest server-approved continuation wholesale. A new
+  // version replaces whatever remains of the previous route - never
+  // merges with it - and releases any boundary hold, since the server's
+  // newest word supersedes the decision being waited on. Unknown node
+  // ids are dropped so crossings never resolve against a missing node.
+  const plan = readRoutePlan(car);
+  if (plan && plan.version !== rt.planVersion) {
+    rt.planVersion = plan.version;
+    rt.upcomingNodes = plan.upcoming.filter((id) => id in lot.nodes);
+    rt.heldNode = null;
+  }
 
-  useFrame((_, delta) => {
-    const dt = Math.min(delta, 1 / 30);
-    const object = group.current;
-    if (!object) return;
+  const legKey = `${car.fromNode}>${car.toNode}`;
+  if (legKey !== rt.currentLeg) {
+    rt.currentLeg = legKey;
+    rt.segmentIndex = 0;
+    rt.segmentProgress = 0;
+    rt.waypoints = car.fromNode !== car.toNode
+      ? resolvePath(fromNode, toNode, lot)
+      : [];
+  }
 
-    if (carGroupsRef) carGroupsRef.current.set(car.id, object);
-    if (object.name !== car.id) object.name = car.id;
-
-    const fromNode = lot.nodes[car.fromNode];
-    const toNode = lot.nodes[car.toNode];
-    if (!fromNode || !toNode) return;
-
-    if (!seeded.current) {
-      seeded.current = true;
-      if (fromNode.type === "slot") {
-        const yaw = bayYaw(fromNode);
-        object.rotation.y = yaw;
-        targetRotation.current = yaw;
-      }
-    }
-
-    // Adopt the latest server-approved continuation wholesale. A new
-    // version replaces whatever remains of the previous route - never
-    // merges with it - and releases any boundary hold, since the server's
-    // newest word supersedes the decision being waited on. Unknown node
-    // ids are dropped so crossings never resolve against a missing node.
-    const plan = readRoutePlan(car);
-    if (plan && plan.version !== planVersion.current) {
-      planVersion.current = plan.version;
-      upcomingNodes.current = plan.upcoming.filter((id) => id in lot.nodes);
-      heldNode.current = null;
-    }
-
-    const legKey = `${car.fromNode}>${car.toNode}`;
-    if (legKey !== currentLeg.current) {
-      currentLeg.current = legKey;
-      segmentIndex.current = 0;
-      segmentProgress.current = 0;
-      waypoints.current = car.fromNode !== car.toNode
-        ? resolvePath(fromNode, toNode, lot)
-        : [];
-    }
-
-    let points = waypoints.current;
-    if (points.length < 2) {
-      // Standstill: if a route plan was cached (e.g. the entry road was
-      // blocked when the server replied), try to depart every frame instead
-      // of waiting for the next server reply. This mirrors the heldNode
-      // retry that mid-route crossings use, so standstill-to-moving
-      // transitions are frame-gated (~16ms) not reply-gated (~400ms).
-      if (car.fromNode === car.toNode) {
-        const nextNode = heldNode.current ?? upcomingNodes.current.shift() ?? null;
-        if (nextNode !== null) {
-          if (!isNodeEntryBlocked(car, nextNode, upcomingNodes.current[0])) {
-            heldNode.current = null;
-            car.toNode = nextNode;
-            car.status = "routing";
-            // Re-resolve waypoints for the new leg on the next frame.
-            currentLeg.current = "";
-            return;
-          }
-          // Still blocked: hold the node and retry next frame.
-          heldNode.current = nextNode;
+  let points = rt.waypoints;
+  if (points.length < 2) {
+    // Standstill: if a route plan was cached (e.g. the entry road was
+    // blocked when the server replied), try to depart every frame instead
+    // of waiting for the next server reply. This mirrors the heldNode
+    // retry that mid-route crossings use, so standstill-to-moving
+    // transitions are frame-gated (~16ms) not reply-gated (~400ms).
+    if (car.fromNode === car.toNode) {
+      const nextNode = rt.heldNode ?? rt.upcomingNodes.shift() ?? null;
+      if (nextNode !== null) {
+        if (!isNodeEntryBlocked(car, nextNode, rt.upcomingNodes[0])) {
+          rt.heldNode = null;
+          car.toNode = nextNode;
+          car.status = "routing";
+          // Re-resolve waypoints for the new leg on the next frame.
+          rt.currentLeg = "";
+          return;
         }
+        // Still blocked: hold the node and retry next frame.
+        rt.heldNode = nextNode;
       }
-      const world = toWorld(fromNode.x, fromNode.y, fromNode.floor);
-      const offset = fromNode.type === "slot" ? 0 : LANE_WIDTH / 2;
-      const yaw = object.rotation.y;
-      object.position.set(
-        world[0] - Math.sin(yaw) * offset,
-        world[1] + CAR_Y_OFFSET,
-        world[2] - Math.cos(yaw) * offset,
-      );
+    }
+    const world = toWorld(fromNode.x, fromNode.y, fromNode.floor);
+    const offset = fromNode.type === "slot" ? 0 : LANE_WIDTH / 2;
+    const yaw = object.rotation.y;
+    object.position.set(
+      world[0] - Math.sin(yaw) * offset,
+      world[1] + CAR_Y_OFFSET,
+      world[2] - Math.cos(yaw) * offset,
+    );
+    return;
+  }
+
+  let segmentCount = points.length - 1;
+  const speed = CAR_SPEED * getSpeedScale();
+  rt.segmentProgress += (speed * dt) / Math.max(
+    points[rt.segmentIndex].distanceTo(points[rt.segmentIndex + 1]),
+    0.001,
+  );
+
+  while (rt.segmentProgress >= 1) {
+    const oldLength = points[rt.segmentIndex].distanceTo(points[rt.segmentIndex + 1]);
+    rt.segmentProgress -= 1;
+    rt.segmentIndex++;
+
+    if (rt.segmentIndex >= segmentCount) {
+      const last = points[segmentCount];
+      object.position.set(last.x, last.y + CAR_Y_OFFSET, last.z);
+
+      // Roll straight into the next queued leg when the server route
+      // continues past this node. Only a genuinely final arrival - bay,
+      // exit, or a route starved of continuations - reports back to the
+      // backend; intermediate crossings ride on the periodic state sends
+      // instead of blocking on one round trip per hop.
+      const nextNode = rt.heldNode ?? rt.upcomingNodes.shift() ?? null;
+      if (nextNode !== null) {
+        const prevFrom = car.fromNode;
+        const prevTo = car.toNode;
+        car.progress = 0;
+        car.fromNode = prevTo;
+        car.toNode = nextNode;
+        if (isNodeEntryBlocked(car, nextNode, rt.upcomingNodes[0])) {
+          // Occupied ahead: undo the crossing and hold at the boundary,
+          // retrying on later frames. This physical gate mirrors the
+          // hook's standstill check so queueing discipline survives cars
+          // no longer stopping at every node. The index/progress writes
+          // above are rolled back too, or the next frame would read past
+          // the finished leg's waypoints.
+          car.fromNode = prevFrom;
+          car.toNode = prevTo;
+          // The body rests at the far end of the finished leg.
+          car.progress = 1;
+          rt.heldNode = nextNode;
+          rt.segmentIndex -= 1;
+          // Cap at 1 (not += 1) so progress doesn't grow unboundedly while
+          // held. The old += 1 restored the pre-crossing value, but each
+          // frame then added speed on top, so a car held for N frames
+          // accumulated N * speed * dt / segLen of excess progress. When
+          // released, that excess hurled the car forward in a single jump
+          // — the "hopping" artefact. Capping at 1 keeps the car pinned at
+          // the segment boundary; the while loop re-checks the block every
+          // frame and only a tiny residual (speed*dt/segLen) carries over
+          // when the road clears.
+          rt.segmentProgress = 1;
+          object.rotation.y = rt.targetRotation;
+          object.rotation.z = rt.targetPitch;
+          return;
+        }
+        rt.heldNode = null;
+        // Carry overshoot from the finished leg into the new one so the
+        // crossing stays continuous at any frame rate.
+        const carried = Math.max(
+          rt.segmentProgress * points[segmentCount - 1].distanceTo(points[segmentCount]),
+          0,
+        );
+        const resolved = resolvePath(lot.nodes[prevTo], lot.nodes[nextNode], lot);
+        rt.waypoints = resolved;
+        rt.currentLeg = `${prevTo}>${nextNode}`;
+        rt.segmentIndex = 0;
+        rt.segmentProgress = resolved.length > 1
+          ? Math.min(carried / Math.max(resolved[0].distanceTo(resolved[1]), 0.001), 1)
+          : 0;
+        points = rt.waypoints;
+        segmentCount = points.length - 1;
+        continue;
+      }
+
+      object.rotation.y = toNode.type === "slot" ? bayYaw(toNode) : rt.targetRotation;
+      object.rotation.z = rt.targetPitch;
+      rt.segmentIndex = 0;
+      rt.segmentProgress = 0;
+      rt.waypoints = [];
+      car.progress = 0;
+      car.fromNode = car.toNode;
+      onArrive(car.id, car.toNode);
       return;
     }
 
-    let segmentCount = points.length - 1;
-    const index = segmentIndex.current;
-    const first = points[index];
-    const second = points[index + 1];
-    const segmentLength = first.distanceTo(second);
-    const speed = CAR_SPEED * getSpeedScale();
-    segmentProgress.current += (speed * dt) / Math.max(segmentLength, 0.001);
+    const newLength = points[rt.segmentIndex].distanceTo(points[rt.segmentIndex + 1]);
+    if (newLength > 0.001) rt.segmentProgress *= oldLength / newLength;
+  }
 
-    while (segmentProgress.current >= 1) {
-      const oldLength = points[segmentIndex.current].distanceTo(points[segmentIndex.current + 1]);
-      segmentProgress.current -= 1;
-      segmentIndex.current++;
+  const activeIndex = rt.segmentIndex;
+  const a = points[activeIndex];
+  const b = points[activeIndex + 1];
+  const progress = rt.segmentProgress;
+  car.progress = segmentCount > 0 ? (activeIndex + progress) / segmentCount : 0;
+  object.position.set(
+    a.x + (b.x - a.x) * progress,
+    a.y + (b.y - a.y) * progress + CAR_Y_OFFSET,
+    a.z + (b.z - a.z) * progress,
+  );
 
-      if (segmentIndex.current >= segmentCount) {
-        const last = points[segmentCount];
-        object.position.set(last.x, last.y + CAR_Y_OFFSET, last.z);
+  const LOOK_AHEAD = 3;
+  let remaining = LOOK_AHEAD;
+  let lookIndex = rt.segmentIndex;
+  let lookProgress = rt.segmentProgress;
+  while (remaining > 0 && lookIndex < segmentCount) {
+    const current = points[lookIndex];
+    const next = points[lookIndex + 1];
+    const remainder = (1 - lookProgress) * current.distanceTo(next);
+    if (remainder <= remaining) {
+      remaining -= remainder;
+      lookIndex++;
+      lookProgress = 0;
+    } else {
+      lookProgress += remaining / current.distanceTo(next);
+      remaining = 0;
+    }
+  }
 
-        // Roll straight into the next queued leg when the server route
-        // continues past this node. Only a genuinely final arrival - bay,
-        // exit, or a route starved of continuations - reports back to the
-        // backend; intermediate crossings ride on the periodic state sends
-        // instead of blocking on one round trip per hop.
-        const nextNode = heldNode.current ?? upcomingNodes.current.shift() ?? null;
-        if (nextNode !== null) {
-          const prevFrom = car.fromNode;
-          const prevTo = car.toNode;
-          car.progress = 0;
-          car.fromNode = prevTo;
-          car.toNode = nextNode;
-          if (isNodeEntryBlocked(car, nextNode, upcomingNodes.current[0])) {
-            // Occupied ahead: undo the crossing and hold at the boundary,
-            // retrying on later frames. This physical gate mirrors the
-            // hook's standstill check so queueing discipline survives cars
-            // no longer stopping at every node. The index/progress writes
-            // above are rolled back too, or the next frame would read past
-            // the finished leg's waypoints.
-            car.fromNode = prevFrom;
-            car.toNode = prevTo;
-            // The body rests at the far end of the finished leg.
-            car.progress = 1;
-            heldNode.current = nextNode;
-            segmentIndex.current -= 1;
-            // Cap at 1 (not += 1) so progress doesn't grow unboundedly while
-            // held. The old += 1 restored the pre-crossing value, but each
-            // frame then added speed on top, so a car held for N frames
-            // accumulated N * speed * dt / segLen of excess progress. When
-            // released, that excess hurled the car forward in a single jump
-            // — the "hopping" artefact. Capping at 1 keeps the car pinned at
-            // the segment boundary; the while loop re-checks the block every
-            // frame and only a tiny residual (speed*dt/segLen) carries over
-            // when the road clears.
-            segmentProgress.current = 1;
-            object.rotation.y = targetRotation.current;
-            object.rotation.z = targetPitch.current;
-            return;
-          }
-          heldNode.current = null;
-          // Carry overshoot from the finished leg into the new one so the
-          // crossing stays continuous at any frame rate.
-          const carried = Math.max(
-            segmentProgress.current * points[segmentCount - 1].distanceTo(points[segmentCount]),
-            0,
-          );
-          const resolved = resolvePath(lot.nodes[prevTo], lot.nodes[nextNode], lot);
-          waypoints.current = resolved;
-          currentLeg.current = `${prevTo}>${nextNode}`;
-          segmentIndex.current = 0;
-          segmentProgress.current = resolved.length > 1
-            ? Math.min(carried / Math.max(resolved[0].distanceTo(resolved[1]), 0.001), 1)
-            : 0;
-          points = waypoints.current;
-          segmentCount = points.length - 1;
-          continue;
+  const target = lookIndex < segmentCount
+    ? rt.lookAhead.set(
+        points[lookIndex].x + (points[lookIndex + 1].x - points[lookIndex].x) * lookProgress,
+        points[lookIndex].y + (points[lookIndex + 1].y - points[lookIndex].y) * lookProgress,
+        points[lookIndex].z + (points[lookIndex + 1].z - points[lookIndex].z) * lookProgress,
+      )
+    : points[points.length - 1];
+
+  const dx = target.x - object.position.x;
+  const dy = target.y - (object.position.y - CAR_Y_OFFSET);
+  const dz = target.z - object.position.z;
+  const horizontal = Math.hypot(dx, dz);
+  if (horizontal > 1e-4) {
+    rt.targetRotation = Math.atan2(-dz, dx);
+    rt.targetPitch = Math.atan2(dy, horizontal);
+  }
+
+  let rotationDifference = rt.targetRotation - object.rotation.y;
+  while (rotationDifference > Math.PI) rotationDifference -= Math.PI * 2;
+  while (rotationDifference < -Math.PI) rotationDifference += Math.PI * 2;
+  object.rotation.y += rotationDifference * Math.min(1, dt * 10);
+  object.rotation.z += (rt.targetPitch - object.rotation.z) * Math.min(1, dt * 6);
+}
+
+interface ActiveCarFieldProps {
+  cars: ActiveCar[];
+  lot: LotData;
+  onArrive: (carId: string, node: string) => void;
+  carGroupsRef?: React.MutableRefObject<Map<string, THREE.Group>>;
+}
+
+const SIZES: CarSize[] = ["small", "medium", "large"];
+
+export const ActiveCarField = memo(function ActiveCarField({
+  cars,
+  lot,
+  onArrive,
+  carGroupsRef,
+}: ActiveCarFieldProps) {
+  const smallScene = useGLTF(MODEL_PATHS.small).scene;
+  const mediumScene = useGLTF(MODEL_PATHS.medium).scene;
+  const largeScene = useGLTF(MODEL_PATHS.large).scene;
+
+  const builds = useMemo(
+    () => ({
+      small: buildActiveSize("small", smallScene),
+      medium: buildActiveSize("medium", mediumScene),
+      large: buildActiveSize("large", largeScene),
+    }),
+    [smallScene, mediumScene, largeScene],
+  );
+
+  const runtimes = useRef(new Map<string, ActiveRuntime>());
+  // Latest lot/onArrive are read inside useFrame via refs so the single
+  // frame callback always sees current values without re-subscribing.
+  const lotRef = useRef(lot);
+  const onArriveRef = useRef(onArrive);
+  lotRef.current = lot;
+  onArriveRef.current = onArrive;
+
+  const scratch = useMemo(
+    () => ({
+      transform: new THREE.Matrix4(),
+      rotationY: new THREE.Matrix4(),
+      rotationZ: new THREE.Matrix4(),
+      color: new THREE.Color(),
+    }),
+    [],
+  );
+
+  // Sync the runtime map with the cars array: add new cars, drop gone
+  // cars, and reassign per-size instance indices contiguously. The
+  // carGroupsRef map is kept in lockstep so the camera rig can follow a
+  // car by id; the per-car group is created once on first sight and
+  // deleted when the car leaves, replacing the old per-frame Map.set and
+  // object.name writes that ran inside useFrame.
+  useEffect(() => {
+    const map = runtimes.current;
+    const seen = new Set<string>();
+    const bySize: Record<CarSize, ActiveCar[]> = { small: [], medium: [], large: [] };
+    for (const car of cars) {
+      if (car.player) continue;
+      seen.add(car.id);
+      bySize[car.size].push(car);
+    }
+    for (const id of Array.from(map.keys())) {
+      if (!seen.has(id)) {
+        map.delete(id);
+        carGroupsRef?.current.delete(id);
+      }
+    }
+    for (const size of SIZES) {
+      bySize[size].forEach((car, index) => {
+        let rt = map.get(car.id);
+        if (!rt) {
+          rt = {
+            car,
+            size,
+            index,
+            seeded: false,
+            targetRotation: 0,
+            targetPitch: 0,
+            currentLeg: "",
+            waypoints: [],
+            segmentIndex: 0,
+            segmentProgress: 0,
+            upcomingNodes: [],
+            planVersion: 0,
+            heldNode: null,
+            group: new THREE.Group(),
+            lookAhead: new THREE.Vector3(),
+          };
+          rt.group.name = car.id;
+          map.set(car.id, rt);
+          carGroupsRef?.current.set(car.id, rt.group);
+        } else {
+          // Car objects are stable references in practice (the sim mutates
+          // them in place), but keep the reference fresh in case a future
+          // change replaces them - driving state is preserved regardless.
+          rt.car = car;
+          rt.index = index;
         }
+      });
+    }
+  }, [cars, carGroupsRef]);
 
-        object.rotation.y = toNode.type === "slot" ? bayYaw(toNode) : targetRotation.current;
-        object.rotation.z = targetPitch.current;
-        segmentIndex.current = 0;
-        segmentProgress.current = 0;
-        waypoints.current = [];
-        car.progress = 0;
-        car.fromNode = car.toNode;
-        onArrive(car.id, car.toNode);
-        return;
+  useFrame((_, delta) => {
+    const dt = Math.min(delta, 1 / 30);
+    const lotNow = lotRef.current;
+    const onArriveNow = onArriveRef.current;
+
+    // Step every active car's driving logic in one tight loop, reusing the
+    // same scratch set across all cars (each car writes to its own group).
+    for (const rt of runtimes.current.values()) {
+      stepActiveCar(rt, dt, lotNow, onArriveNow);
+    }
+
+    // Write instance matrices per size build. Cars of a size are collected
+    // in index order so instance i maps to runtime i; the per-part local
+    // matrix already carries FORWARD_ROT + scale + the mesh's scene-local
+    // transform, so the instance matrix is just translate * Ry * Rz * local
+    // (Rz carries the ramp pitch the old group.rotation.z held).
+    const { transform, rotationY, rotationZ, color } = scratch;
+    for (const size of SIZES) {
+      const build = builds[size];
+      const sizeRts: ActiveRuntime[] = [];
+      for (const rt of runtimes.current.values()) {
+        if (rt.size === size) sizeRts[rt.index] = rt;
       }
-
-      const newLength = points[segmentIndex.current].distanceTo(points[segmentIndex.current + 1]);
-      if (newLength > 0.001) segmentProgress.current *= oldLength / newLength;
-    }
-
-    const activeIndex = segmentIndex.current;
-    const a = points[activeIndex];
-    const b = points[activeIndex + 1];
-    const progress = segmentProgress.current;
-    car.progress = segmentCount > 0 ? (activeIndex + progress) / segmentCount : 0;
-    object.position.set(
-      a.x + (b.x - a.x) * progress,
-      a.y + (b.y - a.y) * progress + CAR_Y_OFFSET,
-      a.z + (b.z - a.z) * progress,
-    );
-
-    const LOOK_AHEAD = 3;
-    let remaining = LOOK_AHEAD;
-    let lookIndex = segmentIndex.current;
-    let lookProgress = segmentProgress.current;
-    while (remaining > 0 && lookIndex < segmentCount) {
-      const current = points[lookIndex];
-      const next = points[lookIndex + 1];
-      const remainder = (1 - lookProgress) * current.distanceTo(next);
-      if (remainder <= remaining) {
-        remaining -= remainder;
-        lookIndex++;
-        lookProgress = 0;
-      } else {
-        lookProgress += remaining / current.distanceTo(next);
-        remaining = 0;
+      const count = sizeRts.length;
+      for (const { mesh, isBody, local } of build.meshes) {
+        for (let i = 0; i < count; i++) {
+          const rt = sizeRts[i];
+          if (!rt) continue;
+          const g = rt.group;
+          transform.makeTranslation(g.position.x, g.position.y, g.position.z);
+          transform.multiply(rotationY.makeRotationY(g.rotation.y));
+          transform.multiply(rotationZ.makeRotationZ(g.rotation.z));
+          transform.multiply(local);
+          mesh.setMatrixAt(i, transform);
+          if (isBody) mesh.setColorAt(i, color.set(COLOR_HEX[rt.car.color]));
+        }
+        mesh.count = count;
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       }
     }
-
-    const target = lookIndex < segmentCount
-      ? lookAheadPoint.current.set(
-          points[lookIndex].x + (points[lookIndex + 1].x - points[lookIndex].x) * lookProgress,
-          points[lookIndex].y + (points[lookIndex + 1].y - points[lookIndex].y) * lookProgress,
-          points[lookIndex].z + (points[lookIndex + 1].z - points[lookIndex].z) * lookProgress,
-        )
-      : points[points.length - 1];
-
-    const dx = target.x - object.position.x;
-    const dy = target.y - (object.position.y - CAR_Y_OFFSET);
-    const dz = target.z - object.position.z;
-    const horizontal = Math.hypot(dx, dz);
-    if (horizontal > 1e-4) {
-      targetRotation.current = Math.atan2(-dz, dx);
-      targetPitch.current = Math.atan2(dy, horizontal);
-    }
-
-    let rotationDifference = targetRotation.current - object.rotation.y;
-    while (rotationDifference > Math.PI) rotationDifference -= Math.PI * 2;
-    while (rotationDifference < -Math.PI) rotationDifference += Math.PI * 2;
-    object.rotation.y += rotationDifference * Math.min(1, dt * 10);
-    object.rotation.z += (targetPitch.current - object.rotation.z) * Math.min(1, dt * 6);
-
-    const wheelRadius = 0.28 * MODEL_SCALE[car.size];
-    const wheelSpin = ((CAR_SPEED * getSpeedScale()) / wheelRadius) * dt;
-    for (const wheel of wheelMeshes.current) wheel.rotation.x += wheelSpin;
   });
 
   return (
-    <group ref={group}>
-      <CarModel color={car.color} size={car.size} highQuality onLoad={handleModelLoad} />
+    <group>
+      {builds.small.meshes.map(({ mesh }, index) => (
+        <primitive key={`active-s${index}`} object={mesh} />
+      ))}
+      {builds.medium.meshes.map(({ mesh }, index) => (
+        <primitive key={`active-m${index}`} object={mesh} />
+      ))}
+      {builds.large.meshes.map(({ mesh }, index) => (
+        <primitive key={`active-l${index}`} object={mesh} />
+      ))}
     </group>
   );
 });
