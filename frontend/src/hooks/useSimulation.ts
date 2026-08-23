@@ -31,6 +31,7 @@ import {
   SPAWN_INTERVAL_MS,
   STATE_TICK_MS,
   TARGET_ACTIVE_CARS,
+  toWorld,
 } from "../sim/constants";
 
 /** Override with VITE_WS_URL when the backend runs somewhere else. */
@@ -85,7 +86,11 @@ const sharedWorld: {
   lot: LotData | null;
   cars: ActiveCar[];
   instructions: Map<string, InstructionSign>;
-} = { lot: null, cars: [], instructions: new Map() };
+  /** Live physical position of the player car (updated every frame from
+   *  DrivableCar). AI cars check this to avoid driving through a player
+   *  stopped between nodes, which the node-level gate alone can't catch. */
+  playerPos: { x: number; z: number; floor: number } | null;
+} = { lot: null, cars: [], instructions: new Map(), playerPos: null };
 
 /**
  * Physical entry gate used at node crossings. Mirrors the standstill gate
@@ -102,7 +107,29 @@ export function isNodeEntryBlocked(
 ): boolean {
   const lot = sharedWorld.lot;
   if (!lot) return false;
-  return isRoadBlocked(lot, sharedWorld.cars, self, node, beyond, sharedWorld.instructions);
+  if (isRoadBlocked(lot, sharedWorld.cars, self, node, beyond, sharedWorld.instructions)) {
+    return true;
+  }
+  // Physical check: if the player car is stopped on the road near the
+  // target node, block entry so AI cars don't drive through it. The
+  // node-level gate above only catches cars whose fromNode/toNode matches,
+  // but the player reports nodes sparsely and can sit between them.
+  const pp = sharedWorld.playerPos;
+  if (pp && pp.floor >= 0 && lot.nodes[node]) {
+    const targetFloor = lot.nodes[node].floor;
+    if (pp.floor === targetFloor) {
+      const [nx, , nz] = toWorld(lot.nodes[node].x, lot.nodes[node].y, lot.nodes[node].floor);
+      if (Math.hypot(pp.x - nx, pp.z - nz) < 5) return true;
+    }
+  }
+  return false;
+}
+
+/** Update the player car's live physical position. Called every frame from
+ *  DrivableCar so AI cars can avoid the player even when stopped between
+ *  graph nodes. */
+export function updatePlayerPos(x: number, z: number, floor: number): void {
+  sharedWorld.playerPos = { x, z, floor };
 }
 
 export type { GarageFill, ParkedCarData } from "../sim/fill";

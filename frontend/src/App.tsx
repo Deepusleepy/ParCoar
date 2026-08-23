@@ -30,7 +30,7 @@ export function App() {
   const carGroupsRef = useRef<Map<string, THREE.Group>>(new Map());
   const [panelOpen, setPanelOpen] = useState(false);
   const [overlays, setOverlays] = useState<Overlays>(DEFAULT_OVERLAYS);
-  const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0 });
+  const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0, routeDistance: -1 });
 
   const patchOverlays = (patch: Partial<Overlays>) =>
     setOverlays((current) => ({ ...current, ...patch }));
@@ -178,6 +178,7 @@ export function App() {
               roadSegments={roadSegments}
               pov={cameraMode === "pov"}
               assignedSlot={playerCar?.slot ?? null}
+              routePath={playerRoute?.path ?? []}
               playerStatus={playerCar?.status ?? "routing"}
               leaving={playerCar?.leaving ?? false}
               runId={sim.playerRunId}
@@ -197,6 +198,7 @@ export function App() {
             destinationType={playerRoute?.destinationType ?? null}
             distance={playerRoute?.routeDistance ?? 0}
             nextDirection={playerRoute?.nextDirection ?? null}
+            speedRef={playerSpeedRef}
           />
         )}
         <div className="flex items-start justify-between">
@@ -344,6 +346,7 @@ function PlayerGuidance({
   destinationType,
   distance,
   nextDirection,
+  speedRef,
 }: {
   status: string;
   leaving: boolean;
@@ -351,16 +354,34 @@ function PlayerGuidance({
   destinationType: "bay" | "exit" | null;
   distance: number;
   nextDirection: string | null;
+  speedRef: React.RefObject<PlayerSpeedRef>;
 }) {
+  // Poll the live route distance from the DrivableCar (updated every frame)
+  // so the strip doesn't lag behind by a node gap.
+  const [liveDistance, setLiveDistance] = useState(distance);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const live = speedRef.current?.routeDistance;
+      if (live !== undefined && live >= 0) setLiveDistance(live);
+    }, 100);
+    return () => clearInterval(interval);
+  }, [speedRef]);
+  useEffect(() => {
+    if (speedRef.current?.routeDistance === undefined || speedRef.current.routeDistance < 0) {
+      setLiveDistance(distance);
+    }
+  }, [distance, speedRef]);
+
+  const shownDistance = liveDistance;
   let line: string;
   if (status === "parked") {
     line = `PARKED ${slot ? bayLabel(slot) : ""} — L TO LEAVE`;
   } else if (status === "no_slot") {
     line = "NO FREE BAY";
   } else if (destinationType === "exit" && leaving) {
-    line = `${Math.round(distance)} m · ${DIRECTION_WORD[nextDirection ?? ""] ?? ""} → EXIT`;
+    line = `${Math.round(shownDistance)} m · ${DIRECTION_WORD[nextDirection ?? ""] ?? ""} → EXIT`;
   } else if (slot) {
-    line = `BAY ${bayLabel(slot)} · ${Math.round(distance)} m · ${
+    line = `BAY ${bayLabel(slot)} · ${Math.round(shownDistance)} m · ${
       DIRECTION_WORD[nextDirection ?? ""] ?? ""
     }`;
   } else {
