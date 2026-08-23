@@ -77,7 +77,7 @@ export function ControlPanel({
             label="Cars on the road"
             value={settings.targetCars}
             min={0}
-            max={8}
+            max={20}
             step={1}
             format={(v) => `${v}`}
             onChange={(targetCars) => onSettings({ targetCars })}
@@ -85,9 +85,9 @@ export function ControlPanel({
           <Slider
             label="New car every"
             value={settings.spawnEverySec}
-            min={1}
+            min={0.5}
             max={20}
-            step={1}
+            step={0.5}
             format={(v) => `${v}s`}
             onChange={(spawnEverySec) => onSettings({ spawnEverySec })}
           />
@@ -95,7 +95,7 @@ export function ControlPanel({
             label="Leaving at once"
             value={settings.maxLeaving}
             min={0}
-            max={4}
+            max={8}
             step={1}
             format={(v) => `${v}`}
             onChange={(maxLeaving) => onSettings({ maxLeaving })}
