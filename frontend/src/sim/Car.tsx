@@ -586,11 +586,15 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({
             // the finished leg's waypoints.
             car.fromNode = prevFrom;
             car.toNode = prevTo;
-            // The body rests at the far end of the finished leg.
+            // The body rests at the far end of the finished leg. Reset
+            // segmentProgress to exactly 1 instead of rolling back with
+            // += 1: each held frame adds speed*dt/segLen before the while
+            // loop, so += 1 would preserve that as accumulated debt and
+            // discharge it as a forward lurch when the road clears.
             car.progress = 1;
             heldNode.current = nextNode;
             segmentIndex.current -= 1;
-            segmentProgress.current += 1;
+            segmentProgress.current = 1;
             object.rotation.y = targetRotation.current;
             object.rotation.z = targetPitch.current;
             return;
