@@ -6,17 +6,30 @@ broken happened.
 
 ## Running it
 
-Both servers must already be up: the Python backend, and the frontend (dev or
-preview).
+Both servers must already be up: the Python backend, and the frontend dev
+server (`npm run dev`). A preview or production build does not work: the page
+only publishes `window.__parcoarSim` in dev builds (`import.meta.env.DEV` in
+`useSimulation.ts`), so under preview this gate would be checking nothing.
 
 ```
 python3 backend/server.py &          # or backend/.venv/bin/python
 cd frontend && npm run dev &
 node tests/simcheck/check.mjs                                 # 180s, localhost:5180
+SIMCHECK_DURATION_MS=60000 node tests/simcheck/check.mjs      # 60s instead of 180s
+SIMCHECK_MIN_CARS=5 node tests/simcheck/check.mjs             # fail unless 5+ cars ever appear
 node tests/simcheck/check.mjs http://localhost:5180/ 300      # longer run
 ```
 
 Exit code 0 means every invariant held. Non-zero prints what broke.
+
+`SIMCHECK_DURATION_MS` sets the soak length in milliseconds (default 180000);
+the positional seconds argument still overrides it.
+
+`SIMCHECK_MIN_CARS` sets the fewest distinct cars the run must observe across
+both channels — sim-state samples and rendered poses (default 1). A soak that
+never saw a car checked nothing, so it fails loudly instead of passing; the
+busy-fraction blind-run guard cannot catch that case, because an empty world
+is honestly idle.
 
 Playwright is the only dependency: `npx playwright install chromium` once.
 
@@ -32,6 +45,19 @@ Playwright is the only dependency: `npx playwright install chromium` once.
 | No car is re-assigned a different bay mid-journey | It reads as the car changing its mind |
 | At least 90% of cars pass a guidance board | Otherwise the garage is not demonstrating anything |
 | The page throws no errors | |
+
+## Two modes: full and degraded
+
+The gate picks its mode from how fast the page actually rendered, measured as
+the median gap between captured frames. Above 500ms per frame (the
+`FULL_MODE_MAX_MEDIAN_GAP_MS` constant), one animation tick moves a car
+further than its own length and followers clip through leaders until the next
+corrective tick, so the body-overlap check starts measuring the renderer
+rather than the driving. In that situation the run degrades: ONLY the overlap
+assertion is skipped — still counted and printed as
+`overlapPairsSkippedByDegradedMode`, never silently dropped — and every
+state-channel check keeps full strength. The JSON summary reports the mode
+and the median gap either way.
 
 ## About resolution
 

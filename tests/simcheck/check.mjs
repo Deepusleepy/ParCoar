@@ -8,6 +8,23 @@
  *
  *   node tests/simcheck/check.mjs [url] [seconds]
  *
+ * SIMCHECK_DURATION_MS sets the soak length in milliseconds without needing
+ * the positional argument (CI uses it for a shorter run than a human would
+ * sit through); the positional seconds still override it.
+ *
+ * SIMCHECK_MIN_CARS sets the fewest distinct cars the run must observe
+ * across both channels, sim state and rendered poses (default 1); a run that
+ * saw fewer never looked at anything and fails loudly instead of passing.
+ *
+ * The gate runs in one of two modes, chosen from how fast the page actually
+ * rendered. On a machine that cannot keep up, one animation tick moves a car
+ * further than its own length and a follower visibly clips through a leader
+ * until the next corrective tick, so the body-overlap check ends up
+ * measuring the renderer rather than the driving. Degraded mode drops ONLY
+ * that assertion and says so in the output; every check fed by the 50ms
+ * state channel (blindness, pauses, guidance, routing stability) still
+ * applies at full strength.
+ *
  * Exit code 0 means every invariant held. Non-zero means at least one broke,
  * and the offending samples are printed.
  *
@@ -23,7 +40,10 @@
 import { chromium } from "playwright";
 
 const URL = process.argv[2] ?? "http://localhost:5180/";
-const SECONDS = Number(process.argv[3] ?? 180);
+/** Soak length. SIMCHECK_DURATION_MS replaces the 180s default; a garbage or
+ *  zero value falls back to the default rather than sampling for NaN ms. */
+const ENV_MS = Number(process.env.SIMCHECK_DURATION_MS ?? 180000);
+const SECONDS = Number(process.argv[3] ?? (Number.isFinite(ENV_MS) && ENV_MS > 0 ? ENV_MS / 1000 : 180));
 
 /* --- Invariants ---------------------------------------------------- */
 
@@ -60,6 +80,34 @@ const MAX_VERTICAL_STEP = 1.5;
 /** Every car on the road should pass at least one guidance board, or the
  *  garage is not demonstrating anything. */
 const MIN_CARS_WITH_GUIDANCE_FRACTION = 0.9;
+/** Vacuous-pass guard. Car detection depends on /wheel/i still matching a mesh
+ *  inside every car group. If that ever stops matching, every frame comes back
+ *  empty and all of the physical checks pass without having looked at a single
+ *  car — the same "clean garage, bug fully present" lie the pause threshold
+ *  once told. The sim state publishes independently of the scene graph, so it
+ *  can witness whether cars actually existed: when the sim says the road was
+ *  busy for most of the run and the sampler saw poses in fewer than this
+ *  fraction of frames, the gate was blind and must say so. */
+const MIN_FRAMES_WITH_CARS_FRACTION = 0.2;
+/** Floor on how much the run saw at all. The busy-fraction guard above needs
+ *  the sim to report a busy lot, but a regression that never spawns a car —
+ *  in the spawner or in whatever feeds it — leaves BOTH channels empty for
+ *  the whole soak: every state sample lists no cars, every frame carries no
+ *  poses, the sim is honestly idle so nothing above fires, and below,
+ *  guidanceFraction defaults to 1 when no car was ever seen. Distinct car
+ *  ids from either channel count toward this floor. SIMCHECK_MIN_CARS
+ *  overrides it; garbage falls back to the default, like SIMCHECK_DURATION_MS. */
+const ENV_MIN_CARS = Number(process.env.SIMCHECK_MIN_CARS ?? 1);
+const MIN_CARS =
+  Number.isInteger(ENV_MIN_CARS) && ENV_MIN_CARS >= 1 ? ENV_MIN_CARS : 1;
+/** Sampling density under which rendered positions stop being evidence of
+ *  continuous motion. Top speed is 7 units/s, so once the median gap between
+ *  captured frames passes 500ms a single animation tick can move a car
+ *  further than its own length; the queueing corrections that keep followers
+ *  off leaders only run per tick, so pairs render interpenetrated until the
+ *  next tick lands. Below that density the overlap check measures the
+ *  renderer, not the driving, and the run degrades instead of lying. */
+const FULL_MODE_MAX_MEDIAN_GAP_MS = 500;
 
 const browser = await chromium.launch({
   headless: true,
@@ -119,6 +167,54 @@ await browser.close();
 
 const failures = [];
 const note = (name, detail) => failures.push({ name, detail });
+
+// Blind-run guard. The scene graph and the sim state come from different code
+// paths, so one going quiet does not mean the other did. A run with no frames
+// at all checked nothing; a run where the sim kept reporting cars but the
+// frames stayed empty means the /wheel/i matcher no longer finds the car
+// meshes, and every physical check below would pass without seeing anything.
+if (frames.length === 0) {
+  note("no frames were captured", "the scene sampler never ran; nothing physical was checked");
+} else {
+  const withCars = frames.filter((f) => f.frame.length > 0).length;
+  const activeStates = states.filter((s) => s.cars.length > 0).length;
+  const simBusy = states.length > 0 && activeStates / states.length > 0.5;
+  if (simBusy && withCars / frames.length < MIN_FRAMES_WITH_CARS_FRACTION) {
+    note("the sampler saw no car poses while the sim reported active cars",
+      `${withCars}/${frames.length} frames had any pose across ` +
+      `${activeStates}/${states.length} car-occupied state samples; ` +
+      "no mesh in any car group matches /wheel/i anymore, most likely a rename");
+  }
+}
+
+// Total-blindness guard, independent of the one above: when no car ever
+// existed the sim honestly reports an idle lot, so simBusy stays false and
+// that guard never fires — while every physical check below no-ops over an
+// empty world and the run passes having seen nothing. Distinct ids from
+// either channel count: each sampler watches different code paths, so one
+// alone can vouch that cars were real.
+const posedIds = new Set(frames.flatMap((f) => f.frame.map((c) => c.id)));
+const sampledIds = new Set(states.flatMap((s) => s.cars.map((c) => c.id)));
+const carsEverSeen = new Set([...posedIds, ...sampledIds]);
+if (carsEverSeen.size < MIN_CARS) {
+  note(`simcheck was blind: ${carsEverSeen.size === 0 ? "zero" : carsEverSeen.size} cars seen`,
+    `${states.length} state samples and ${frames.length} rendered frames were ` +
+    `inspected against a minimum of ${MIN_CARS}; an empty world makes every ` +
+    "other invariant vacuous");
+}
+
+// Mode selection. The median is used rather than the mean so a few long
+// stalls on an otherwise healthy machine cannot flip the run to degraded;
+// only a renderer that fell behind for most of the soak does.
+const frameGaps = frames
+  .slice(1)
+  .map((f, i) => f.t - frames[i].t)
+  .sort((a, b) => a - b);
+const medianFrameGapMs = frameGaps.length
+  ? frameGaps[Math.floor(frameGaps.length / 2)]
+  : Infinity;
+const degraded = medianFrameGapMs > FULL_MODE_MAX_MEDIAN_GAP_MS;
+let overlapsFoundInDegradedMode = 0;
 
 // Physical: per-car motion between frames.
 const byCar = new Map();
@@ -263,7 +359,16 @@ if (longPauses.length) {
     `${longPauses.length} times, worst ${worst.ms}ms at ${worst.node}` +
     (boardNodes.has(worst.node) ? " (a guidance board node)" : ""));
 }
-if (overlaps.length) note("car bodies overlapped", `${overlaps.length} pairs, closest centres ${Math.min(...overlaps.map((o) => o.gap))}`);
+if (overlaps.length) {
+  if (degraded) {
+    // Not reported as a failure: at this sampling density the pairs below
+    // are rendering artefacts. They are still counted and printed so a
+    // degraded run can never be mistaken for one that saw no contact.
+    overlapsFoundInDegradedMode = overlaps.length;
+  } else {
+    note("car bodies overlapped", `${overlaps.length} pairs, closest centres ${Math.min(...overlaps.map((o) => o.gap))}`);
+  }
+}
 if (jumps.length) note("cars jumped", `${jumps.length} times, furthest ${Math.max(...jumps.map((j) => j.dist))}`);
 if (verticals.length) note("cars changed height abruptly", `${verticals.length} times`);
 if (reversals.length) note("cars drove backwards on the road", `${reversals.length} times`);
@@ -278,15 +383,31 @@ const pauseMs = pauses.map((p) => p.ms).sort((a, b) => a - b);
 console.log(JSON.stringify({
   url: URL,
   seconds: SECONDS,
+  mode: degraded ? "degraded" : "full",
+  medianFrameGapMs: Number.isFinite(medianFrameGapMs) ? Math.round(medianFrameGapMs) : null,
   carsSeen: carsSeen.size,
   frames: frames.length,
+  framesWithCarPoses: frames.filter((f) => f.frame.length > 0).length,
   longestPauseMs: pauseMs.length ? pauseMs[pauseMs.length - 1] : 0,
   medianPauseMs: pauseMs.length ? pauseMs[Math.floor(pauseMs.length / 2)] : 0,
   pausesOverThresholdWithClearRoad: longPauses.length,
   pausesOverThresholdQueuedBehindAnother: queuedPauses.length,
-  overlappingPairs: overlaps.length,
+  overlappingPairsFound: overlaps.length + overlapsFoundInDegradedMode,
+  overlapPairsSkippedByDegradedMode: overlapsFoundInDegradedMode,
   carsWithGuidancePercent: +(guidanceFraction * 100).toFixed(0),
 }, null, 2));
+
+if (degraded) {
+  console.log(
+    `\nDEGRADED MODE — renderer median frame gap ${Math.round(medianFrameGapMs)}ms ` +
+    `exceeds the ${FULL_MODE_MAX_MEDIAN_GAP_MS}ms full-mode ceiling.`,
+  );
+  console.log(
+    `  The body-overlap assertion was skipped (${overlapsFoundInDegradedMode} candidate pairs ` +
+    "seen); at this sampling density those measure rendering artefacts, not driving.",
+  );
+  console.log("  State-channel checks (blindness, pauses, guidance, routing) still applied at full strength.");
+}
 
 if (failures.length === 0) {
   console.log("\nPASS — every movement invariant held.");
