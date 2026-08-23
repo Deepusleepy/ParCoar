@@ -624,12 +624,15 @@ function buildGeometry(lot: LotData) {
     const from = nodes[fromId];
     if (from?.type !== "ramp_up") continue;
     const rampEdge = edgeList.find((edge) => nodes[edge.to]?.type === "ramp_in");
-    const to = rampEdge ? nodes[rampEdge.to] : undefined;
+    if (!rampEdge) continue;
+    const to = nodes[rampEdge.to];
     if (!to) continue;
-    ramps.push({
-      floor: from.floor,
-      points: rampPoints(toWorld(from.x, from.y, from.floor), toWorld(to.x, to.y, to.floor)),
-    });
+    const toId = rampEdge.to;
+    const points = rampPoints(
+      toWorld(from.x, from.y, from.floor),
+      toWorld(to.x, to.y, to.floor),
+    );
+    ramps.push({ floor: from.floor, points });
 
     // Permanent "RAMP UP" signboard at the base of the ramp, facing the
     // traffic approaching the ramp_up node from its incoming junction.
@@ -656,6 +659,72 @@ function buildGeometry(lot: LotData) {
         isTopFloor: from.floor === maxFloor,
         floor: from.floor,
       });
+    }
+
+    // "FLOOR X" board hanging over the ramp MOUTH (the ramp_in end), so a
+    // driver topping out on a new storey learns which floor they reached -
+    // the same letters the big Scene billboards use. rampPoints() ends every
+    // ramp with a straight run arriving at its upper node heading +x (the L
+    // leaves west, runs along the face, turns back east), so the last two
+    // curve points give the exact arrival heading. Mirror the RAMP UP board
+    // above: sit this one three units back down that arrival lane and face
+    // it against the travel direction, at the arriving driver's eye.
+    const tail = points[points.length - 1];
+    const beforeTail = points[points.length - 2] ?? tail;
+    const runX = tail.x - beforeTail.x;
+    const runZ = tail.z - beforeTail.z;
+    const runLen = Math.hypot(runX, runZ);
+    if (runLen > 1e-4) {
+      const ux = runX / runLen;
+      const uz = runZ / runLen;
+      const [, mouthY] = toWorld(to.x, to.y, to.floor);
+      signboards.push({
+        nodeId: toId,
+        position: [tail.x - ux * 3, mouthY, tail.z - uz * 3],
+        rotY: Math.atan2(-ux, -uz),
+        label: `FLOOR ${String.fromCharCode(65 + to.floor)}`,
+        isTopFloor: to.floor === maxFloor,
+        floor: to.floor,
+      });
+    }
+  }
+
+  // --- "FLOOR A" board at the garage entrance ---
+  // Added only when the arrival direction is unambiguous from the graph:
+  // exactly ONE approach road feeding ONE entry node (both hold today -
+  // ENTRY_ROAD runs in from -x to E0; the two-way junction edge back into
+  // E0 is not an approach). The board hangs over the approach three units
+  // short of the portal, facing back at arriving drivers, so "which floor
+  // am I on" is answered before the first junction. Hung rather than posted:
+  // standing posts here would stab through the gate island planted just
+  // west of the portal.
+  const entryId = Object.keys(nodes).find((id) => nodes[id]?.type === "entry");
+  if (entryId) {
+    const approachSources: LotNode[] = [];
+    for (const [srcId, edgeList] of Object.entries(lot.edges)) {
+      const src = nodes[srcId];
+      if (src?.type !== "approach") continue;
+      if (edgeList.some((edge) => edge.to === entryId)) approachSources.push(src);
+    }
+    if (approachSources.length === 1) {
+      const entryNode = nodes[entryId];
+      const source = approachSources[0];
+      const dirX = entryNode.x - source.x;
+      const dirZ = entryNode.y - source.y;
+      const dirLen = Math.hypot(dirX, dirZ);
+      if (entryNode && dirLen > 1e-4) {
+        const ux = dirX / dirLen;
+        const uz = dirZ / dirLen;
+        const [wx, wy, wz] = toWorld(entryNode.x, entryNode.y, entryNode.floor);
+        signboards.push({
+          nodeId: entryId,
+          position: [wx - ux * 3, wy, wz - uz * 3],
+          rotY: Math.atan2(-ux, -uz),
+          label: `FLOOR ${String.fromCharCode(65 + entryNode.floor)}`,
+          isTopFloor: entryNode.floor === maxFloor,
+          floor: entryNode.floor,
+        });
+      }
     }
   }
 
