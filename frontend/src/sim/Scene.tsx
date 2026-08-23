@@ -329,13 +329,12 @@ export const Scene = memo(function Scene({
         scene.environment = pmrem.fromScene(room, 0.04).texture;
         room.dispose();
         pmrem.dispose();
-        // 0.4 gives paint a subtle highlight without washing out saturated
-        // colours. The old 0.75 made red cars look white in the reflections.
-        scene.environmentIntensity = 0.4;
+        // 0.5 gives paint a readable highlight without washing out saturated
+        // colours. The old 0.75 (PR #14) made red cars look white; 0.4 (PR #18)
+        // went too flat. 0.5 is the middle ground.
+        scene.environmentIntensity = 0.5;
       }}
     >
-      {/* Ambient + hemisphere fill restored to pre-reflection levels so
-          colours read true without relying on environment bounce. */}
       <ambientLight intensity={0.15} />
       <hemisphereLight args={["#3a4258", "#05060a", 0.18]} />
 

@@ -93,11 +93,11 @@ export function creaseSmoothed(source: THREE.BufferGeometry): THREE.BufferGeomet
 }
 
 /**
- * Split an indexed mesh geometry into one smoothed geometry per material
- * group. ParkedCarSizeGroup needs this to instance body / glass / trim
- * separately without ever drawing the whole index buffer with one material.
- * Material boundaries are natural hard edges, so smoothing each part on its
- * own loses nothing across them.
+ * Split an indexed mesh geometry into one geometry per material group.
+ * ParkedCarSizeGroup needs this to instance body / glass / trim separately
+ * without ever drawing the whole index buffer with one material. Normals
+ * are left as-is from the GLTF; the crease smoothing from PR #14 made cars
+ * look melted and cheap, so it was reverted.
  */
 export function smoothedParts(source: THREE.BufferGeometry): SmoothedPart[] {
   const cached = smoothedPartsCache.get(source);
@@ -112,7 +112,7 @@ export function smoothedParts(source: THREE.BufferGeometry): SmoothedPart[] {
       ? source.groups
       : [{ start: 0, count: source.index.count, materialIndex: 0 }];
   const parts: SmoothedPart[] = ranges.map((group) => ({
-    geometry: toCreasedNormals(sliceIndexed(source, group.start, group.count), CREASE_ANGLE),
+    geometry: sliceIndexed(source, group.start, group.count),
     materialIndex: group.materialIndex ?? 0,
   }));
   smoothedPartsCache.set(source, parts);
@@ -160,16 +160,16 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
     const body: THREE.MeshStandardMaterial = highQuality
       ? new THREE.MeshPhysicalMaterial({
           color: new THREE.Color(hex),
-          metalness: 0.25,
-          roughness: 0.55,
-          clearcoat: 0.6,
-          clearcoatRoughness: 0.3,
-          envMapIntensity: 0.5,
+          metalness: 0.45,
+          roughness: 0.45,
+          clearcoat: 0.8,
+          clearcoatRoughness: 0.15,
+          envMapIntensity: 0.7,
         })
       : new THREE.MeshStandardMaterial({
           color: new THREE.Color(hex),
-          metalness: 0.2,
-          roughness: 0.55,
+          metalness: 0.4,
+          roughness: 0.45,
         });
     // Near-opaque dark glass, opacity 1 / transparent:false. The old
     // half-transparent pane composited ground markings straight through the
@@ -182,8 +182,8 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
       ? new THREE.MeshPhysicalMaterial({
           color: new THREE.Color("#1a1d24"),
           metalness: 0.1,
-          roughness: 0.2,
-          envMapIntensity: 0.6,
+          roughness: 0.1,
+          envMapIntensity: 0.8,
         })
       : new THREE.MeshStandardMaterial({
           color: new THREE.Color("#1a1d24"),
@@ -195,10 +195,6 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
       if (!(child instanceof THREE.Mesh)) return;
       child.castShadow = true;
       child.receiveShadow = true;
-      // Smooth the hard-split GLTF normals (shared cached conversion - see
-      // the crease-smoothing block comment). The material array below keeps
-      // driving per-group rendering because groups survive the conversion.
-      child.geometry = creaseSmoothed(child.geometry);
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       const replaced = materials.map((material) => {
         if (!(material instanceof THREE.Material)) return material;
@@ -295,15 +291,15 @@ function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInst
 
     const bodyMaterial = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      metalness: 0.2,
-      roughness: 0.55,
+      metalness: 0.4,
+      roughness: 0.45,
     });
     // Same near-opaque dark gloss as the per-car replacement glass above, so
     // a parked car's glazing matches the cars driving past it.
     const glassMaterial = new THREE.MeshStandardMaterial({
       color: new THREE.Color("#1a1d24"),
       metalness: 0.1,
-      roughness: 0.2,
+      roughness: 0.1,
     });
 
     // Classify PER MATERIAL GROUP, not per mesh node. A GLTF mesh node can

@@ -1395,11 +1395,15 @@ const FLOOR_SIGN_ROD_LEN = FLOOR_HEIGHT - (FLOOR_SIGN_Y + FLOOR_SIGN_H / 2);
 const FLOOR_SIGN_ROD_CY = (FLOOR_HEIGHT + FLOOR_SIGN_Y + FLOOR_SIGN_H / 2) / 2;
 const FLOOR_SIGN_POST_H = FLOOR_SIGN_Y - FLOOR_SIGN_H / 2;
 const FLOOR_SIGN_POST_CY = FLOOR_SIGN_POST_H / 2;
-const FLOOR_SIGN_POST_X = FLOOR_SIGN_W / 2 - 0.4;
+const FLOOR_SIGN_POST_X = 3.8; // outside the ±3.5 road, even though the sign is narrower
 const FLOOR_SIGN_BODY_GEO = new THREE.BoxGeometry(FLOOR_SIGN_W, FLOOR_SIGN_H, 0.12);
 const FLOOR_SIGN_SCREEN_GEO = new THREE.PlaneGeometry(FLOOR_SIGN_W - 0.3, FLOOR_SIGN_H - 0.25);
 const FLOOR_SIGN_ROD_GEO = new THREE.CylinderGeometry(0.08, 0.08, FLOOR_SIGN_ROD_LEN, 6);
 const FLOOR_SIGN_POST_GEO = new THREE.CylinderGeometry(0.1, 0.12, FLOOR_SIGN_POST_H, 8);
+/** Horizontal arm connecting a top-floor post to the sign panel.
+ *  Length = post offset - sign half-width. */
+const FLOOR_SIGN_ARM_LEN = FLOOR_SIGN_POST_X - FLOOR_SIGN_W / 2;
+const FLOOR_SIGN_ARM_GEO = new THREE.CylinderGeometry(0.06, 0.06, FLOOR_SIGN_ARM_LEN, 6);
 const FLOOR_SIGN_FRAME_MAT = new THREE.MeshStandardMaterial({
   color: "#1b1f29", metalness: 0.3, roughness: 0.6,
 });
@@ -1426,11 +1430,37 @@ const FloorLabelSign = memo(function FloorLabelSign({
         <>
           <mesh position={[-FLOOR_SIGN_POST_X, FLOOR_SIGN_POST_CY, 0]} geometry={FLOOR_SIGN_POST_GEO} material={FLOOR_SIGN_FRAME_MAT} castShadow />
           <mesh position={[FLOOR_SIGN_POST_X, FLOOR_SIGN_POST_CY, 0]} geometry={FLOOR_SIGN_POST_GEO} material={FLOOR_SIGN_FRAME_MAT} castShadow />
+          {/* Horizontal arms from posts to sign panel */}
+          <mesh
+            position={[-(FLOOR_SIGN_W / 2 + FLOOR_SIGN_ARM_LEN / 2), FLOOR_SIGN_Y, 0]}
+            rotation={[0, 0, Math.PI / 2]}
+            geometry={FLOOR_SIGN_ARM_GEO}
+            material={FLOOR_SIGN_FRAME_MAT}
+          />
+          <mesh
+            position={[FLOOR_SIGN_W / 2 + FLOOR_SIGN_ARM_LEN / 2, FLOOR_SIGN_Y, 0]}
+            rotation={[0, 0, Math.PI / 2]}
+            geometry={FLOOR_SIGN_ARM_GEO}
+            material={FLOOR_SIGN_FRAME_MAT}
+          />
         </>
       ) : (
         <>
           <mesh position={[-FLOOR_SIGN_POST_X, FLOOR_SIGN_ROD_CY, 0]} geometry={FLOOR_SIGN_ROD_GEO} material={FLOOR_SIGN_ROD_MAT} />
           <mesh position={[FLOOR_SIGN_POST_X, FLOOR_SIGN_ROD_CY, 0]} geometry={FLOOR_SIGN_ROD_GEO} material={FLOOR_SIGN_ROD_MAT} />
+          {/* Horizontal arms from rods to sign panel */}
+          <mesh
+            position={[-(FLOOR_SIGN_W / 2 + FLOOR_SIGN_ARM_LEN / 2), FLOOR_SIGN_Y, 0]}
+            rotation={[0, 0, Math.PI / 2]}
+            geometry={FLOOR_SIGN_ARM_GEO}
+            material={FLOOR_SIGN_ROD_MAT}
+          />
+          <mesh
+            position={[FLOOR_SIGN_W / 2 + FLOOR_SIGN_ARM_LEN / 2, FLOOR_SIGN_Y, 0]}
+            rotation={[0, 0, Math.PI / 2]}
+            geometry={FLOOR_SIGN_ARM_GEO}
+            material={FLOOR_SIGN_ROD_MAT}
+          />
         </>
       )}
       <group position={[0, FLOOR_SIGN_Y, 0]} rotation={[0.25, 0, 0]}>
