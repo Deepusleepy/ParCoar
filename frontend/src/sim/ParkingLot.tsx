@@ -638,7 +638,6 @@ function buildGeometry(lot: LotData) {
     if (!rampEdge) continue;
     const to = nodes[rampEdge.to];
     if (!to) continue;
-    const toId = rampEdge.to;
     const points = rampPoints(
       toWorld(from.x, from.y, from.floor),
       toWorld(to.x, to.y, to.floor),
