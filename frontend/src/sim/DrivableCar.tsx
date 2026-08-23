@@ -1814,6 +1814,7 @@ export function DrivableCar({
         let chosenX = bestX;
         let chosenZ = bestZ;
         if (
+          incumbent &&
           incumbentDist < Infinity &&
           bestSeg !== incumbent &&
           bestDist >= incumbentDist - SEGMENT_HYSTERESIS_MARGIN
