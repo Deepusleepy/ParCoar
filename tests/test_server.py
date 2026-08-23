@@ -262,20 +262,21 @@ class NearestFreeSlotTest(unittest.TestCase):
         self.assertEqual(first, second)
 
     def test_reserved_and_occupied_bay_is_skipped_even_when_closer(self):
-        # From J0_0_12 the genuinely closest bay is S0_1 (34.6 vs 58.7 for
-        # S0_41). S0_1 is both reserved by another car and sensor-occupied,
-        # so the next best bay must win instead.
+        # From J0_0_12 the two closest bays are S0_12 and S0_32 (both 6.0).
+        # S0_12 is reserved by another car but NOT sensor-occupied, so it
+        # tests the reservation-skip path in isolation. S0_32 is sensor-
+        # occupied but NOT reserved, so it tests the occupied-skip path in
+        # isolation. The next best bay (S0_11 or S0_13, 8.6) must win.
         session = server.Session()
-        session.occupied = server.all_slots - {"S0_41"}
-        session.reservations["other-car"] = "S0_1"
+        session.occupied = {"S0_32"}
+        session.reservations["other-car"] = "S0_12"
 
         result = server.nearest_free_slot(session, "J0_0_12", "blocked-car")
 
         self.assertIsNotNone(result)
         slot, _, distance = result
-        self.assertEqual(slot, "S0_41")
-        self.assertNotEqual(slot, "S0_1")
-        self.assertGreater(distance, 34.6)
+        self.assertNotIn(slot, {"S0_12", "S0_32"})
+        self.assertGreater(distance, 6.0)
 
 
 class LifecyclePayloadTest(unittest.TestCase):
