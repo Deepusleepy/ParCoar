@@ -79,9 +79,10 @@ keeps its bay.
 
 ### WebSocket
 
-The frontend sends state to `ws://127.0.0.1:8765` about five times per second.
-The backend replies with the destination, route, direction, remaining route
-distance and estimated driving time. See [`shared/spec.md`](shared/spec.md).
+The frontend sends state to `ws://127.0.0.1:8765` (override with
+`VITE_WS_URL`) about five times per second. The backend replies with the
+destination, route, direction, remaining route distance and estimated driving
+time. See [`shared/spec.md`](shared/spec.md).
 
 ### Frontend
 
