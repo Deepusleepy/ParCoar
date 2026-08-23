@@ -68,34 +68,26 @@ describe("spawn guard: player exclusion", () => {
 });
 
 describe("spawn guard: cooldown reset", () => {
-  it("models the spawned flag pattern: cooldown only resets on actual spawn", () => {
+  it("resets cooldown when the ref-level guard passes (car will spawn)", () => {
+    const existing: ActiveCar[] = [
+      makeCar({ id: "C1", player: false, leaving: false }),
+    ];
+    const targetCars = 3;
+    const incomingCount = existing.filter((c) => !c.leaving && !c.player).length;
+    // The ref-level guard already verified the slot is free.
+    // Cooldown resets based on that check, not the async setState callback.
+    const shouldResetCooldown = incomingCount < targetCars;
+    expect(shouldResetCooldown).toBe(true);
+  });
+
+  it("does not reset cooldown when targetCars already met", () => {
     const existing: ActiveCar[] = [
       makeCar({ id: "C1", player: false, leaving: false }),
       makeCar({ id: "C2", player: false, leaving: false }),
     ];
     const targetCars = 2;
-    let spawned = false;
-    const activeAi = existing.filter((c) => !c.leaving && !c.player).length;
-    if (activeAi >= targetCars) {
-      // no spawn, spawned stays false
-    } else {
-      spawned = true;
-    }
-    expect(spawned).toBe(false);
-  });
-
-  it("resets cooldown when a car is actually added", () => {
-    const existing: ActiveCar[] = [
-      makeCar({ id: "C1", player: false, leaving: false }),
-    ];
-    const targetCars = 3;
-    let spawned = false;
-    const activeAi = existing.filter((c) => !c.leaving && !c.player).length;
-    if (activeAi >= targetCars) {
-      spawned = false;
-    } else {
-      spawned = true;
-    }
-    expect(spawned).toBe(true);
+    const incomingCount = existing.filter((c) => !c.leaving && !c.player).length;
+    const shouldResetCooldown = incomingCount < targetCars;
+    expect(shouldResetCooldown).toBe(false);
   });
 });
