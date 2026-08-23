@@ -78,7 +78,7 @@ export const RoutePanel = memo(function RoutePanel({
   const floor = selected?.floor ?? 0;
 
   return (
-    <div className="pointer-events-auto absolute bottom-14 left-4 w-[360px] rounded-lg border border-neutral-800 bg-black/80 p-3 backdrop-blur-sm">
+    <div className="pointer-events-auto absolute bottom-14 left-4 w-[360px] rounded-lg border border-neutral-800 bg-[#0a0b0e] p-3">
       <CarChips cars={cars} selectedCarId={selectedCarId} onSelectCar={onSelectCar} />
       <Schematic
         lot={lot}

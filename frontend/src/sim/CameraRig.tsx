@@ -570,6 +570,7 @@ export function CameraRig({
         if (!hasPrevPlayerPosRef.current) {
           camera.position.copy(tmpPos.current);
           followLookRef.current.copy(tmpLook.current);
+          hasPrevPlayerPosRef.current = true;
         } else {
           camera.position.lerp(tmpPos.current, lerpK(0.94, dt));
           // Smooth the look target like drive mode does: AI cars update
@@ -593,6 +594,7 @@ export function CameraRig({
         if (!hasPrevPlayerPosRef.current) {
           camera.position.copy(tmpPos.current);
           driveLookRef.current.copy(tmpLook.current);
+          hasPrevPlayerPosRef.current = true;
         } else {
           camera.position.lerp(tmpPos.current, lerpK(0.99, dt));
           driveLookRef.current.lerp(tmpLook.current, lerpK(0.998, dt));

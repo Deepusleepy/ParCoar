@@ -366,8 +366,8 @@ function PermanentSignboardImpl({
     <group position={position} rotation={[0, rotY, 0]}>
       {isTopFloor ? (
         <>
-          <mesh position={[-POST_X, POST_CENTER_Y, 0]} geometry={POST_GEO} material={FRAME_MATERIAL} castShadow />
-          <mesh position={[POST_X, POST_CENTER_Y, 0]} geometry={POST_GEO} material={FRAME_MATERIAL} castShadow />
+          <mesh position={[-POST_X, POST_CENTER_Y, 0]} geometry={POST_GEO} material={FRAME_MATERIAL} />
+          <mesh position={[POST_X, POST_CENTER_Y, 0]} geometry={POST_GEO} material={FRAME_MATERIAL} />
         </>
       ) : (
         <>
@@ -378,7 +378,7 @@ function PermanentSignboardImpl({
 
       {/* Board face, tilted down toward the road. */}
       <group position={[0, BOARD_CENTER_Y, 0]} rotation={[0.3, 0, 0]}>
-        <mesh castShadow geometry={BOARD_BODY_GEO} material={FRAME_MATERIAL} />
+        <mesh geometry={BOARD_BODY_GEO} material={FRAME_MATERIAL} />
         <mesh geometry={BOARD_RIM_GEO} material={EDGE_MATERIAL} />
         <mesh position={[0, 0, -0.11]} rotation={[0, Math.PI, 0]} geometry={SCREEN_GEO} material={BACK_MATERIAL} />
         <mesh position={[0, 0, 0.11]} geometry={SCREEN_GEO} material={SCREEN_MATERIAL} />

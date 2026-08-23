@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import type { GarageFill, SimSettings } from "../hooks/useSimulation";
 
 /**
@@ -24,7 +24,7 @@ export const DEFAULT_OVERLAYS: Overlays = {
   helpText: true,
 };
 
-export function ControlPanel({
+export const ControlPanel = memo(function ControlPanel({
   open,
   onClose,
   settings,
@@ -51,6 +51,14 @@ export function ControlPanel({
 }) {
   const paused = settings.speed === 0;
 
+  // Keep the panel mounted (so the slide transition runs) but skip rendering
+  // the inner contents when closed: nothing to reconcile while hidden.
+  if (!open) {
+    return (
+      <div className="pointer-events-none absolute inset-y-0 right-0 z-20 w-[19rem] translate-x-full transition-transform duration-200" />
+    );
+  }
+
   return (
     <div
       className={
@@ -58,7 +66,7 @@ export function ControlPanel({
         (open ? "translate-x-0" : "translate-x-full")
       }
     >
-      <div className="pointer-events-auto flex h-full flex-col gap-5 overflow-y-auto border-l border-neutral-800 bg-black/90 p-4 backdrop-blur-md">
+      <div className="pointer-events-auto flex h-full flex-col gap-5 overflow-y-auto border-l border-neutral-800 bg-[#0a0b0e] p-4">
         <div className="flex items-center justify-between">
           <div className="text-[11px] font-semibold tracking-[0.18em] text-neutral-500">
             CONTROLS
@@ -172,7 +180,7 @@ export function ControlPanel({
       </div>
     </div>
   );
-}
+});
 
 /** The tab that opens the drawer, parked against the right edge. */
 export function ControlPanelTab({ open, onOpen }: { open: boolean; onOpen: () => void }) {
@@ -181,7 +189,7 @@ export function ControlPanelTab({ open, onOpen }: { open: boolean; onOpen: () =>
     <button
       type="button"
       onClick={onOpen}
-      className="pointer-events-auto absolute right-0 top-1/2 z-20 -translate-y-1/2 rounded-l-md border border-r-0 border-neutral-700 bg-black/80 px-2 py-3 text-[10px] font-semibold tracking-[0.18em] text-neutral-400 backdrop-blur-sm transition-colors hover:text-white"
+      className="pointer-events-auto absolute right-0 top-1/2 z-20 -translate-y-1/2 rounded-l-md border border-r-0 border-neutral-700 bg-[#0a0b0e] px-2 py-3 text-[10px] font-semibold tracking-[0.18em] text-neutral-400 transition-colors hover:text-white"
       style={{ writingMode: "vertical-rl" }}
     >
       CONTROLS
