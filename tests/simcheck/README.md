@@ -46,6 +46,19 @@ Playwright is the only dependency: `npx playwright install chromium` once.
 | At least 90% of cars pass a guidance board | Otherwise the garage is not demonstrating anything |
 | The page throws no errors | |
 
+## Two modes: full and degraded
+
+The gate picks its mode from how fast the page actually rendered, measured as
+the median gap between captured frames. Above 500ms per frame (the
+`FULL_MODE_MAX_MEDIAN_GAP_MS` constant), one animation tick moves a car
+further than its own length and followers clip through leaders until the next
+corrective tick, so the body-overlap check starts measuring the renderer
+rather than the driving. In that situation the run degrades: ONLY the overlap
+assertion is skipped — still counted and printed as
+`overlapPairsSkippedByDegradedMode`, never silently dropped — and every
+state-channel check keeps full strength. The JSON summary reports the mode
+and the median gap either way.
+
 ## About resolution
 
 The gate reads `window.__parcoarSim`, which the page republishes on a timer.
