@@ -160,16 +160,16 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
     const body: THREE.MeshStandardMaterial = highQuality
       ? new THREE.MeshPhysicalMaterial({
           color: new THREE.Color(hex),
-          metalness: 0.6,
-          roughness: 0.35,
-          clearcoat: 1,
-          clearcoatRoughness: 0.08,
-          envMapIntensity: 1.2,
+          metalness: 0.25,
+          roughness: 0.55,
+          clearcoat: 0.6,
+          clearcoatRoughness: 0.3,
+          envMapIntensity: 0.5,
         })
       : new THREE.MeshStandardMaterial({
           color: new THREE.Color(hex),
-          metalness: 0.5,
-          roughness: 0.4,
+          metalness: 0.2,
+          roughness: 0.55,
         });
     // Near-opaque dark glass, opacity 1 / transparent:false. The old
     // half-transparent pane composited ground markings straight through the
@@ -182,8 +182,8 @@ function CarModelInner({ color, size, highQuality = true, onLoad }: CarModelProp
       ? new THREE.MeshPhysicalMaterial({
           color: new THREE.Color("#1a1d24"),
           metalness: 0.1,
-          roughness: 0.08,
-          envMapIntensity: 1.5,
+          roughness: 0.2,
+          envMapIntensity: 0.6,
         })
       : new THREE.MeshStandardMaterial({
           color: new THREE.Color("#1a1d24"),
@@ -295,15 +295,15 @@ function ParkedCarSizeGroup({ size, cars }: { size: CarSize; cars: ParkedCarInst
 
     const bodyMaterial = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      metalness: 0.5,
-      roughness: 0.4,
+      metalness: 0.2,
+      roughness: 0.55,
     });
     // Same near-opaque dark gloss as the per-car replacement glass above, so
     // a parked car's glazing matches the cars driving past it.
     const glassMaterial = new THREE.MeshStandardMaterial({
       color: new THREE.Color("#1a1d24"),
       metalness: 0.1,
-      roughness: 0.08,
+      roughness: 0.2,
     });
 
     // Classify PER MATERIAL GROUP, not per mesh node. A GLTF mesh node can
@@ -590,7 +590,16 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({
             car.progress = 1;
             heldNode.current = nextNode;
             segmentIndex.current -= 1;
-            segmentProgress.current += 1;
+            // Cap at 1 (not += 1) so progress doesn't grow unboundedly while
+            // held. The old += 1 restored the pre-crossing value, but each
+            // frame then added speed on top, so a car held for N frames
+            // accumulated N * speed * dt / segLen of excess progress. When
+            // released, that excess hurled the car forward in a single jump
+            // — the "hopping" artefact. Capping at 1 keeps the car pinned at
+            // the segment boundary; the while loop re-checks the block every
+            // frame and only a tiny residual (speed*dt/segLen) carries over
+            // when the road clears.
+            segmentProgress.current = 1;
             object.rotation.y = targetRotation.current;
             object.rotation.z = targetPitch.current;
             return;
