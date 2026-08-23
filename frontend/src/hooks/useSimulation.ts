@@ -13,7 +13,6 @@ import type {
 import {
   directionAt,
   isRoadBlocked,
-  nextNodeForDirection,
   nodeGap,
 } from "../sim/traffic";
 import {
@@ -44,6 +43,67 @@ const DEV_PUBLISH_MS = 50;
 const BOARD_ROWS = 3;
 /** After the drivable car reaches the exit, respawn it at the entry. */
 const PLAYER_RESPAWN_DELAY_MS = 2500;
+
+/**
+ * Server-approved continuation routes, keyed by car object.
+ *
+ * Every fresh reply that aligns with a car's live leg publishes the FULL
+ * remaining path here, and ActiveCarMesh consumes it while driving so a car
+ * rolls through consecutive nodes without stopping for one server round
+ * trip per hop. Plans are replaced wholesale on each publish and never
+ * merged: Python owns routing, so the client must never stitch two routes
+ * together. Keyed weakly by the ActiveCar object so plans for removed cars
+ * are dropped with them.
+ */
+interface RoutePlan {
+  version: number;
+  /** Nodes still to traverse AFTER the car's current leg, in order. */
+  upcoming: string[];
+}
+
+const routePlans = new WeakMap<ActiveCar, RoutePlan>();
+let routePlanVersion = 0;
+
+/** Publish the remaining hops of a server route for one car. */
+export function publishRoutePlan(car: ActiveCar, upcoming: string[]): void {
+  routePlanVersion += 1;
+  routePlans.set(car, { version: routePlanVersion, upcoming });
+}
+
+/** Latest published plan for one car, or null when none exists yet. */
+export function readRoutePlan(car: ActiveCar): RoutePlan | null {
+  return routePlans.get(car) ?? null;
+}
+
+/**
+ * Live view of the simulation world shared with the car meshes. Refreshed
+ * on every render exactly like the hook's own refs above; ActiveCarMesh
+ * reads it through isNodeEntryBlocked when deciding whether it may roll
+ * into the next graph node between server replies.
+ */
+const sharedWorld: {
+  lot: LotData | null;
+  cars: ActiveCar[];
+  instructions: Map<string, InstructionSign>;
+} = { lot: null, cars: [], instructions: new Map() };
+
+/**
+ * Physical entry gate used at node crossings. Mirrors the standstill gate
+ * in applyInstructions: a car may not roll into a graph node while another
+ * car occupies or is committed to it. Returns true when the entry is
+ * blocked. The caller must already have moved `self` onto the leg it wants
+ * to enter (fromNode/toNode provisional), matching how the hook checks its
+ * own assignments.
+ */
+export function isNodeEntryBlocked(
+  self: ActiveCar,
+  node: string,
+  beyond: string | undefined,
+): boolean {
+  const lot = sharedWorld.lot;
+  if (!lot) return false;
+  return isRoadBlocked(lot, sharedWorld.cars, self, node, beyond, sharedWorld.instructions);
+}
 
 export type { GarageFill, ParkedCarData } from "../sim/fill";
 
@@ -184,6 +244,9 @@ export function useSimulation(): SimulationState {
   lotRef.current = lot;
   preParkedRef.current = preParked;
   parkedRef.current = parked;
+  sharedWorld.lot = lot;
+  sharedWorld.cars = activeCars;
+  sharedWorld.instructions = instructionsRef.current;
 
   useEffect(() => {
     let cancelled = false;
@@ -307,7 +370,24 @@ export function useSimulation(): SimulationState {
       if (car.parked) continue;
       const instruction = map.get(car.id);
       if (!instruction) continue;
-      if (instruction.node !== car.fromNode || car.toNode !== car.fromNode) continue;
+
+      // A car caught BETWEEN nodes by this reply consumes only route
+      // refinement: when the fresh path still runs through the leg being
+      // driven, the full remaining route is adopted wholesale; anything
+      // older than the live leg is skipped and the next periodic state
+      // send realigns within one STATE_TICK_MS. Lifecycle transitions -
+      // parking, leaving, eviction - keep their standstill anchor below,
+      // exactly as before.
+      if (car.toNode !== car.fromNode) {
+        if (instruction.status !== "routing") continue;
+        if (instruction.path[0] !== car.fromNode) continue;
+        if (instruction.path[1] !== car.toNode) continue;
+        const slotChanged = instruction.slot !== car.slot;
+        car.slot = instruction.slot;
+        if (slotChanged) changed = true;
+        publishRoutePlan(car, instruction.path.slice(2));
+        continue;
+      }
 
       // The drivable car is a participant but not a puppet: guidance is
       // recorded for the HUD and boards, while its position stays physical.
@@ -362,23 +442,22 @@ export function useSimulation(): SimulationState {
         continue;
       }
 
-      const routeIsCurrent = instruction.path[0] === car.fromNode;
-      const next = routeIsCurrent
-        ? instruction.path[1] ?? null
-        : instruction.direction
-          ? nextNodeForDirection(lotData, car.fromNode, instruction.direction)
-          : null;
-      const beyond = routeIsCurrent && instruction.path[1] === next
-        ? instruction.path[2]
-        : undefined;
-
+      // Standing start. A fresh reply for a stationary car always names
+      // the node it sits on; guard anyway against malformed frames. The
+      // physical entry gate still decides when the journey may begin,
+      // keeping stopped traffic from overlapping.
+      if (instruction.path[0] !== car.fromNode) continue;
+      const next = instruction.path[1] ?? null;
+      const beyond = instruction.path[2];
       if (next && isRoadBlocked(lotData, cars, car, next, beyond, map)) continue;
-      if (next && next !== car.toNode) {
-        car.toNode = next;
-        car.status = "routing";
-        car.slot = instruction.slot;
-        changed = true;
-      }
+      if (!next || next === car.toNode) continue;
+      car.toNode = next;
+      car.status = "routing";
+      car.slot = instruction.slot;
+      changed = true;
+      // Hand over everything beyond the first hop so the car rolls
+      // through later nodes without another round trip per hop.
+      publishRoutePlan(car, instruction.path.slice(2));
     }
 
     if (changed) {
@@ -426,11 +505,31 @@ export function useSimulation(): SimulationState {
       const instruction = map.get(car.id);
       if (!instruction) continue;
       const route = instruction.path.length > 0 ? instruction.path : [instruction.node];
-      const movingOff = route.length > 1 && car.fromNode === route[0] && car.toNode === route[1];
-      const startHop = movingOff ? 1 : 0;
-      let travelled = movingOff
-        ? (1 - car.progress) * nodeGap(lotData, route[0], route[1])
-        : 0;
+
+      // Boards must describe where the car IS, not where it reported itself
+      // one round trip ago: the instruction path starts at the node of the
+      // PREVIOUS state send, so anchoring the scan to the head of the path
+      // attached cars to turns they had already passed whenever a reply
+      // arrived late. Anchor instead to the car's LIVE leg - the route
+      // index it is physically driving right now - and accumulate board
+      // distances from the far end of that leg using its motion progress.
+      // Fall back to the start of the route when the reply predates the
+      // live graph entirely.
+      let legIndex = -1;
+      for (let index = 0; index + 1 < route.length; index += 1) {
+        if (route[index] === car.fromNode && route[index + 1] === car.toNode) {
+          legIndex = index;
+          break;
+        }
+      }
+      const startHop = legIndex >= 0 ? legIndex + 1 : 1;
+      let travelled = 0;
+      if (legIndex >= 0) {
+        const legProgress = Math.min(1, Math.max(0, car.progress));
+        travelled = (1 - legProgress) * nodeGap(lotData, route[legIndex], route[legIndex + 1]);
+      } else if (route.length > 1) {
+        travelled = nodeGap(lotData, route[0], route[1]);
+      }
 
       for (let hop = startHop; hop < route.length; hop += 1) {
         if (hop > startHop) travelled += nodeGap(lotData, route[hop - 1], route[hop]);
