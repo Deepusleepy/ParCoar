@@ -83,9 +83,9 @@ export const COLOR_HEX: Record<CarColor, string> = {
 
 export const CAR_LENGTH = 4.5;
 export const CAR_SPEED = 7;
-export const STATE_TICK_MS = 200;
+export const STATE_TICK_MS = 80;
 export const TARGET_ACTIVE_CARS = 3;
-export const SPAWN_INTERVAL_MS = 6000;
+export const SPAWN_INTERVAL_MS = 3000;
 
 /** The drivable car participates like any other car: same id on the wire,
  *  same boards, same bay assignment. The plate is what the overhead boards
