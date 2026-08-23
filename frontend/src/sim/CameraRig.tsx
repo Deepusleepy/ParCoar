@@ -75,6 +75,24 @@ const MOUSE_LOOK_SENSITIVITY = 0.0011;
 /** Pitch clamp: stop just shy of straight up/down so the view never flips. */
 const PITCH_LIMIT = Math.PI / 2 - 0.05;
 
+/** Vertical field of view per rig family. Scene.tsx creates the canvas at a
+ *  fixed 45°; the cockpit modes override it here, per mode, and every other
+ *  mode restores the baseline on switch.
+ *
+ *  At 45° the cabin occluders (binnacle, wheel rim, dash crest below; roof
+ *  liner, visors, mirror above) letterbox roughly a third of the frame —
+ *  measured at the old eye they cut everything below -1.2°…-6.6° and above
+ *  +8.0°…+8.9°. Widening to 57° doesn't move those cutoffs but gives the
+ *  visible exterior band ~17° of world to show instead of ~10°, which is the
+ *  difference between "driving a box" and "seeing the road". */
+const SPECTATOR_FOV = 45;
+const COCKPIT_FOV = 57;
+/** FOV easing time constant (seconds): a 45↔57 change settles in ~3τ ≈
+ *  0.25 s, so switching modes breathes instead of snapping. Exponential in
+ *  dt directly — lerpK() clamps its strength to ≤1 and cannot express a
+ *  rate faster than 1/s. */
+const FOV_TIME_CONSTANT = 0.08;
+
 /** POV look-around range: how far the driver can turn their head. */
 const POV_YAW_LIMIT = Math.PI * 0.6;
 const POV_PITCH_LIMIT = Math.PI * 0.25;
@@ -190,6 +208,11 @@ export function CameraRig({
   const tmpQuatLook = useRef(new THREE.Quaternion());
   /** Smoothed look target for the drive chase cam. */
   const driveLookRef = useRef(new THREE.Vector3());
+  /** Smoothed look target for the follow chase cam (same jitter fix as
+   *  driveLookRef: AI heading steps arrive smoothed, not 1:1). */
+  const followLookRef = useRef(new THREE.Vector3());
+  /** Current camera FOV, eased toward the mode's target each frame. */
+  const fovRef = useRef(SPECTATOR_FOV);
 
   /** Orient the free camera to look at `target`, deriving yaw/pitch from the
    *  direction vector. Uses the lookDir convention:
@@ -433,6 +456,24 @@ export function CameraRig({
   useFrame((_, delta) => {
     const dt = Math.min(delta, 1 / 30);
 
+    // --- Per-mode field of view. Cockpit rigs widen to COCKPIT_FOV; every
+    // spectator/free-flight mode eases back to SPECTATOR_FOV. Runs before
+    // any early return so the restore also happens while a car mode has no
+    // car to track.
+    const targetFov = mode === "pov" || mode === "drive" ? COCKPIT_FOV : SPECTATOR_FOV;
+    fovRef.current +=
+      (targetFov - fovRef.current) * (1 - Math.exp(-dt / FOV_TIME_CONSTANT));
+    // Narrow to PerspectiveCamera (the only kind Scene.tsx creates): R3F
+    // types the store camera broadly and OrthographicCamera has no fov.
+    // Skip the projection-matrix rebuild once settled — it's not free.
+    if (
+      camera instanceof THREE.PerspectiveCamera &&
+      Math.abs(camera.fov - fovRef.current) > 0.01
+    ) {
+      camera.fov = fovRef.current;
+      camera.updateProjectionMatrix();
+    }
+
     // --- Follow / POV / Drive: lock onto a car. Free-flight input ignored. ---
     if (mode === "follow" || mode === "pov" || mode === "drive") {
       const carGroup =
@@ -468,8 +509,17 @@ export function CameraRig({
           .copy(carPos)
           .add(tmpFwd2.current.copy(fwd.current).multiplyScalar(5))
           .add(tmpUp.current.set(0, 1.5, 0));
-        camera.position.lerp(tmpPos.current, lerpK(0.94, dt));
-        camera.lookAt(tmpLook.current);
+        if (!hasPrevPlayerPosRef.current) {
+          camera.position.copy(tmpPos.current);
+          followLookRef.current.copy(tmpLook.current);
+        } else {
+          camera.position.lerp(tmpPos.current, lerpK(0.94, dt));
+          // Smooth the look target like drive mode does: AI cars update
+          // their heading in discrete steps and an unsmoothed lookAt
+          // telegraphs every one of them as a snap.
+          followLookRef.current.lerp(tmpLook.current, lerpK(0.995, dt));
+        }
+        camera.lookAt(followLookRef.current);
       } else if (mode === "drive") {
         tmpPos.current
           .copy(carPos)
@@ -492,13 +542,16 @@ export function CameraRig({
         camera.lookAt(driveLookRef.current);
       } else {
         // POV: driver's-eye position inside the cabin (right-hand drive).
-        // The eye sits ABOVE the wheel rim top (~y=1.24) and a hand back of
-        // it, so the rim reads across the bottom third like a real driving
-        // position and the road stays visible over the dash. The earlier
-        // pose levelled with the rim and filled the frame with wheel.
-        const EYE_FWD = -0.3;
+        // The eye sits at headrest height (~1.41 is the headrest top, so
+        // 1.42 reads as a head resting against it) and just ahead of the
+        // wheel column. From here the binnacle/rim/dash crest only occlude
+        // below about -8…-12° and the roof furniture above about +5°, so
+        // with COCKPIT_FOV the exterior band is wide enough to see tarmac
+        // from ~8 units out. The earlier seat-level eye (-0.30, 1.31) gave
+        // a ~10° letterbox of world in a 45° frame.
+        const EYE_FWD = -0.1;
         const EYE_RIGHT = 0.42;
-        const EYE_UP = 1.31;
+        const EYE_UP = 1.42;
         // Mirror the car's own orientation convention (Euler XYZ of yaw about
         // Y and slope pitch about Z), then compose the head-look quaternion
         // on top so looking around happens in cabin space. Only the LOOK

@@ -20,11 +20,30 @@ const PREVENT_DEFAULT_KEYS = new Set([
   "ArrowRight",
 ]);
 
+/** True when a keyboard event originated inside something the user types in.
+ *  Swallowing W/A/S/D/Space/arrows unconditionally broke typing app-wide
+ *  (search boxes, chat, selects) because these handlers run at window level.
+ *  Buttons and the canvas are NOT editable, so driving keeps working after
+ *  clicking anything. */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT" ||
+    target.isContentEditable
+  );
+}
+
 export function useKeyboard() {
   const keys = useRef<Record<string, boolean>>({});
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
+      // Let editable elements keep their keystrokes: no tracking, no
+      // preventDefault. Keyup below always clears, so a key held while
+      // entering an input can never stick down.
+      if (isEditableTarget(e.target)) return;
       keys.current[e.code] = true;
       if (PREVENT_DEFAULT_KEYS.has(e.code)) e.preventDefault();
     };
