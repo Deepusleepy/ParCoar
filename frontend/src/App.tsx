@@ -42,6 +42,9 @@ export function App() {
   const [routeCarId, setRouteCarId] = useState<string | null>(null);
   const [followCarId, setFollowCarId] = useState<string | null>(null);
   const carGroupsRef = useRef<Map<string, THREE.Group>>(new Map());
+  if (import.meta.env.DEV) {
+    (window as unknown as Record<string, unknown>).__parcoarCarGroups = carGroupsRef.current;
+  }
   const [panelOpen, setPanelOpen] = useState(false);
   const [overlays, setOverlays] = useState<Overlays>(DEFAULT_OVERLAYS);
   const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0, routeDistance: -1 });
