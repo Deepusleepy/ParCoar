@@ -472,6 +472,16 @@ interface SignboardDesc {
   floor: number;
 }
 
+/** Descriptor for a small overhead floor-label sign ("FLOOR A/B/C") at a
+ *  ramp mouth or entrance. Distinct from SignboardDesc: these are compact
+ *  labels, not route-display boards. */
+interface FloorLabelDesc {
+  position: [number, number, number];
+  rotY: number;
+  label: string;
+  isTopFloor: boolean;
+}
+
 /** Descriptor for a post-mounted parking-area info sign at an aisle entry.
  *  Shows the slot number range for that aisle (e.g. "A1 - A16 →"). */
 interface AreaSignDesc {
@@ -490,6 +500,7 @@ function buildGeometry(lot: LotData) {
   const ramps: CurveDesc[] = [];
   const slots: SlotDesc[] = [];
   const signboards: SignboardDesc[] = [];
+  const floorLabels: FloorLabelDesc[] = [];
   const areaSigns: AreaSignDesc[] = [];
   const nodes = lot.nodes;
   // Top floor has no ceiling slab above it, so signboards there omit the rods.
@@ -678,13 +689,11 @@ function buildGeometry(lot: LotData) {
       const ux = runX / runLen;
       const uz = runZ / runLen;
       const [, mouthY] = toWorld(to.x, to.y, to.floor);
-      signboards.push({
-        nodeId: toId,
+      floorLabels.push({
         position: [tail.x - ux * 3, mouthY, tail.z - uz * 3],
         rotY: Math.atan2(-ux, -uz),
         label: `FLOOR ${String.fromCharCode(65 + to.floor)}`,
         isTopFloor: to.floor === maxFloor,
-        floor: to.floor,
       });
     }
   }
@@ -716,13 +725,11 @@ function buildGeometry(lot: LotData) {
         const ux = dirX / dirLen;
         const uz = dirZ / dirLen;
         const [wx, wy, wz] = toWorld(entryNode.x, entryNode.y, entryNode.floor);
-        signboards.push({
-          nodeId: entryId,
+        floorLabels.push({
           position: [wx - ux * 3, wy, wz - uz * 3],
           rotY: Math.atan2(-ux, -uz),
           label: `FLOOR ${String.fromCharCode(65 + entryNode.floor)}`,
           isTopFloor: entryNode.floor === maxFloor,
-          floor: entryNode.floor,
         });
       }
     }
@@ -811,7 +818,7 @@ function buildGeometry(lot: LotData) {
     }
   }
 
-  return { aisles, turns, ramps, slots, rampHoles, signboards, areaSigns };
+  return { aisles, turns, ramps, slots, rampHoles, signboards, floorLabels, areaSigns };
 }
 
 /* ================================================================== *
@@ -1380,6 +1387,72 @@ const ApproachRoad = memo(function ApproachRoad({
 });
 
 
+/* --- Small overhead floor-label sign ("FLOOR A/B/C") --- */
+const FLOOR_SIGN_W = 3.2;
+const FLOOR_SIGN_H = 1.4;
+const FLOOR_SIGN_Y = 4.2;
+const FLOOR_SIGN_ROD_LEN = FLOOR_HEIGHT - (FLOOR_SIGN_Y + FLOOR_SIGN_H / 2);
+const FLOOR_SIGN_ROD_CY = (FLOOR_HEIGHT + FLOOR_SIGN_Y + FLOOR_SIGN_H / 2) / 2;
+const FLOOR_SIGN_POST_H = FLOOR_SIGN_Y - FLOOR_SIGN_H / 2;
+const FLOOR_SIGN_POST_CY = FLOOR_SIGN_POST_H / 2;
+const FLOOR_SIGN_POST_X = FLOOR_SIGN_W / 2 - 0.4;
+const FLOOR_SIGN_BODY_GEO = new THREE.BoxGeometry(FLOOR_SIGN_W, FLOOR_SIGN_H, 0.12);
+const FLOOR_SIGN_SCREEN_GEO = new THREE.PlaneGeometry(FLOOR_SIGN_W - 0.3, FLOOR_SIGN_H - 0.25);
+const FLOOR_SIGN_ROD_GEO = new THREE.CylinderGeometry(0.08, 0.08, FLOOR_SIGN_ROD_LEN, 6);
+const FLOOR_SIGN_POST_GEO = new THREE.CylinderGeometry(0.1, 0.12, FLOOR_SIGN_POST_H, 8);
+const FLOOR_SIGN_FRAME_MAT = new THREE.MeshStandardMaterial({
+  color: "#1b1f29", metalness: 0.3, roughness: 0.6,
+});
+const FLOOR_SIGN_SCREEN_MAT = new THREE.MeshStandardMaterial({
+  color: "#000000", emissive: "#0a1622", emissiveIntensity: 0.5, roughness: 0.5,
+});
+const FLOOR_SIGN_ROD_MAT = new THREE.MeshStandardMaterial({
+  color: "#080a10", metalness: 0.5, roughness: 0.5,
+});
+
+/** A compact overhead sign labeling which floor a driver has reached.
+ *  Much smaller than the route-display PermanentSignboard — just the floor
+ *  name on a dark panel, hung from short rods (or post-mounted on the top
+ *  floor where there's no ceiling slab). */
+const FloorLabelSign = memo(function FloorLabelSign({
+  position,
+  rotY,
+  label,
+  isTopFloor,
+}: FloorLabelDesc) {
+  return (
+    <group position={position} rotation={[0, rotY, 0]}>
+      {isTopFloor ? (
+        <>
+          <mesh position={[-FLOOR_SIGN_POST_X, FLOOR_SIGN_POST_CY, 0]} geometry={FLOOR_SIGN_POST_GEO} material={FLOOR_SIGN_FRAME_MAT} castShadow />
+          <mesh position={[FLOOR_SIGN_POST_X, FLOOR_SIGN_POST_CY, 0]} geometry={FLOOR_SIGN_POST_GEO} material={FLOOR_SIGN_FRAME_MAT} castShadow />
+        </>
+      ) : (
+        <>
+          <mesh position={[-FLOOR_SIGN_POST_X, FLOOR_SIGN_ROD_CY, 0]} geometry={FLOOR_SIGN_ROD_GEO} material={FLOOR_SIGN_ROD_MAT} />
+          <mesh position={[FLOOR_SIGN_POST_X, FLOOR_SIGN_ROD_CY, 0]} geometry={FLOOR_SIGN_ROD_GEO} material={FLOOR_SIGN_ROD_MAT} />
+        </>
+      )}
+      <group position={[0, FLOOR_SIGN_Y, 0]} rotation={[0.25, 0, 0]}>
+        <mesh castShadow geometry={FLOOR_SIGN_BODY_GEO} material={FLOOR_SIGN_FRAME_MAT} />
+        <mesh position={[0, 0, 0.07]} geometry={FLOOR_SIGN_SCREEN_GEO} material={FLOOR_SIGN_SCREEN_MAT} />
+        <Text
+          position={[0, 0, 0.08]}
+          fontSize={0.6}
+          color="#38bdf8"
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.02}
+          outlineColor="#000000"
+          letterSpacing={0.08}
+        >
+          {label}
+        </Text>
+      </group>
+    </group>
+  );
+});
+
 /** A post-mounted parking-area info sign at an aisle entry.
  *  Shows the slot number range for that aisle (e.g. "A1 - A16") with an
  *  arrow pointing in the direction of travel. Dark LED aesthetic matching
@@ -1552,6 +1625,17 @@ export const ParkingLot = memo(function ParkingLot({
           isTopFloor={s.isTopFloor}
           floor={s.floor}
           dynamic={signByNodeId.get(s.nodeId)}
+        />
+      ))}
+
+      {/* Compact floor-label signs at ramp mouths and the entrance. */}
+      {geo.floorLabels.map((s, i) => (
+        <FloorLabelSign
+          key={`fl${i}`}
+          position={s.position}
+          rotY={s.rotY}
+          label={s.label}
+          isTopFloor={s.isTopFloor}
         />
       ))}
 

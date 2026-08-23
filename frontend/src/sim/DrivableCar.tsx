@@ -6,6 +6,8 @@ import type { CarStatus, LotData, LotEdge } from "../types";
 import { useKeyboard } from "../hooks/useKeyboard";
 import { creaseSmoothed } from "./Car";
 import { rampPoints, slabBounds } from "./geometry";
+import { nodeGap } from "./traffic";
+import { updatePlayerPos } from "../hooks/useSimulation";
 import type { RoadSegment } from "./roadSegments";
 import {
   CAR_Y_OFFSET,
@@ -22,6 +24,9 @@ export const PLAYER_CAR_KEY = "player";
 /** Shared ref shape for communicating live speed to the HUD. */
 export interface PlayerSpeedRef {
   speed: number;
+  /** Live remaining route distance in metres, updated every frame.
+   *  Falls back to -1 when no route is available. */
+  routeDistance: number;
 }
 
 /** World-space position of a parked car, for collision checks. */
@@ -46,6 +51,9 @@ interface DrivableCarProps {
   pov?: boolean;
   /** The bay the backend has reserved for the player, if any. */
   assignedSlot: string | null;
+  /** Ordered list of node ids the player is routed through (from server).
+   *  Used to compute the live remaining route distance each frame. */
+  routePath: string[];
   /** Latest lifecycle status the backend reports for the player. */
   playerStatus: CarStatus;
   /** True once the player has asked to leave and is routed to the exit. */
@@ -637,11 +645,11 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
     // procedural CarInterior supplies every surface the driver sees.
     const body = new THREE.MeshPhysicalMaterial({
       color: new THREE.Color("#e0141b"),
-      metalness: 0.6,
-      roughness: 0.35,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.08,
-      envMapIntensity: 1.2,
+      metalness: 0.25,
+      roughness: 0.55,
+      clearcoat: 0.6,
+      clearcoatRoughness: 0.3,
+      envMapIntensity: 0.5,
     });
     // Tinted near-opaque glass, matched to the AI cars' replacement glass in
     // Car.tsx: fully opaque #1a1d24 at low roughness reads as dark tinted
@@ -651,8 +659,8 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
     const glass = new THREE.MeshPhysicalMaterial({
       color: new THREE.Color("#1a1d24"),
       metalness: 0.1,
-      roughness: 0.08,
-      envMapIntensity: 1.5,
+      roughness: 0.2,
+      envMapIntensity: 0.6,
     });
 
     // Remove wheel nodes (replaced by procedural wheels with spin refs).
@@ -1211,6 +1219,7 @@ export function DrivableCar({
   roadSegments,
   pov = false,
   assignedSlot,
+  routePath,
   playerStatus,
   leaving,
   runId,
@@ -1361,6 +1370,7 @@ export function DrivableCar({
   useEffect(() => {
     return () => {
       carGroupsRef.current.delete(PLAYER_CAR_KEY);
+      updatePlayerPos(NaN, NaN, -1);
     };
   }, [carGroupsRef]);
 
@@ -1581,7 +1591,15 @@ export function DrivableCar({
     } else {
       groundY = flatFloorY;
     }
-    g.position.y = groundY + CAR_Y_OFFSET;
+    // Smooth the height transition. On ramp turns the car's XZ projection
+    // can switch between adjacent centreline segments frame-to-frame, and
+    // each segment has a slightly different Y at the projection point.
+    // Snapping directly to the sampled Y makes the car bob up and down.
+    // Lerping toward the target (matching the pitch lerp below) smooths
+    // those segment-switch discontinuities without adding visible lag.
+    const heightLerp = 1 - Math.pow(0.0001, dt);
+    const targetY = groundY + CAR_Y_OFFSET;
+    g.position.y += (targetY - g.position.y) * heightLerp;
 
     // Keep the blob shadow flat on the floor surface beneath the car
     // (independent of the car's pitch so it never tilts on ramps). The
@@ -1761,6 +1779,54 @@ export function DrivableCar({
     liveSpeedRef.current = velocityRef.current;
     if (speedRef) {
       speedRef.current.speed = velocityRef.current;
+    }
+
+    // Publish physical position so AI cars can avoid the player even when
+    // stopped between graph nodes.
+    updatePlayerPos(g.position.x, g.position.z, floorRef.current);
+
+    // --- Live route distance for the guidance strip ---
+    // The server's routeDistance is measured from the last reported node, so
+    // it lags by up to one node gap (~3.5 m). Compute the true remaining
+    // distance every frame: find where the car sits on its route path, measure
+    // from the car's position to the next node, then add the rest of the path.
+    if (speedRef && routePath.length >= 2) {
+      let liveDist = 0;
+      // Find the nearest node in the route path on the current floor.
+      let nearestIdx = -1;
+      let nearestDist = Infinity;
+      for (let i = 0; i < routePath.length; i++) {
+        const n = lot.nodes[routePath[i]];
+        if (!n || n.floor !== floorRef.current) continue;
+        const [wx, , wz] = toWorld(n.x, n.y, n.floor);
+        const d = Math.hypot(g.position.x - wx, g.position.z - wz);
+        if (d < nearestDist) {
+          nearestDist = d;
+          nearestIdx = i;
+        }
+      }
+      if (nearestIdx >= 0 && nearestIdx < routePath.length - 1) {
+        // Distance from car to the next node in the path.
+        const nextNode = lot.nodes[routePath[nearestIdx + 1]];
+        if (nextNode) {
+          const [nx, , nz] = toWorld(nextNode.x, nextNode.y, nextNode.floor);
+          liveDist = Math.hypot(g.position.x - nx, g.position.z - nz);
+          // Add the remaining node-to-node gaps.
+          for (let h = nearestIdx + 1; h < routePath.length - 1; h++) {
+            liveDist += nodeGap(lot, routePath[h], routePath[h + 1]);
+          }
+        }
+      } else if (nearestIdx === routePath.length - 1) {
+        // At the last node: distance is how far the car is from it.
+        const lastNode = lot.nodes[routePath[nearestIdx]];
+        if (lastNode) {
+          const [lx, , lz] = toWorld(lastNode.x, lastNode.y, lastNode.floor);
+          liveDist = Math.hypot(g.position.x - lx, g.position.z - lz);
+        }
+      }
+      speedRef.current.routeDistance = liveDist;
+    } else if (speedRef) {
+      speedRef.current.routeDistance = -1;
     }
 
     // --- Guidance reporting: where is the car on the graph? ---

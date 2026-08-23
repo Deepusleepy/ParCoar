@@ -26,7 +26,9 @@ export const EDGE_LINE_OFFSET = ROAD_WIDTH / 2 - EDGE_LINE_WIDTH / 2;
 export const RAMP_OUTSET = 19;
 export const RAMP_CORNER_RADIUS = 7;
 
-export const PILLAR_HEIGHT = FLOOR_HEIGHT;
+/** Pillars stop 0.5 below the next floor's slab centre so their tops are
+ *  fully buried in the slab and never poke through the surface above. */
+export const PILLAR_HEIGHT = FLOOR_HEIGHT - 0.5;
 export const SCALE = 1;
 export const CAR_Y_OFFSET = 0.15;
 

@@ -329,20 +329,15 @@ export const Scene = memo(function Scene({
         scene.environment = pmrem.fromScene(room, 0.04).texture;
         room.dispose();
         pmrem.dispose();
-        // Raised from 0.35: at the old level clearcoat went muddy and the
-        // dark glass read flat once reflections were actually guaranteed to
-        // exist. 0.75 gives paint a readable highlight; the ambient +
-        // hemisphere fills below were compensated down proportionally so the
-        // shell stays dark and the real lights keep carrying contrast.
-        scene.environmentIntensity = 0.75;
+        // 0.4 gives paint a subtle highlight without washing out saturated
+        // colours. The old 0.75 made red cars look white in the reflections.
+        scene.environmentIntensity = 0.4;
       }}
     >
-      {/* Ambient + hemisphere cut hard so the shell reads dark and the real
-          lights + emissive strips carry contrast. Lowered again (from 0.15 /
-          0.18) when environmentIntensity went 0.35 -> 0.75 so total fill
-          stays put while reflections do the work. */}
-      <ambientLight intensity={0.1} />
-      <hemisphereLight args={["#3a4258", "#05060a", 0.12]} />
+      {/* Ambient + hemisphere fill restored to pre-reflection levels so
+          colours read true without relying on environment bounce. */}
+      <ambientLight intensity={0.15} />
+      <hemisphereLight args={["#3a4258", "#05060a", 0.18]} />
 
       {/* Single shadow-casting directional "skylight" — weak, cool, retuned
           to the lot footprint. Floor slabs are opaque so shadows don't bleed
