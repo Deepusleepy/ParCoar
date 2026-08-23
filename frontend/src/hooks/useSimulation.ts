@@ -32,7 +32,8 @@ import {
   TARGET_ACTIVE_CARS,
 } from "../sim/constants";
 
-const WS_URL = "ws://127.0.0.1:8765";
+/** Override with VITE_WS_URL when the backend runs somewhere else. */
+const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://127.0.0.1:8765";
 const ENTRY_NODE = "E0";
 const RECONNECT_DELAY_MS = 2000;
 const MIN_STAY_MS = 30_000;
