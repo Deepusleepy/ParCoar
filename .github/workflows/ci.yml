@@ -110,14 +110,16 @@ jobs:
             process.exit(1);
           });
           EOF
+      - run: SIMCHECK_DURATION_MS=45000 node tests/simcheck/check.mjs
       # The servers' output goes to files, invisible when a later step
-      # fails. Print them before failing so a red run explains itself.
+      # fails. Print them after a failure so a red run explains itself —
+      # must come after the simcheck run, not before, or a simcheck failure
+      # leaves no logs behind.
       - name: Show server logs
         if: failure()
         run: |
           echo "--- backend ---"; tail -40 /tmp/simcheck-backend.log || true
           echo "--- frontend ---"; tail -60 /tmp/simcheck-frontend.log || true
-      - run: SIMCHECK_DURATION_MS=45000 node tests/simcheck/check.mjs
       - name: Stop servers
         if: always()
         run: kill $(cat /tmp/simcheck-backend.pid) $(cat /tmp/simcheck-frontend.pid) 2>/dev/null || true
