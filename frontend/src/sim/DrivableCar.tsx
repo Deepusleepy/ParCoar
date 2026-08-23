@@ -4,6 +4,7 @@ import { Text, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import type { CarStatus, LotData, LotEdge } from "../types";
 import { useKeyboard } from "../hooks/useKeyboard";
+import { creaseSmoothed } from "./Car";
 import { rampPoints, slabBounds } from "./geometry";
 import type { RoadSegment } from "./roadSegments";
 import {
@@ -114,6 +115,18 @@ const COLLISION_RESTITUTION = 0.2;
 
 /** Height of the road surface above the floor slab top (mirrors ParkingLot). */
 const ROAD_Y = 0.15;
+
+/** Lift of the blob-shadow disc above the sampled ground height.
+ *  Kept rather than deleted: indoors the slab overhead blocks the
+ *  shadow-casting skylight and the warm point lights cast none, so this
+ *  disc is the only grounding shadow a car in the garage gets. It sits at
+ *  +0.007 - above every opaque road surface (the turn ribbons ride highest,
+ *  at ROAD_Y + 0.005) and strictly BELOW the FloorPaint marking plane at
+ *  ROAD_Y + 0.01. Both of those layers are transparent depthWrite:false and
+ *  used to share one plane, strobing as their blend order flipped; with the
+ *  shadow below the paint, markings stay crisp and the shadow reads on bare
+ *  asphalt between them. */
+const SHADOW_LIFT = 0.007;
 
 /** Ramp capture extends only one movement step beyond its 7-unit road.
  *  Invariant: `onRamp` never disables the lot clamp for a car out in space. */
@@ -630,14 +643,15 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
       clearcoatRoughness: 0.08,
       envMapIntensity: 1.2,
     });
-    // Tinted transparent glass, same inside/outside deal as the body.
+    // Tinted near-opaque glass, matched to the AI cars' replacement glass in
+    // Car.tsx: fully opaque #1a1d24 at low roughness reads as dark tinted
+    // glass through its reflections alone. The old 0.5-alpha pane blended
+    // the ground markings straight through the shell - exactly what the
+    // "mirror is transparent" report described.
     const glass = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color("#0a0e14"),
-      metalness: 0.0,
-      roughness: 0.05,
-      transparent: true,
-      opacity: 0.5,
-      ior: 1.45,
+      color: new THREE.Color("#1a1d24"),
+      metalness: 0.1,
+      roughness: 0.08,
       envMapIntensity: 1.5,
     });
 
@@ -651,6 +665,9 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
       if (!(obj instanceof THREE.Mesh)) return;
       obj.castShadow = true;
       obj.receiveShadow = true;
+      // Same crease-aware smoothing as the AI cars, sharing Car.tsx's
+      // cached conversion so player and traffic shade identically.
+      obj.geometry = creaseSmoothed(obj.geometry);
       const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
       const replaced = mats.map((m) => {
         if (!(m instanceof THREE.Material)) return m;
@@ -1303,7 +1320,7 @@ export function DrivableCar({
     reportedNodeRef.current = null;
     slowSinceRef.current = null;
     if (shadowRef.current) {
-      shadowRef.current.position.set(spawn.pos[0], spawn.pos[1] - CAR_Y_OFFSET - ROAD_Y + 0.01, spawn.pos[2]);
+      shadowRef.current.position.set(spawn.pos[0], spawn.pos[1] - CAR_Y_OFFSET - ROAD_Y + SHADOW_LIFT, spawn.pos[2]);
     }
   };
 
@@ -1567,9 +1584,11 @@ export function DrivableCar({
     g.position.y = groundY + CAR_Y_OFFSET;
 
     // Keep the blob shadow flat on the floor surface beneath the car
-    // (independent of the car's pitch so it never tilts on ramps).
+    // (independent of the car's pitch so it never tilts on ramps). The
+    // height is SHADOW_LIFT, chosen below the FloorPaint plane - see the
+    // constant's comment.
     if (shadowRef.current) {
-      shadowRef.current.position.set(g.position.x, groundY + 0.01, g.position.z);
+      shadowRef.current.position.set(g.position.x, groundY + SHADOW_LIFT, g.position.z);
     }
 
     // --- Pitch (inclination): smoothly interpolate toward target ---
