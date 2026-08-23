@@ -14,6 +14,7 @@ import {
 } from "./constants";
 import { resolvePath } from "./paths";
 import { getSpeedScale } from "./simSpeed";
+import { isNodeEntryBlocked, readRoutePlan } from "../hooks/useSimulation";
 
 const MODEL_PATHS: Record<CarSize, string> = {
   small: "/models/car_sport.glb",
@@ -283,6 +284,13 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({
   const segmentIndex = useRef(0);
   const segmentProgress = useRef(0);
   const currentLeg = useRef("");
+  // Remaining nodes of the server-approved route AFTER the leg currently
+  // being driven, plus the version of the last adopted plan so a fresh
+  // reply replaces what remains of the queue instead of merging with it.
+  const upcomingNodes = useRef<string[]>([]);
+  const planVersion = useRef(0);
+  /** Node the car is waiting to roll into while its entry is blocked. */
+  const heldNode = useRef<string | null>(null);
   const wheelMeshes = useRef<THREE.Object3D[]>([]);
   const clonedWheelGeometries = useRef<Set<THREE.BufferGeometry>>(new Set());
   const lookAheadPoint = useRef(new THREE.Vector3());
@@ -360,6 +368,18 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({
       }
     }
 
+    // Adopt the latest server-approved continuation wholesale. A new
+    // version replaces whatever remains of the previous route - never
+    // merges with it - and releases any boundary hold, since the server's
+    // newest word supersedes the decision being waited on. Unknown node
+    // ids are dropped so crossings never resolve against a missing node.
+    const plan = readRoutePlan(car);
+    if (plan && plan.version !== planVersion.current) {
+      planVersion.current = plan.version;
+      upcomingNodes.current = plan.upcoming.filter((id) => id in lot.nodes);
+      heldNode.current = null;
+    }
+
     const legKey = `${car.fromNode}>${car.toNode}`;
     if (legKey !== currentLeg.current) {
       currentLeg.current = legKey;
@@ -370,7 +390,7 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({
         : [];
     }
 
-    const points = waypoints.current;
+    let points = waypoints.current;
     if (points.length < 2) {
       const world = toWorld(fromNode.x, fromNode.y, fromNode.floor);
       const offset = fromNode.type === "slot" ? 0 : LANE_WIDTH / 2;
@@ -383,7 +403,7 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({
       return;
     }
 
-    const segmentCount = points.length - 1;
+    let segmentCount = points.length - 1;
     const index = segmentIndex.current;
     const first = points[index];
     const second = points[index + 1];
@@ -399,6 +419,56 @@ export const ActiveCarMesh = memo(function ActiveCarMesh({
       if (segmentIndex.current >= segmentCount) {
         const last = points[segmentCount];
         object.position.set(last.x, last.y + CAR_Y_OFFSET, last.z);
+
+        // Roll straight into the next queued leg when the server route
+        // continues past this node. Only a genuinely final arrival - bay,
+        // exit, or a route starved of continuations - reports back to the
+        // backend; intermediate crossings ride on the periodic state sends
+        // instead of blocking on one round trip per hop.
+        const nextNode = heldNode.current ?? upcomingNodes.current.shift() ?? null;
+        if (nextNode !== null) {
+          const prevFrom = car.fromNode;
+          const prevTo = car.toNode;
+          car.progress = 0;
+          car.fromNode = prevTo;
+          car.toNode = nextNode;
+          if (isNodeEntryBlocked(car, nextNode, upcomingNodes.current[0])) {
+            // Occupied ahead: undo the crossing and hold at the boundary,
+            // retrying on later frames. This physical gate mirrors the
+            // hook's standstill check so queueing discipline survives cars
+            // no longer stopping at every node. The index/progress writes
+            // above are rolled back too, or the next frame would read past
+            // the finished leg's waypoints.
+            car.fromNode = prevFrom;
+            car.toNode = prevTo;
+            // The body rests at the far end of the finished leg.
+            car.progress = 1;
+            heldNode.current = nextNode;
+            segmentIndex.current -= 1;
+            segmentProgress.current += 1;
+            object.rotation.y = targetRotation.current;
+            object.rotation.z = targetPitch.current;
+            return;
+          }
+          heldNode.current = null;
+          // Carry overshoot from the finished leg into the new one so the
+          // crossing stays continuous at any frame rate.
+          const carried = Math.max(
+            segmentProgress.current * points[segmentCount - 1].distanceTo(points[segmentCount]),
+            0,
+          );
+          const resolved = resolvePath(lot.nodes[prevTo], lot.nodes[nextNode], lot);
+          waypoints.current = resolved;
+          currentLeg.current = `${prevTo}>${nextNode}`;
+          segmentIndex.current = 0;
+          segmentProgress.current = resolved.length > 1
+            ? Math.min(carried / Math.max(resolved[0].distanceTo(resolved[1]), 0.001), 1)
+            : 0;
+          points = waypoints.current;
+          segmentCount = points.length - 1;
+          continue;
+        }
+
         object.rotation.y = toNode.type === "slot" ? bayYaw(toNode) : targetRotation.current;
         object.rotation.z = targetPitch.current;
         segmentIndex.current = 0;
