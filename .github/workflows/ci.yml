@@ -32,3 +32,94 @@ jobs:
       - run: python -m unittest discover -s tests -t . -v
       - run: python backend/generate_lot.py
       - run: git diff --exit-code shared/lot.json frontend/public/lot.json
+
+  # Advisory on hosted runners: their software GL manages single-digit fps,
+  # so a 45 s soak yields ~a dozen scene samples and geometric invariants
+  # (overlap margins sit exactly at legal nose-to-tail distance) flake on
+  # sampling gaps. Locally on real graphics this gate runs strict and is
+  # the authoritative check; here it records drift without blocking merges.
+  simcheck:
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            tests/simcheck/package-lock.json
+      - run: pip install -r backend/requirements.txt
+      - run: npm ci
+        working-directory: frontend
+      - run: npm ci
+        working-directory: tests/simcheck
+      # The playwright npm package ships no browser binaries of its own.
+      # This must run AFTER the npm ci above, so npx resolves the locally
+      # installed playwright (and its browsers) instead of an ad-hoc copy.
+      - run: npx playwright install --with-deps chromium
+        working-directory: tests/simcheck
+      # exec makes the subshell BE the npm process, so the pid file names
+      # something a later step can actually kill.
+      - name: Start backend and frontend dev server
+        run: |
+          python backend/server.py > /tmp/simcheck-backend.log 2>&1 &
+          echo $! > /tmp/simcheck-backend.pid
+          # --host pins IPv4: a bare "localhost" bind is ::1 on some runners,
+          # which an http probe against 127.0.0.1 never reaches.
+          (cd frontend && exec npm run dev -- --port 5180 --strictPort --host 127.0.0.1) > /tmp/simcheck-frontend.log 2>&1 &
+          echo $! > /tmp/simcheck-frontend.pid
+      - name: Wait for ports 8765 and 5180
+        run: |
+          node <<'EOF'
+          const net = require("net");
+          const http = require("http");
+          const tryTcp = (port) => new Promise((resolve, reject) => {
+            const s = net.connect(port, "127.0.0.1");
+            s.on("connect", () => { s.destroy(); resolve(); });
+            s.on("error", reject);
+          });
+          const tryHttp = (url) => new Promise((resolve, reject) => {
+            http.get(url, (res) => {
+              res.resume();
+              res.statusCode < 500 ? resolve() : reject(new Error(String(res.statusCode)));
+            }).on("error", reject);
+          });
+          const untilUp = async (attempt, label, deadlineMs) => {
+            for (;;) {
+              try { await attempt(); return; } catch {}
+              if (Date.now() > deadlineMs) throw new Error(`${label} never came up`);
+              await new Promise((r) => setTimeout(r, 1000));
+            }
+          };
+          // Wrapped in an async IIFE: top-level await plus require() makes
+          // Node refuse to pick a module format (this failed exactly that
+          // way on the first CI run of this workflow).
+          (async () => {
+            const deadline = Date.now() + 90000;
+            await untilUp(() => tryTcp(8765), "backend websocket :8765", deadline);
+            await untilUp(() => tryHttp("http://127.0.0.1:5180/"), "frontend dev server :5180", deadline);
+            console.log("both ports up");
+          })().catch((error) => {
+            console.error(error.message);
+            process.exit(1);
+          });
+          EOF
+      - run: SIMCHECK_DURATION_MS=45000 node tests/simcheck/check.mjs
+      # The servers' output goes to files, invisible when a later step
+      # fails. Print them after a failure so a red run explains itself —
+      # must come after the simcheck run, not before, or a simcheck failure
+      # leaves no logs behind.
+      - name: Show server logs
+        if: failure()
+        run: |
+          echo "--- backend ---"; tail -40 /tmp/simcheck-backend.log || true
+          echo "--- frontend ---"; tail -60 /tmp/simcheck-frontend.log || true
+      - name: Stop servers
+        if: always()
+        run: kill $(cat /tmp/simcheck-backend.pid) $(cat /tmp/simcheck-frontend.pid) 2>/dev/null || true
