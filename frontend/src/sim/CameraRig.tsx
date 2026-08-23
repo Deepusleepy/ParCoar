@@ -536,8 +536,8 @@ export function CameraRig({
           camera.position.copy(tmpPos.current);
           driveLookRef.current.copy(tmpLook.current);
         } else {
-          camera.position.lerp(tmpPos.current, lerpK(0.97, dt));
-          driveLookRef.current.lerp(tmpLook.current, lerpK(0.995, dt));
+          camera.position.lerp(tmpPos.current, lerpK(0.99, dt));
+          driveLookRef.current.lerp(tmpLook.current, lerpK(0.998, dt));
         }
         camera.lookAt(driveLookRef.current);
       } else {

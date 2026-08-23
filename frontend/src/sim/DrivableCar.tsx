@@ -4,7 +4,6 @@ import { Text, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import type { CarStatus, LotData, LotEdge } from "../types";
 import { useKeyboard } from "../hooks/useKeyboard";
-import { creaseSmoothed } from "./Car";
 import { rampPoints, slabBounds } from "./geometry";
 import { nodeGap } from "./traffic";
 import { updatePlayerPos } from "../hooks/useSimulation";
@@ -73,16 +72,16 @@ const ACCEL_RATE = 12; // units/sec^2 when pressing W
 const BRAKE_RATE = 28; // units/sec^2 when pressing S
 const MAX_SPEED = 9; // forward speed cap (parking-appropriate)
 const MAX_REVERSE = MAX_SPEED / 2; // reverse speed cap
-const TURN_RATE = 1.9; // rad/sec at full steering
+const TURN_RATE = 2.6; // rad/sec at full steering
 /** Speed above which full-lock steering starts to fade back off.
  *  Everything at or below this keeps IDENTICAL authority to before — parking
  *  manoeuvres must not get harder. */
-const STEER_FADE_START = 2;
+const STEER_FADE_START = 3;
 /** Fraction of steering authority removed at MAX_SPEED, ramping linearly
- *  from STEER_FADE_START up. A constant 1.9 rad/s yaw rate at 9 u/s whips the
+ *  from STEER_FADE_START up. A constant yaw rate at 9 u/s whips the
  *  car through hairpins a real car would sweep; trimming toward high speed
  *  keeps low speeds nimble and high speeds stable. */
-const STEER_HIGH_SPEED_FADE = 0.45;
+const STEER_HIGH_SPEED_FADE = 0.25;
 const FRICTION = 0.97; // velocity decay per frame when coasting (at 60fps)
 const DRAG = 0.006; // quadratic drag — creates natural acceleration curve
 /** Reverse throttle once S has braked all the way to zero. Deliberately much
@@ -95,8 +94,8 @@ const REVERSE_ACCEL = 10;
 const BRAKE_TO_REVERSE_EPSILON = 0.05;
 const STEER_SPEED = 6.0; // how fast steering angle ramps (rad/sec)
 const STEER_RETURN = 5.0; // how fast steering returns to center (rad/sec)
-const MAX_STEER_ANGLE = 0.55; // max steering angle (~31°)
-const GRIP = 0.88; // lateral grip: 1 = on rails, 0 = ice (0.85-0.92 sweet spot)
+const MAX_STEER_ANGLE = 0.7; // max steering angle (~40°)
+const GRIP = 0.92; // lateral grip: 1 = on rails, 0 = ice (0.85-0.92 sweet spot)
 const ROLLING_RESISTANCE = 0.4; // drag while throttling (prevents linear accel)
 
 /* ------------------------------------------------------------------ *
@@ -645,11 +644,11 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
     // procedural CarInterior supplies every surface the driver sees.
     const body = new THREE.MeshPhysicalMaterial({
       color: new THREE.Color("#e0141b"),
-      metalness: 0.25,
-      roughness: 0.55,
-      clearcoat: 0.6,
-      clearcoatRoughness: 0.3,
-      envMapIntensity: 0.5,
+      metalness: 0.45,
+      roughness: 0.45,
+      clearcoat: 0.8,
+      clearcoatRoughness: 0.15,
+      envMapIntensity: 0.7,
     });
     // Tinted near-opaque glass, matched to the AI cars' replacement glass in
     // Car.tsx: fully opaque #1a1d24 at low roughness reads as dark tinted
@@ -659,8 +658,8 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
     const glass = new THREE.MeshPhysicalMaterial({
       color: new THREE.Color("#1a1d24"),
       metalness: 0.1,
-      roughness: 0.2,
-      envMapIntensity: 0.6,
+      roughness: 0.1,
+      envMapIntensity: 0.8,
     });
 
     // Remove wheel nodes (replaced by procedural wheels with spin refs).
@@ -673,9 +672,6 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
       if (!(obj instanceof THREE.Mesh)) return;
       obj.castShadow = true;
       obj.receiveShadow = true;
-      // Same crease-aware smoothing as the AI cars, sharing Car.tsx's
-      // cached conversion so player and traffic shade identically.
-      obj.geometry = creaseSmoothed(obj.geometry);
       const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
       const replaced = mats.map((m) => {
         if (!(m instanceof THREE.Material)) return m;
@@ -1496,7 +1492,7 @@ export function DrivableCar({
     lateralVelRef.current = worldVx * sinH + worldVz * cosH;
     // Apply grip: lateral velocity decays (tires resist sideways motion).
     lateralVelRef.current *= Math.pow(1 - GRIP, dt * 60);
-    if (Math.abs(lateralVelRef.current) < 0.01) lateralVelRef.current = 0;
+    if (Math.abs(lateralVelRef.current) < 0.05) lateralVelRef.current = 0;
 
     // Move the car by the combined velocity, using the current heading basis.
     const totalVx = cosH * velocityRef.current + sinH * lateralVelRef.current;
@@ -1595,9 +1591,9 @@ export function DrivableCar({
     // can switch between adjacent centreline segments frame-to-frame, and
     // each segment has a slightly different Y at the projection point.
     // Snapping directly to the sampled Y makes the car bob up and down.
-    // Lerping toward the target (matching the pitch lerp below) smooths
-    // those segment-switch discontinuities without adding visible lag.
-    const heightLerp = 1 - Math.pow(0.0001, dt);
+    // A moderate lerp smooths segment-switch discontinuities without
+    // adding visible lag or making the car float.
+    const heightLerp = 1 - Math.pow(0.02, dt);
     const targetY = groundY + CAR_Y_OFFSET;
     g.position.y += (targetY - g.position.y) * heightLerp;
 
