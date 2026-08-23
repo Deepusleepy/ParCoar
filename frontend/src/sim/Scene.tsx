@@ -235,6 +235,8 @@ export const Scene = memo(function Scene({
   followCarId = null,
   carGroupsRef,
   nodeSigns,
+  /** Lot graph passed down from the app to avoid a second /lot.json fetch. */
+  lot,
 }: {
   children: ReactNode;
   controlsRef?: React.Ref<OrbitControlsHandle>;
@@ -242,6 +244,7 @@ export const Scene = memo(function Scene({
   followCarId?: string | null;
   carGroupsRef?: React.MutableRefObject<Map<string, THREE.Group>>;
   nodeSigns?: NodeSign[];
+  lot?: import("../types").LotData;
 }) {
   // Opening shot: high and to the south-west for a three-quarter aerial view.
   // The free-fly rig reorients to face the lot centre on mount.
@@ -389,7 +392,7 @@ export const Scene = memo(function Scene({
       </mesh>
 
       {/* The parking garage environment. */}
-      <ParkingLot nodeSigns={nodeSigns} />
+      <ParkingLot nodeSigns={nodeSigns} lot={lot} />
 
       {/* Floor labels, standing at the front edge of each storey.
           These were drei <Html> with distanceFactor, which is DOM scaled by
