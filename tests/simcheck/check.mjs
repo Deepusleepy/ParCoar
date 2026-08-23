@@ -12,6 +12,10 @@
  * the positional argument (CI uses it for a shorter run than a human would
  * sit through); the positional seconds still override it.
  *
+ * SIMCHECK_MIN_CARS sets the fewest distinct cars the run must observe
+ * across both channels, sim state and rendered poses (default 1); a run that
+ * saw fewer never looked at anything and fails loudly instead of passing.
+ *
  * Exit code 0 means every invariant held. Non-zero means at least one broke,
  * and the offending samples are printed.
  *
@@ -76,6 +80,17 @@ const MIN_CARS_WITH_GUIDANCE_FRACTION = 0.9;
  *  busy for most of the run and the sampler saw poses in fewer than this
  *  fraction of frames, the gate was blind and must say so. */
 const MIN_FRAMES_WITH_CARS_FRACTION = 0.2;
+/** Floor on how much the run saw at all. The busy-fraction guard above needs
+ *  the sim to report a busy lot, but a regression that never spawns a car —
+ *  in the spawner or in whatever feeds it — leaves BOTH channels empty for
+ *  the whole soak: every state sample lists no cars, every frame carries no
+ *  poses, the sim is honestly idle so nothing above fires, and below,
+ *  guidanceFraction defaults to 1 when no car was ever seen. Distinct car
+ *  ids from either channel count toward this floor. SIMCHECK_MIN_CARS
+ *  overrides it; garbage falls back to the default, like SIMCHECK_DURATION_MS. */
+const ENV_MIN_CARS = Number(process.env.SIMCHECK_MIN_CARS ?? 1);
+const MIN_CARS =
+  Number.isInteger(ENV_MIN_CARS) && ENV_MIN_CARS >= 1 ? ENV_MIN_CARS : 1;
 
 const browser = await chromium.launch({
   headless: true,
@@ -153,6 +168,22 @@ if (frames.length === 0) {
       `${activeStates}/${states.length} car-occupied state samples; ` +
       "no mesh in any car group matches /wheel/i anymore, most likely a rename");
   }
+}
+
+// Total-blindness guard, independent of the one above: when no car ever
+// existed the sim honestly reports an idle lot, so simBusy stays false and
+// that guard never fires — while every physical check below no-ops over an
+// empty world and the run passes having seen nothing. Distinct ids from
+// either channel count: each sampler watches different code paths, so one
+// alone can vouch that cars were real.
+const posedIds = new Set(frames.flatMap((f) => f.frame.map((c) => c.id)));
+const sampledIds = new Set(states.flatMap((s) => s.cars.map((c) => c.id)));
+const carsEverSeen = new Set([...posedIds, ...sampledIds]);
+if (carsEverSeen.size < MIN_CARS) {
+  note(`simcheck was blind: ${carsEverSeen.size === 0 ? "zero" : carsEverSeen.size} cars seen`,
+    `${states.length} state samples and ${frames.length} rendered frames were ` +
+    `inspected against a minimum of ${MIN_CARS}; an empty world makes every ` +
+    "other invariant vacuous");
 }
 
 // Physical: per-car motion between frames.
