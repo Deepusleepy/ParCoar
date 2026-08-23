@@ -369,7 +369,12 @@ if (overlaps.length) {
     note("car bodies overlapped", `${overlaps.length} pairs, closest centres ${Math.min(...overlaps.map((o) => o.gap))}`);
   }
 }
-if (jumps.length) note("cars jumped", `${jumps.length} times, furthest ${Math.max(...jumps.map((j) => j.dist))}`);
+if (jumps.length) {
+  const worstJump = jumps.reduce((a, b) => (a.dist > b.dist ? a : b));
+  note("cars jumped",
+    `${jumps.length} times, furthest ${worstJump.dist} (${worstJump.id} at ` +
+    `[${worstJump.at.join(", ")}])`);
+}
 if (verticals.length) note("cars changed height abruptly", `${verticals.length} times`);
 if (reversals.length) note("cars drove backwards on the road", `${reversals.length} times`);
 if (reTargeted.length) note("cars were re-assigned a bay mid-journey", reTargeted.join(", "));
