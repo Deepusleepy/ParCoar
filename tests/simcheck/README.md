@@ -16,6 +16,7 @@ python3 backend/server.py &          # or backend/.venv/bin/python
 cd frontend && npm run dev &
 node tests/simcheck/check.mjs                                 # 180s, localhost:5180
 SIMCHECK_DURATION_MS=60000 node tests/simcheck/check.mjs      # 60s instead of 180s
+SIMCHECK_MIN_CARS=5 node tests/simcheck/check.mjs             # fail unless 5+ cars ever appear
 node tests/simcheck/check.mjs http://localhost:5180/ 300      # longer run
 ```
 
@@ -23,6 +24,12 @@ Exit code 0 means every invariant held. Non-zero prints what broke.
 
 `SIMCHECK_DURATION_MS` sets the soak length in milliseconds (default 180000);
 the positional seconds argument still overrides it.
+
+`SIMCHECK_MIN_CARS` sets the fewest distinct cars the run must observe across
+both channels — sim-state samples and rendered poses (default 1). A soak that
+never saw a car checked nothing, so it fails loudly instead of passing; the
+busy-fraction blind-run guard cannot catch that case, because an empty world
+is honestly idle.
 
 Playwright is the only dependency: `npx playwright install chromium` once.
 
