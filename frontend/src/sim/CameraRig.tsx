@@ -72,6 +72,13 @@ const LOOK_SENSITIVITY = 0.0025;
  *  deltas are raw and unsmoothed, and at drag sensitivity the view jitters
  *  with every small hand movement. */
 const MOUSE_LOOK_SENSITIVITY = 0.0011;
+/** POV head-look sensitivity. Higher than the spectator pointer-lock value:
+ *  in the cockpit the yaw clamp is only 0.6π, and at the spectator rate it
+ *  takes ~1700px of mouse travel to reach the limit, which reads as "I
+ *  can't turn my head". 0.0019 reaches the yaw limit in ~990px — still
+ *  controlled, no jitter, but the driver can actually look over their
+ *  shoulder to reverse. */
+const POV_LOOK_SENSITIVITY = 0.0019;
 /** Pitch clamp: stop just shy of straight up/down so the view never flips. */
 const PITCH_LIMIT = Math.PI / 2 - 0.05;
 
@@ -82,12 +89,15 @@ const PITCH_LIMIT = Math.PI / 2 - 0.05;
  *  At 45° the cabin occluders (binnacle, wheel rim, dash crest below; roof
  *  liner, visors, mirror above) letterbox roughly a third of the frame —
  *  measured at the old eye they cut everything below -1.2°…-6.6° and above
- *  +8.0°…+8.9°. Widening to 57° doesn't move those cutoffs but gives the
- *  visible exterior band ~17° of world to show instead of ~10°, which is the
- *  difference between "driving a box" and "seeing the road". */
+ *  +8.0°…+8.9°. The occluders sit at fixed angles from the eye, so widening
+ *  the FOV does not move those cutoffs — every extra degree goes to the
+ *  visible exterior band. 57° gave ~17° of world; 65° gives ~25°, which is
+ *  the difference between "driving a box" and "seeing the road, the pillars,
+ *  and the adjacent bays" in a tight garage. 65° sits inside the 60-75°
+ *  range real cockpit cams use, so edge distortion stays imperceptible. */
 const SPECTATOR_FOV = 45;
-const COCKPIT_FOV = 57;
-/** FOV easing time constant (seconds): a 45↔57 change settles in ~3τ ≈
+const COCKPIT_FOV = 65;
+/** FOV easing time constant (seconds): a 45↔65 change settles in ~3τ ≈
  *  0.25 s, so switching modes breathes instead of snapping. Exponential in
  *  dt directly — lerpK() clamps its strength to ≤1 and cannot express a
  *  rate faster than 1/s. */
@@ -96,10 +106,29 @@ const FOV_TIME_CONSTANT = 0.08;
 /** POV look-around range: how far the driver can turn their head. */
 const POV_YAW_LIMIT = Math.PI * 0.6;
 const POV_PITCH_LIMIT = Math.PI * 0.25;
-/** How much of the remaining view offset closes per second of movement. */
-const POV_RECENTER_SPEED = 0.6;
-/** Player speed above which the POV view starts re-centring (u/s). */
-const POV_RECENTER_MIN_SPEED = 2;
+/** How much of the remaining view offset closes per second of movement.
+ *  At 0.6 the offset keeps ~49% after 1s and ~12% after 3s, so a glance
+ *  back while reversing lingers long after the driver wants to face
+ *  forward again. 1.2 closes to ~30% in 1s and ~3% in 2s — the view
+ *  recenters about as fast as a driver would turn their head back, without
+ *  snapping. */
+const POV_RECENTER_SPEED = 1.2;
+/** Player speed above which the POV view starts re-centring (u/s). 4 u/s is
+ *  actually driving, not the creep that happens the instant you touch the
+ *  throttle — so a glance survives a momentary nudge. */
+const POV_RECENTER_MIN_SPEED = 4;
+/** Hold Alt to hold your look direction while driving — re-centering pauses
+ *  while the key is down, so a blind-spot glance stays put as long as you
+ *  need it. */
+const POV_LOOK_LOCK_KEY = "AltLeft";
+/** Fraction of the car's ramp pitch that carries into the driver's gaze.
+ *  The eye POSITION still tilts 1:1 with the cabin (the head rides in the
+ *  seat), but the look direction levels itself partially — the way a real
+ *  driver's inner ear keeps the horizon from swinging fully with the nose.
+ *  1 = view tilts 1:1 with the car (nauseating on ramps); 0 = view stays
+ *  world-level regardless of slope (feels disconnected from the car). 0.65
+ *  keeps ramp climbs readable without the full-cockpit swing. */
+const POV_PITCH_FOLLOW = 0.65;
 
 /** Default vantage for Reset View: a high 3/4 aerial over the lot. */
 /** Where "Reset View" puts you: the same opening shot the app starts on. Keep
@@ -192,6 +221,9 @@ export function CameraRig({
   // Previous-frame player position, for measuring speed in the rig.
   const prevPlayerPosRef = useRef(new THREE.Vector3());
   const hasPrevPlayerPosRef = useRef(false);
+  // True while the driver holds the look-lock key; suppresses POV
+  // re-centering so a blind-spot glance stays put.
+  const povLookLockRef = useRef(false);
 
   // Reusable temp vectors (avoid per-frame allocation).
   const tmpDir = useRef(new THREE.Vector3());
@@ -301,6 +333,29 @@ export function CameraRig({
     };
   }, []);
 
+  // --- POV look-lock: hold Alt to freeze re-centering so a blind-spot
+  //     glance stays put while driving. Independent of the free-flight key
+  //     set above so it never conflicts with WASD. ---
+  useEffect(() => {
+    const onDown = (e: KeyboardEvent) => {
+      if (e.code === POV_LOOK_LOCK_KEY) povLookLockRef.current = true;
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.code === POV_LOOK_LOCK_KEY) povLookLockRef.current = false;
+    };
+    const onBlur = () => {
+      povLookLockRef.current = false;
+    };
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+
   // --- Mouse-drag look + wheel fly-speed. Attached to the canvas element. ---
   useEffect(() => {
     const el = gl.domElement;
@@ -330,14 +385,16 @@ export function CameraRig({
       if (locked()) {
         if (modeRef.current === "pov") {
           // Look around the cabin instead of flying: raw deltas steer the
-          // POV view offsets, clamped to a natural neck range.
+          // POV view offsets, clamped to a natural neck range. Uses the
+          // higher POV_LOOK_SENSITIVITY so the driver can actually reach
+          // the yaw limit without a huge mouse sweep.
           povYawOffsetRef.current = THREE.MathUtils.clamp(
-            povYawOffsetRef.current - e.movementX * MOUSE_LOOK_SENSITIVITY,
+            povYawOffsetRef.current - e.movementX * POV_LOOK_SENSITIVITY,
             -POV_YAW_LIMIT,
             POV_YAW_LIMIT,
           );
           povPitchOffsetRef.current = THREE.MathUtils.clamp(
-            povPitchOffsetRef.current - e.movementY * MOUSE_LOOK_SENSITIVITY,
+            povPitchOffsetRef.current - e.movementY * POV_LOOK_SENSITIVITY,
             -POV_PITCH_LIMIT,
             POV_PITCH_LIMIT,
           );
@@ -450,6 +507,7 @@ export function CameraRig({
     povYawOffsetRef.current = 0;
     povPitchOffsetRef.current = 0;
     hasPrevPlayerPosRef.current = false;
+    povLookLockRef.current = false;
   }, [mode]);
 
   // --- Per-frame camera driving. ---
@@ -552,10 +610,9 @@ export function CameraRig({
         const EYE_FWD = -0.1;
         const EYE_RIGHT = 0.42;
         const EYE_UP = 1.42;
-        // Mirror the car's own orientation convention (Euler XYZ of yaw about
-        // Y and slope pitch about Z), then compose the head-look quaternion
-        // on top so looking around happens in cabin space. Only the LOOK
-        // direction turns with the head; the eye stays fixed like a neck.
+        // Eye POSITION: the head rides in the cabin, so it tilts 1:1 with
+        // the car (full yaw + ramp pitch). The look direction below levels
+        // itself partially — see POV_PITCH_FOLLOW.
         tmpEuler.current.set(0, yaw, pitch, "XYZ");
         tmpQuat.current.setFromEuler(tmpEuler.current);
         tmpFwd2.current.set(EYE_FWD, EYE_UP, -EYE_RIGHT).applyQuaternion(tmpQuat.current).add(carPos);
@@ -569,19 +626,31 @@ export function CameraRig({
         }
         prevPlayerPosRef.current.copy(carPos);
         hasPrevPlayerPosRef.current = true;
-        if (speed > POV_RECENTER_MIN_SPEED) {
+        if (speed > POV_RECENTER_MIN_SPEED && !povLookLockRef.current) {
           const k = lerpK(POV_RECENTER_SPEED, dt);
+          // Recenter yaw only: pitch tracks ramps/slopes and the car's own
+          // pitch is already composed into the gaze (see POV_PITCH_FOLLOW),
+          // so easing pitch back fights the driver on every incline. Hold
+          // Alt (POV_LOOK_LOCK_KEY) to freeze even yaw re-centering for a
+          // blind-spot glance.
           povYawOffsetRef.current *= 1 - k;
-          povPitchOffsetRef.current *= 1 - k;
         }
 
+        // Look DIRECTION: compose the head-look offsets on top of the car
+        // yaw, but only POV_PITCH_FOLLOW of the car's ramp pitch. The head
+        // still turns with yaw (you look where the car points), yet climbing
+        // a deck no longer swings the whole world up with the nose — the
+        // gaze levels itself the way a real driver's does. premultiply keeps
+        // the head offsets in cabin space (carQuat * headQuat).
+        tmpEuler.current.set(0, yaw, pitch * POV_PITCH_FOLLOW, "XYZ");
+        tmpQuatLook.current.setFromEuler(tmpEuler.current);
         tmpEuler.current.set(
           povPitchOffsetRef.current,
           povYawOffsetRef.current,
           0,
           "YXZ",
         );
-        tmpQuatLook.current.setFromEuler(tmpEuler.current);
+        tmpQuat.current.setFromEuler(tmpEuler.current);
         tmpQuatLook.current.premultiply(tmpQuat.current);
         tmpLook.current
           .set(EYE_FWD + 14, EYE_UP - 0.5, -EYE_RIGHT)
