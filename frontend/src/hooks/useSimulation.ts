@@ -259,6 +259,37 @@ export function useSimulation(): SimulationState {
     }
   }, []);
 
+  /** Reset the drivable car to the entry approach and bump the run id so the
+   *  3D car teleports and zeroes its physics. */
+  const respawnPlayer = useCallback(() => {
+    setActiveCars((current) =>
+      current.map((car) =>
+        car.player
+          ? {
+              ...car,
+              fromNode: ENTRY_NODE,
+              toNode: ENTRY_NODE,
+              progress: 0,
+              slot: null,
+              status: "routing",
+              parked: false,
+              leaving: false,
+              vacating: null,
+            }
+          : car,
+      ),
+    );
+    setPlayerRunId((runId) => runId + 1);
+  }, []);
+
+  const schedulePlayerRespawn = useCallback(() => {
+    if (playerRespawnTimerRef.current) clearTimeout(playerRespawnTimerRef.current);
+    playerRespawnTimerRef.current = setTimeout(() => {
+      playerRespawnTimerRef.current = null;
+      respawnPlayer();
+    }, PLAYER_RESPAWN_DELAY_MS);
+  }, [respawnPlayer]);
+
   const applyInstructions = useCallback((instructions: InstructionSign[]) => {
     const lotData = lotRef.current;
     if (!lotData) return;
@@ -464,7 +495,7 @@ export function useSimulation(): SimulationState {
       lastRouteSignatureRef.current = routeSignature;
       setCarRoutes(routes);
     }
-  }, []);
+  }, [schedulePlayerRespawn]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -644,37 +675,6 @@ export function useSimulation(): SimulationState {
     setActiveCars((current) => [...current, spawnCar()]);
     lastSpawnRef.current = Date.now();
   }, []);
-
-  /** Reset the drivable car to the entry approach and bump the run id so the
-   *  3D car teleports and zeroes its physics. */
-  const respawnPlayer = useCallback(() => {
-    setActiveCars((current) =>
-      current.map((car) =>
-        car.player
-          ? {
-              ...car,
-              fromNode: ENTRY_NODE,
-              toNode: ENTRY_NODE,
-              progress: 0,
-              slot: null,
-              status: "routing",
-              parked: false,
-              leaving: false,
-              vacating: null,
-            }
-          : car,
-      ),
-    );
-    setPlayerRunId((runId) => runId + 1);
-  }, []);
-
-  const schedulePlayerRespawn = useCallback(() => {
-    if (playerRespawnTimerRef.current) clearTimeout(playerRespawnTimerRef.current);
-    playerRespawnTimerRef.current = setTimeout(() => {
-      playerRespawnTimerRef.current = null;
-      respawnPlayer();
-    }, PLAYER_RESPAWN_DELAY_MS);
-  }, [respawnPlayer]);
 
   const enterCar = useCallback(() => {
     setActiveCars((current) =>
