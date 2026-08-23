@@ -68,11 +68,11 @@ interface DrivableCarProps {
 /* ------------------------------------------------------------------ *
  *  Driving physics tuning
  * ------------------------------------------------------------------ */
-const ACCEL_RATE = 12; // units/sec^2 when pressing W
+const ACCEL_RATE = 14; // units/sec^2 when pressing W
 const BRAKE_RATE = 28; // units/sec^2 when pressing S
 const MAX_SPEED = 9; // forward speed cap (parking-appropriate)
 const MAX_REVERSE = MAX_SPEED / 2; // reverse speed cap
-const TURN_RATE = 2.6; // rad/sec at full steering
+const TURN_RATE = 3.0; // rad/sec at full steering
 /** Speed above which full-lock steering starts to fade back off.
  *  Everything at or below this keeps IDENTICAL authority to before — parking
  *  manoeuvres must not get harder. */
@@ -82,7 +82,7 @@ const STEER_FADE_START = 3;
  *  car through hairpins a real car would sweep; trimming toward high speed
  *  keeps low speeds nimble and high speeds stable. */
 const STEER_HIGH_SPEED_FADE = 0.25;
-const FRICTION = 0.97; // velocity decay per frame when coasting (at 60fps)
+const FRICTION = 0.99; // velocity decay per frame when coasting (at 60fps)
 const DRAG = 0.006; // quadratic drag — creates natural acceleration curve
 /** Reverse throttle once S has braked all the way to zero. Deliberately much
  *  softer than BRAKE_RATE: the brake pedal and the reverse pedal are not the
@@ -93,10 +93,10 @@ const REVERSE_ACCEL = 10;
  *  to cover floating-point residue: the brake clamps to exactly zero. */
 const BRAKE_TO_REVERSE_EPSILON = 0.05;
 const STEER_SPEED = 6.0; // how fast steering angle ramps (rad/sec)
-const STEER_RETURN = 5.0; // how fast steering returns to center (rad/sec)
+const STEER_RETURN = 6.0; // how fast steering returns to center (rad/sec)
 const MAX_STEER_ANGLE = 0.7; // max steering angle (~40°)
-const GRIP = 0.92; // lateral grip: 1 = on rails, 0 = ice (0.85-0.92 sweet spot)
-const ROLLING_RESISTANCE = 0.4; // drag while throttling (prevents linear accel)
+const GRIP = 0.86; // lateral grip: 1 = on rails, 0 = ice (0.85-0.92 sweet spot)
+const ROLLING_RESISTANCE = 0.15; // drag while throttling (prevents linear accel)
 
 /* ------------------------------------------------------------------ *
  *  Collision tuning
@@ -158,7 +158,13 @@ const MAX_RAMP_CAPTURE_DELTA = 2.5;
  *  These MUST be the same value: they used to differ by 0.2 (ramps allowed
  *  3.0, flat roads 3.2), which snapped the car sideways whenever it crossed
  *  a ramp boundary near the road edge. */
-const ROAD_CORRIDOR_HALF_WIDTH = ROAD_WIDTH / 2 - 0.3;
+const ROAD_CORRIDOR_HALF_WIDTH = ROAD_WIDTH / 2 - 0.1;
+
+/** Hysteresis margin for the flat-road corridor clamp: the incumbent nearest
+ *  segment is kept unless another segment beats it by more than this. Stops
+ *  the argmin flipping between adjacent polyline edges and crossing aisles
+ *  frame-to-frame, which nudged the car in alternating directions. */
+const SEGMENT_HYSTERESIS_MARGIN = 0.4;
 
 /** Vertical dead-zone for FLOOR TRANSFER only: how close to a ramp endpoint
  *  the car must get before it is considered to belong to the other storey.
@@ -1244,6 +1250,9 @@ export function DrivableCar({
   const reportedNodeRef = useRef<string | null>(null);
   const nodeScanAtRef = useRef(0);
   const slowSinceRef = useRef<number | null>(null);
+  // Incumbent nearest road segment for the corridor clamp hysteresis. Keeps
+  // the argmin from flipping between adjacent polyline edges frame-to-frame.
+  const incumbentSegRef = useRef<RoadSegment | null>(null);
   const keys = useKeyboard();
 
   // Pre-compute ramp curves for height sampling.
@@ -1427,24 +1436,29 @@ export function DrivableCar({
       const maxStep = STEER_SPEED * dt;
       steerAngleRef.current += Math.max(-maxStep, Math.min(maxStep, diff));
     } else {
-      // Return to center.
-      const ret = STEER_RETURN * dt;
-      if (Math.abs(steerAngleRef.current) < ret) {
+      // Return to center. A small deadband snaps residual angle to zero so
+      // micro values (e.g. 0.001 rad) don't keep yawing the car each frame.
+      if (Math.abs(steerAngleRef.current) < 0.01) {
         steerAngleRef.current = 0;
       } else {
-        steerAngleRef.current -= Math.sign(steerAngleRef.current) * ret;
+        const ret = STEER_RETURN * dt;
+        if (Math.abs(steerAngleRef.current) < ret) {
+          steerAngleRef.current = 0;
+        } else {
+          steerAngleRef.current -= Math.sign(steerAngleRef.current) * ret;
+        }
       }
     }
 
     // --- Apply steering to heading (proportional to speed; can't turn when stopped) ---
-    // Full steering authority arrives at 1.5 u/s instead of 3, so creeping
-    // into a bay still steers. The old /3 divisor made low-speed turns feel
+    // Full steering authority arrives at 1 u/s instead of 1.5, so creeping
+    // into a bay still steers. The old /1.5 divisor made low-speed turns feel
     // dead and then suddenly grab.
     // Above STEER_FADE_START the authority bleeds back off linearly, removing
     // up to STEER_HIGH_SPEED_FADE of it at MAX_SPEED — otherwise the yaw rate
     // is identical at a crawl and at flat out, which reads as the car
     // pirouetting on its own axis at speed.
-    const speedFactor = Math.min(1, speed / 1.5);
+    const speedFactor = Math.min(1, speed / 1.0);
     const fadeT = Math.min(
       1,
       Math.max(0, (speed - STEER_FADE_START) / (MAX_SPEED - STEER_FADE_START)),
@@ -1492,7 +1506,13 @@ export function DrivableCar({
     lateralVelRef.current = worldVx * sinH + worldVz * cosH;
     // Apply grip: lateral velocity decays (tires resist sideways motion).
     lateralVelRef.current *= Math.pow(1 - GRIP, dt * 60);
-    if (Math.abs(lateralVelRef.current) < 0.05) lateralVelRef.current = 0;
+    // Clamp injected lateral on lag spikes so a single hiccup frame can't
+    // spike lateral velocity beyond what a max-lock turn at 30fps would bleed.
+    const dTurnMax = TURN_RATE * MAX_STEER_ANGLE * (1 / 30);
+    const latMax = Math.abs(velocityRef.current) * Math.sin(dTurnMax);
+    if (lateralVelRef.current > latMax) lateralVelRef.current = latMax;
+    else if (lateralVelRef.current < -latMax) lateralVelRef.current = -latMax;
+    if (Math.abs(lateralVelRef.current) < 0.12) lateralVelRef.current = 0;
 
     // Move the car by the combined velocity, using the current heading basis.
     const totalVx = cosH * velocityRef.current + sinH * lateralVelRef.current;
@@ -1547,14 +1567,13 @@ export function DrivableCar({
     const onRamp =
       bestRamp != null && Math.abs(bestRampSurfaceY - flatFloorY) > RAMP_FLAT_EPSILON;
 
-    // --- Ramp edge clamp: keep the car within the road width of the ramp
-    // centerline so it can't drive off the side and teleport/clip. Done
-    // after ramp detection (which sets onRamp/bestRamp) but before the
-    // height/pitch sampling so the sampled height is valid.
+    // --- Ramp edge clamp prep: sample the surface Y for height/pitch below.
+    // The XZ band clamp is deferred to the final boundary pass so the car is
+    // only re-projected onto the centreline once per frame (a pre-sample clamp
+    // plus a final-pass clamp could land on different segments on ramp corners
+    // and jitter XZ). Here we only read the surface Y at the current XZ.
     if (onRamp && bestRamp) {
-      // Segment-accurate projection + push-back inside the shared band
-      // width; returns the surface Y at the clamped spot for sampling below.
-      bestRampSurfaceY = clampIntoRampBand(bestRamp, g.position);
+      bestRampSurfaceY = rampHeightAt(bestRamp, g.position.x, g.position.z) + ROAD_Y;
     }
 
     let targetPitch = 0;
@@ -1587,15 +1606,15 @@ export function DrivableCar({
     } else {
       groundY = flatFloorY;
     }
-    // Smooth the height transition. On ramp turns the car's XZ projection
-    // can switch between adjacent centreline segments frame-to-frame, and
-    // each segment has a slightly different Y at the projection point.
-    // Snapping directly to the sampled Y makes the car bob up and down.
-    // A moderate lerp smooths segment-switch discontinuities without
-    // adding visible lag or making the car float.
-    const heightLerp = 1 - Math.pow(0.02, dt);
-    const targetY = groundY + CAR_Y_OFFSET;
-    g.position.y += (targetY - g.position.y) * heightLerp;
+    // Height smoothing factor — hoisted so the single height lerp after the
+    // final boundary pass can reuse it. Fast enough (~14%/frame at 60fps,
+    // half-life ~58ms) that the car tracks the ground instead of floating,
+    // but still smooths segment-switch discontinuities on ramp corners.
+    const heightLerp = 1 - Math.pow(0.0001, dt);
+    // Track the ground Y the car should settle toward. The final boundary
+    // pass may update this (ramp band clamp re-samples after XZ correction),
+    // and the single height lerp below applies it.
+    let targetGroundY = groundY;
 
     // Keep the blob shadow flat on the floor surface beneath the car
     // (independent of the car's pitch so it never tilts on ramps). The
@@ -1608,8 +1627,9 @@ export function DrivableCar({
     // --- Pitch (inclination): smoothly interpolate toward target ---
     // On flat ground targetPitch is 0, so the car levels out. On the ramp
     // it tilts to match the slope. We lerp for smooth transitions at the
-    // ramp entry/exit so the car doesn't snap.
-    const pitchLerp = 1 - Math.pow(0.001, dt);
+    // ramp entry/exit so the car doesn't snap. Pitch and height now share
+    // the same settling rate so the nose doesn't lead or lag the body.
+    const pitchLerp = 1 - Math.pow(0.0001, dt);
     g.rotation.z += (targetPitch - g.rotation.z) * pitchLerp;
 
     // --- Collision: clamp to lot bounds + vertical limits ---
@@ -1725,7 +1745,9 @@ export function DrivableCar({
     // when it's on the aisle (the aisle centerline is SLOT_OFFSET=6 units
     // from the nearest slot, so a radius of 2.25 never fires on the aisle).
     if (onRamp && bestRamp) {
-      g.position.y = clampIntoRampBand(bestRamp, g.position) + CAR_Y_OFFSET;
+      // XZ band clamp only — the surface Y is fed to the single height lerp
+      // below so the car never snaps vertically to the raw sampled Y.
+      targetGroundY = clampIntoRampBand(bestRamp, g.position);
     } else {
       let nearSlot = false;
       const slotExceptionRadius = SLOT_WIDTH / 2 + 1;
@@ -1737,9 +1759,31 @@ export function DrivableCar({
         }
       }
       if (!nearSlot) {
+        // Hysteresis: keep last frame's winning segment unless another beats
+        // it by more than SEGMENT_HYSTERESIS_MARGIN. Stops the argmin from
+        // flipping between adjacent polyline edges and crossing aisles
+        // frame-to-frame, which nudged the car in alternating directions.
+        const incumbent = incumbentSegRef.current;
+        let incumbentDist = Infinity;
+        if (incumbent && incumbent.floor === floorRef.current) {
+          incumbentDist = distToSegment2D(
+            g.position.x,
+            g.position.z,
+            incumbent.x1,
+            incumbent.z1,
+            incumbent.x2,
+            incumbent.z2,
+          );
+          // Fall back to a fresh argmin if the incumbent is far off.
+          if (incumbentDist > ROAD_CORRIDOR_HALF_WIDTH + 2) {
+            incumbentDist = Infinity;
+          }
+        }
+
         let bestDist = Infinity;
         let bestX = 0;
         let bestZ = 0;
+        let bestSeg: RoadSegment | null = null;
         for (const seg of roadSegments) {
           if (seg.floor !== floorRef.current) continue;
           const d = distToSegment2D(
@@ -1752,6 +1796,7 @@ export function DrivableCar({
           );
           if (d < bestDist) {
             bestDist = d;
+            bestSeg = seg;
             [bestX, bestZ] = closestPointOnSegment2D(
               g.position.x,
               g.position.z,
@@ -1762,14 +1807,64 @@ export function DrivableCar({
             );
           }
         }
-        if (bestDist > ROAD_CORRIDOR_HALF_WIDTH && bestDist < Infinity) {
-          const nx = (bestX - g.position.x) / bestDist;
-          const nz = (bestZ - g.position.z) / bestDist;
-          g.position.x = bestX - nx * ROAD_CORRIDOR_HALF_WIDTH;
-          g.position.z = bestZ - nz * ROAD_CORRIDOR_HALF_WIDTH;
+
+        // Resolve hysteresis: prefer the incumbent unless the fresh best is
+        // closer by more than the margin.
+        let chosenDist = bestDist;
+        let chosenX = bestX;
+        let chosenZ = bestZ;
+        if (
+          incumbentDist < Infinity &&
+          bestSeg !== incumbent &&
+          bestDist >= incumbentDist - SEGMENT_HYSTERESIS_MARGIN
+        ) {
+          // Keep incumbent — recompute its closest point for this frame.
+          chosenDist = incumbentDist;
+          [chosenX, chosenZ] = closestPointOnSegment2D(
+            g.position.x,
+            g.position.z,
+            incumbent.x1,
+            incumbent.z1,
+            incumbent.x2,
+            incumbent.z2,
+          );
+        } else if (bestSeg) {
+          incumbentSegRef.current = bestSeg;
+        }
+
+        // Deadband: only clamp when clearly past the corridor edge, and clamp
+        // to exactly the boundary so the car settles there instead of
+        // oscillating across it.
+        if (
+          chosenDist > ROAD_CORRIDOR_HALF_WIDTH + 0.05 &&
+          chosenDist < Infinity
+        ) {
+          const nx = (chosenX - g.position.x) / chosenDist;
+          const nz = (chosenZ - g.position.z) / chosenDist;
+          g.position.x = chosenX - nx * ROAD_CORRIDOR_HALF_WIDTH;
+          g.position.z = chosenZ - nz * ROAD_CORRIDOR_HALF_WIDTH;
+          // Cancel the outward velocity component along the guardrail normal
+          // so the lateral-grip drift model stops driving the car back into
+          // the rail each frame (prevents steady oscillation against it).
+          let worldVx = cosH * velocityRef.current + sinH * lateralVelRef.current;
+          let worldVz =
+            -sinH * velocityRef.current + cosH * lateralVelRef.current;
+          const vn = worldVx * nx + worldVz * nz;
+          if (vn < 0) {
+            worldVx -= nx * vn;
+            worldVz -= nz * vn;
+            velocityRef.current = worldVx * cosH - worldVz * sinH;
+            lateralVelRef.current = worldVx * sinH + worldVz * cosH;
+          }
         }
       }
     }
+
+    // --- Single height lerp (after the final boundary pass) ---
+    // Applied once, toward the final clamped ground Y, so the car never snaps
+    // vertically to a raw sampled surface Y (which jittered on ramp corners
+    // as the nearest centreline segment flipped frame-to-frame).
+    g.position.y += (targetGroundY + CAR_Y_OFFSET - g.position.y) * heightLerp;
 
     // Publish speed for the HUD and the interior speedometer.
     liveSpeedRef.current = velocityRef.current;

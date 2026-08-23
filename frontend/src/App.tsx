@@ -61,8 +61,15 @@ export function App() {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const active = document.activeElement;
       if (active instanceof HTMLInputElement || active instanceof HTMLSelectElement) return;
-      if (document.pointerLockElement) return;
       const key = event.key.toLowerCase();
+      // 'v' toggles POV even while the pointer is locked (the normal state
+      // while driving), so the driver can exit the cockpit without first
+      // pressing Escape to release the mouse.
+      if (key === "v") {
+        setCameraMode((current) => (current === "pov" ? "orbit" : "pov"));
+        return;
+      }
+      if (document.pointerLockElement) return;
       if (key === "c") setPanelOpen((open) => !open);
       else if (key === "m") patchOverlays({ routeMap: !overlays.routeMap });
       else if (key === "p") {
@@ -232,6 +239,8 @@ export function App() {
                   <span className="text-white">S</span> Brake
                   <span className="mx-1.5 text-neutral-600">|</span>
                   <span className="text-white">A/D</span> Steer
+                  <span className="mx-1.5 text-neutral-600">|</span>
+                  <span className="text-white">V</span> Exit POV
                 </div>
                 <SpeedHud speedRef={playerSpeedRef} />
               </div>
@@ -247,6 +256,7 @@ export function App() {
                 <span><span className="text-neutral-200">Space / Shift</span> up, down</span>
                 <span><span className="text-neutral-200">Ctrl</span> boost</span>
                 <span><span className="text-neutral-200">Scroll</span> fly forward</span>
+                <span><span className="text-neutral-200">V</span> driver POV</span>
               </div>
             )}
             <button
