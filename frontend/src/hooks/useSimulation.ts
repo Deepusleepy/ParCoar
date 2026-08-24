@@ -22,6 +22,8 @@ import {
 } from "../sim/fill";
 import { setSpeedScale } from "../sim/simSpeed";
 import {
+  CAR_LENGTH,
+  LANE_WIDTH,
   nextCarId,
   PLAYER_ID,
   PLAYER_PLATE,
@@ -111,6 +113,11 @@ const sharedWorld: {
  * blocked. The caller must already have moved `self` onto the leg it wants
  * to enter (fromNode/toNode provisional), matching how the hook checks its
  * own assignments.
+ *
+ * The player-proximity check projects the player onto the AI car's travel
+ * path so that a player on the oncoming lane (wrong side) or behind the AI
+ * car (being overtaken) does NOT block — only a player ahead in the same
+ * lane does.
  */
 export function isNodeEntryBlocked(
   self: ActiveCar,
@@ -122,19 +129,61 @@ export function isNodeEntryBlocked(
   if (isRoadBlocked(lot, sharedWorld.cars, self, node, beyond, sharedWorld.instructions)) {
     return true;
   }
-  // Physical check: if the player car is stopped on the road near the
-  // target node, block entry so AI cars don't drive through it. The
-  // node-level gate above only catches cars whose fromNode/toNode matches,
-  // but the player reports nodes sparsely and can sit between them.
+  // Physical check: if the player car is stopped on the road ahead, block
+  // entry so AI cars don't drive through it. The node-level gate above only
+  // catches cars whose fromNode/toNode matches, but the player reports nodes
+  // sparsely and can sit between them. Unlike the old radial check, this
+  // projects the player onto the AI car's travel path so that a player on the
+  // oncoming lane (wrong side) or behind the AI car (being overtaken) does
+  // NOT block — only a player ahead in the same lane does.
   const pp = sharedWorld.playerPos;
-  if (pp && pp.floor >= 0 && lot.nodes[node]) {
-    const targetFloor = lot.nodes[node].floor;
-    if (pp.floor === targetFloor) {
-      const [nx, , nz] = toWorld(lot.nodes[node].x, lot.nodes[node].y, lot.nodes[node].floor);
-      if (Math.hypot(pp.x - nx, pp.z - nz) < 5) return true;
-    }
+  const target = lot.nodes[node];
+  const from = lot.nodes[self.fromNode];
+  if (!pp || pp.floor < 0 || !target || !from) return false;
+  if (pp.floor !== target.floor) return false;
+
+  const [fx, , fz] = toWorld(from.x, from.y, from.floor);
+  const [tx, , tz] = toWorld(target.x, target.y, target.floor);
+
+  // Car position along the leg (node-centreline). At both call sites the car
+  // is at fromNode (progress 0 / standstill), but use progress when the
+  // provisional toNode matches the target for robustness.
+  const t = self.toNode === node ? self.progress : 0;
+  const cx = fx + (tx - fx) * t;
+  const cz = fz + (tz - fz) * t;
+
+  // Forward direction from the car toward the target node (XZ only).
+  const dx = tx - cx;
+  const dz = tz - cz;
+  const legDist = Math.hypot(dx, dz);
+  if (legDist < 1e-4) {
+    // Degenerate: car is effectively at the node; fall back to a simple
+    // radial check so we never silently clear a blocked entry.
+    return Math.hypot(pp.x - tx, pp.z - tz) < CAR_LENGTH;
   }
-  return false;
+  const ux = dx / legDist;
+  const uz = dz / legDist;
+
+  // Shift the car position into its driving lane (left-hand offset, matching
+  // resolvePath's LANE_SHIFT = -LANE_WIDTH/2 applied via cross(tangent, up)).
+  const carX = cx + uz * (LANE_WIDTH / 2);
+  const carZ = cz - ux * (LANE_WIDTH / 2);
+
+  // Project the player onto the path: forward (along travel) and lateral
+  // (perpendicular) distances relative to the AI car's lane position.
+  const vx = pp.x - carX;
+  const vz = pp.z - carZ;
+  const forward = vx * ux + vz * uz;
+  const lateral = Math.abs(vx * uz - vz * ux);
+
+  // Player in the oncoming lane — let the AI car pass.
+  if (lateral >= LANE_WIDTH * 0.65) return false;
+  // Player behind the AI car — not blocking entry to a node ahead.
+  if (forward < -CAR_LENGTH * 0.5) return false;
+  // Player well past the target node — already cleared the entry.
+  if (forward > legDist + CAR_LENGTH) return false;
+  // Player ahead in the same lane near the target node — block.
+  return true;
 }
 
 /** Update the player car's live physical position. Called every frame from
