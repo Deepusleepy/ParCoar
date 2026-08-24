@@ -210,6 +210,13 @@ export function isNodeEntryBlocked(
   // Player clearly in the oncoming lane (signed lateral <= -threshold)
   // — let the AI car pass.
   if (lateral <= -LANE_WIDTH * 0.4) return false;
+  // Player too far laterally on the same side to be on this road (e.g.
+  // parked in a slot 6 units off the aisle, or on a perpendicular leg at
+  // a turn). The radial guard above handles players far in any direction,
+  // but a player within CAR_LENGTH*2 yet off the road (lateral >
+  // LANE_WIDTH) still freezes the AI car because forward ≈ 0 relative
+  // to the new leg at a turn or when the player is in a slot.
+  if (lateral > LANE_WIDTH) return false;
   // Player clearly behind — not blocking entry to a node ahead.
   if (forward < -CAR_LENGTH * 0.5) return false;
   // Player ahead in the same lane near the car — block. The bound is a

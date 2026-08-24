@@ -873,10 +873,12 @@ function stepActiveCar(
         const sForward = svx * sux + svz * suz;
         const sLateral = svx * suz - svz * sux; // signed: + = same, - = oncoming
         // Player clearly in the oncoming lane — pass.
+        // Player too far laterally on same side (off road, e.g. in a slot) — pass.
         // Player behind — pass.
         // Player ahead in same lane within stopping distance — block.
         if (
           sLateral > -LANE_WIDTH * 0.4 &&
+          sLateral < LANE_WIDTH &&
           sForward > -CAR_LENGTH * 0.5 &&
           sForward < CAR_LENGTH * 1.5
         ) {
@@ -1206,13 +1208,14 @@ export const ActiveCarField = memo(function ActiveCarField({
 
       // Write wheel instance matrices. Each wheel's matrix is:
       //   translate(carPos) * rotateY(heading) * rotateZ(pitch)
-      //   * translate(hubCenter) * rotateY(steer) * rotateY(spin)
+      //   * translate(hubCenter) * rotateY(steer) * rotateZ(-spin)
       // The geometry is already recentered at the hub and has FORWARD_ROT
-      // + scale + mesh-local baked in, so no additional local matrix is
-      // needed. The spin rotates around the wheel's axle (Y in the
-      // recentered space, which maps to the car's lateral axis after
-      // FORWARD_ROT). The steer rotates front wheels around the car's
-      // vertical axis before the spin.
+      // + scale baked in. FORWARD_ROT maps the GLTF axle (X) to Z, so
+      // the spin rotates around Z (the lateral axle in car-local space).
+      // The steer rotates front wheels around Y (vertical) before the
+      // spin. The spin sign is negative to match the player car's
+      // `rotation.y -= wheelSpin` convention (forward = clockwise from
+      // +Z).
       for (const { mesh, center, steers } of build.wheelMeshes) {
         for (let i = 0; i < count; i++) {
           const rt = sizeRts[i];
@@ -1225,7 +1228,7 @@ export const ActiveCarField = memo(function ActiveCarField({
           if (steers) {
             transform.multiply(wScratch.steer.makeRotationY(rt.wheelSteer));
           }
-          transform.multiply(wScratch.spin.makeRotationY(rt.wheelSpin));
+          transform.multiply(wScratch.spin.makeRotationZ(-rt.wheelSpin));
           mesh.setMatrixAt(i, transform);
         }
         mesh.count = count;

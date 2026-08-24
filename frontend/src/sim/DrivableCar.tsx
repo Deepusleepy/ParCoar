@@ -9,6 +9,7 @@ import { nodeGap } from "./traffic";
 import { updatePlayerPos } from "../hooks/useSimulation";
 import type { RoadSegment } from "./roadSegments";
 import {
+  AISLE_SPACING,
   CAR_Y_OFFSET,
   FLOOR_HEIGHT,
   LANE_WIDTH,
@@ -63,6 +64,9 @@ interface DrivableCarProps {
   onReportNode: (nodeId: string) => void;
   /** Request to vacate the current bay and follow guidance to the exit. */
   onLeaveBay: () => void;
+  /** Called when auto-park becomes available/unavailable (player near
+   *  assigned slot). The HUD shows a "Press P to park" prompt. */
+  onAutoParkAvailable?: (available: boolean) => void;
 }
 
 /* ------------------------------------------------------------------ *
@@ -97,6 +101,16 @@ const STEER_RETURN = 6.0; // how fast steering returns to center (rad/sec)
 const MAX_STEER_ANGLE = 0.7; // max steering angle (~40°)
 const GRIP = 0.86; // lateral grip: 1 = on rails, 0 = ice (0.85-0.92 sweet spot)
 const ROLLING_RESISTANCE = 0.15; // drag while throttling (prevents linear accel)
+
+/* ------------------------------------------------------------------ *
+ *  Auto-park tuning
+ * ------------------------------------------------------------------ */
+/** Distance from the assigned slot within which auto-park is offered. */
+const AUTO_PARK_OFFER_RADIUS = 12;
+/** Auto-park animation duration (seconds). */
+const AUTO_PARK_DURATION = 2.5;
+/** Maximum heading difference (radians) for auto-park to be offered. */
+const AUTO_PARK_MAX_HEADING_DIFF = Math.PI * 0.75;
 
 /* ------------------------------------------------------------------ *
  *  Collision tuning
@@ -1268,6 +1282,7 @@ export const DrivableCar = memo(function DrivableCar({
   runId,
   onReportNode,
   onLeaveBay,
+  onAutoParkAvailable,
 }: DrivableCarProps) {
   const groupRef = useRef<THREE.Group>(null);
   const shadowRef = useRef<THREE.Mesh>(null);
@@ -1295,6 +1310,22 @@ export const DrivableCar = memo(function DrivableCar({
   // the argmin from flipping between adjacent polyline edges frame-to-frame.
   const incumbentSegRef = useRef<RoadSegment | null>(null);
   const keys = useKeyboard();
+
+  // --- Auto-park state ---
+  // When active, the physics is overridden and the car smoothly interpolates
+  // to the assigned slot position and heading. Activated by pressing P when
+  // near the slot; cancelled by pressing any movement key.
+  const autoParkRef = useRef<{
+    active: boolean;
+    t: number; // 0..1 progress
+    startPos: THREE.Vector3;
+    startHeading: number;
+    targetPos: THREE.Vector3;
+    targetHeading: number;
+  } | null>(null);
+  const autoParkOfferedRef = useRef(false);
+  const onAutoParkAvailableRef = useRef(onAutoParkAvailable);
+  onAutoParkAvailableRef.current = onAutoParkAvailable;
 
   // Pre-compute ramp curves for height sampling.
   const rampCurves = useMemo(() => buildRampCurves(lot), [lot]);
@@ -1510,6 +1541,123 @@ export const DrivableCar = memo(function DrivableCar({
     const brake = keys.current["KeyS"] || keys.current["ArrowDown"] ? 1 : 0;
     const steerLeft = keys.current["KeyA"] || keys.current["ArrowLeft"] ? 1 : 0;
     const steerRight = keys.current["KeyD"] || keys.current["ArrowRight"] ? 1 : 0;
+    const parkKey = !!keys.current["KeyP"];
+
+    // --- Auto-park proximity detection ---
+    // Check if the player is near the assigned slot and roughly aligned.
+    // If so, notify the HUD to show a "Press P to park" prompt.
+    if (
+      assignedSlotPos &&
+      !leaving &&
+      playerStatus !== "parked" &&
+      !autoParkRef.current?.active
+    ) {
+      const distToSlot = Math.hypot(
+        g.position.x - assignedSlotPos.x,
+        g.position.z - assignedSlotPos.z,
+      );
+      const slotNode = lot.nodes[assignedSlot!];
+      const aisleY = Math.round(slotNode.y / AISLE_SPACING) * AISLE_SPACING;
+      const targetYaw = slotNode.y < aisleY ? Math.PI / 2 : -Math.PI / 2;
+      let headingDiff = Math.abs(headingRef.current - targetYaw);
+      while (headingDiff > Math.PI) headingDiff -= Math.PI * 2;
+      headingDiff = Math.abs(headingDiff);
+      const shouldOffer =
+        distToSlot < AUTO_PARK_OFFER_RADIUS &&
+        headingDiff < AUTO_PARK_MAX_HEADING_DIFF;
+      if (shouldOffer !== autoParkOfferedRef.current) {
+        autoParkOfferedRef.current = shouldOffer;
+        onAutoParkAvailableRef.current?.(shouldOffer);
+      }
+    } else if (autoParkOfferedRef.current) {
+      autoParkOfferedRef.current = false;
+      onAutoParkAvailableRef.current?.(false);
+    }
+
+    // --- Auto-park activation (press P) ---
+    if (
+      parkKey &&
+      autoParkOfferedRef.current &&
+      !autoParkRef.current?.active
+    ) {
+      const slotNode = lot.nodes[assignedSlot!];
+      const aisleY = Math.round(slotNode.y / AISLE_SPACING) * AISLE_SPACING;
+      const targetYaw = slotNode.y < aisleY ? Math.PI / 2 : -Math.PI / 2;
+      autoParkRef.current = {
+        active: true,
+        t: 0,
+        startPos: g.position.clone(),
+        startHeading: headingRef.current,
+        targetPos: new THREE.Vector3(
+          assignedSlotPos!.x,
+          g.position.y,
+          assignedSlotPos!.z,
+        ),
+        targetHeading: targetYaw,
+      };
+      // Clear offer state during auto-park.
+      autoParkOfferedRef.current = false;
+      onAutoParkAvailableRef.current?.(false);
+    }
+
+    // --- Auto-park cancellation (any movement key) ---
+    if (autoParkRef.current?.active && (accel || brake || steerLeft || steerRight)) {
+      autoParkRef.current = null;
+    }
+
+    // --- Auto-park animation ---
+    if (autoParkRef.current?.active) {
+      const ap = autoParkRef.current;
+      ap.t += dt / AUTO_PARK_DURATION;
+      if (ap.t >= 1) {
+        // Snap to target and let parking detection take over.
+        ap.t = 1;
+        g.position.copy(ap.targetPos);
+        headingRef.current = ap.targetHeading;
+        g.rotation.y = ap.targetHeading;
+        velocityRef.current = 0;
+        lateralVelRef.current = 0;
+        steerAngleRef.current = 0;
+        autoParkRef.current = null;
+      } else {
+        // Smooth ease-in-out interpolation.
+        const e = ap.t * ap.t * (3 - 2 * ap.t); // smoothstep
+        g.position.lerpVectors(ap.startPos, ap.targetPos, e);
+        // Shortest-arc heading interpolation.
+        let dh = ap.targetHeading - ap.startHeading;
+        while (dh > Math.PI) dh -= Math.PI * 2;
+        while (dh < -Math.PI) dh += Math.PI * 2;
+        headingRef.current = ap.startHeading + dh * e;
+        g.rotation.y = headingRef.current;
+        velocityRef.current = 0;
+        lateralVelRef.current = 0;
+        steerAngleRef.current = 0;
+      }
+      // Update player position for AI awareness and skip the rest of
+      // the physics (the auto-park controls the car completely).
+      updatePlayerPos(g.position.x, g.position.z, floorRef.current);
+      if (speedRef) speedRef.current.speed = 0;
+      liveSpeedRef.current = 0;
+      // Keep shadow under the car.
+      if (shadowRef.current) {
+        shadowRef.current.position.set(
+          g.position.x,
+          g.position.y - CAR_Y_OFFSET - ROAD_Y + SHADOW_LIFT,
+          g.position.z,
+        );
+      }
+      // Animate wheels (stationary during auto-park).
+      const visualSteer = 0;
+      for (let i = 0; i < wheelRefs.current.length; i++) {
+        const wr = wheelRefs.current[i];
+        if (wr) wr.rotation.y = 0;
+        if (i < 2) {
+          const sr = steerRefs.current[i];
+          if (sr) sr.rotation.y = visualSteer;
+        }
+      }
+      return;
+    }
 
     // --- Longitudinal physics with drag + rolling resistance ---
     // S is a brake first and a reverse throttle second: while rolling forward

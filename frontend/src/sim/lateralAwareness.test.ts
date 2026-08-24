@@ -134,4 +134,27 @@ describe("isNodeEntryBlocked — lateral awareness", () => {
     updatePlayerPos(px, pz, 0);
     expect(isNodeEntryBlocked(ai, "J0_1_5", undefined)).toBe(true);
   });
+
+  it("passes when the player is parked in a slot off the road (lateral > LANE_WIDTH)", () => {
+    // BUG: Player parks in slot 146 (6 units off the aisle). An AI car
+    // behind on the same road should be able to pass. Without the lateral
+    // upper bound, forward ≈ 0 and lateral > 0 causes a false block.
+    // AI car at ENTRY (0,0), heading to FIRST_NODE (2.6, 0) = +X.
+    // Player at (0, 6) — 6 units off the road (in a slot), same side.
+    // lateral = 6 > LANE_WIDTH (3.5) → should pass.
+    const ai = makeAICar({ fromNode: ENTRY, toNode: ENTRY });
+    const [px, , pz] = toWorld(0, 6, 0);
+    updatePlayerPos(px, pz, 0);
+    expect(isNodeEntryBlocked(ai, FIRST_NODE, undefined)).toBe(false);
+  });
+
+  it("passes at a turn node when the player is on the same-side perpendicular leg", () => {
+    // AI car at J0_0_5 (intersection at x=13), heading to J0_1_5 (turns +Z).
+    // Player at (13+5, 0) = (18, 0) — 5 units ahead on the same side.
+    // forward ≈ 0 relative to +Z leg, lateral = 5 > LANE_WIDTH → pass.
+    const ai = makeAICar({ fromNode: "J0_0_5", toNode: "J0_0_5" });
+    const [px, , pz] = toWorld(18, 0, 0);
+    updatePlayerPos(px, pz, 0);
+    expect(isNodeEntryBlocked(ai, "J0_1_5", undefined)).toBe(false);
+  });
 });
