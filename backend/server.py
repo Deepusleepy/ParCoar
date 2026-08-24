@@ -2,6 +2,7 @@
 
 import heapq
 import json
+import math
 from websockets.sync.server import serve
 from generate_lot import build_lot
 
@@ -66,6 +67,60 @@ def shortest_path(start: str, goal: str):
             heapq.heappush(queue, (candidate, neighbour))
 
     return None
+
+
+def _node_world(node_id: str) -> tuple[float, float]:
+    """Graph-space (x, y) of a node — matches the frontend's toWorld with SCALE=1."""
+    n = nodes[node_id]
+    return float(n["x"]), float(n["y"])
+
+
+def _edge_cost_between(from_id: str, to_id: str) -> float:
+    """Cost of the edge from_id -> to_id, or Euclidean distance as fallback."""
+    for edge in edges.get(from_id, []):
+        if edge["to"] == to_id:
+            return _edge_cost(edge)
+    fx, fy = _node_world(from_id)
+    tx, ty = _node_world(to_id)
+    return math.hypot(fx - tx, fy - ty)
+
+
+def adjust_distance_for_pos(
+    pos: dict | None, path: list[str], distance: float
+) -> float:
+    """Adjust route_distance using the player's live world position.
+
+    The path starts at the player's last *reported* node, which can be
+    stale by up to one node gap (~3.5 m). Find the nearest node in the
+    path to the player's actual position, then recompute the remaining
+    distance from there. This makes the HUD distance decrease smoothly
+    as the car drives, instead of jumping at node crossings.
+    """
+    if not pos or len(path) < 2:
+        return distance
+
+    px, pz = float(pos["x"]), float(pos["z"])
+    # Find the nearest node in the path to the player's actual position.
+    best_idx = 0
+    best_dist = float("inf")
+    for i, node_id in enumerate(path):
+        nx, ny = _node_world(node_id)
+        d = math.hypot(px - nx, pz - ny)
+        if d < best_dist:
+            best_dist = d
+            best_idx = i
+
+    # Distance from the player to the next node in the path.
+    if best_idx < len(path) - 1:
+        nx, ny = _node_world(path[best_idx + 1])
+        remaining = math.hypot(px - nx, pz - ny)
+        # Add the rest of the path from best_idx+1 to the end.
+        for j in range(best_idx + 1, len(path) - 1):
+            remaining += _edge_cost_between(path[j], path[j + 1])
+        return remaining
+    else:
+        # Player is at or past the last node (destination).
+        return best_dist
 
 
 def unavailable_slots(session: Session, exclude_car: str | None = None) -> set[str]:
@@ -280,6 +335,12 @@ def handle_message(session: Session, message: dict) -> dict:
             continue
 
         path, distance = result
+        # The player sends its live world position; use it to adjust the
+        # route distance so the HUD decreases smoothly instead of jumping
+        # at node crossings (the reported node is stale by up to ~3.5 m).
+        pos = payload.get("pos")
+        if pos:
+            distance = adjust_distance_for_pos(pos, path, distance)
         car["status"] = "routing"
         instructions.append(_instruction(car, path, distance, "routing"))
 

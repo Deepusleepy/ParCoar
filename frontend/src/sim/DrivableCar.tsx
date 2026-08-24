@@ -13,6 +13,7 @@ import {
   FLOOR_HEIGHT,
   LANE_WIDTH,
   ROAD_WIDTH,
+  SLOT_OFFSET,
   SLOT_WIDTH,
   toWorld,
 } from "./constants";
@@ -1893,17 +1894,25 @@ export const DrivableCar = memo(function DrivableCar({
     // Road-edge rules: skipped on ramps (they have their own band clamp) and
     // near slot nodes (allows driving into parking bays that extend beyond
     // the road width). Only segments on the current floor are considered.
-    // The slot-exception radius is SLOT_WIDTH/2 + 1 (≈2.25) — small enough
-    // that it only fires when the car is actually at a slot entrance, not
-    // when it's on the aisle (the aisle centerline is SLOT_OFFSET=6 units
-    // from the nearest slot, so a radius of 2.25 never fires on the aisle).
+    // The slot-exception radius (see below) fires just before the corridor
+    // clamp would stop the car, so the car can transition off the road into
+    // the bay. On the aisle the nearest slot is SLOT_OFFSET=6 units away, so
+    // the radius (3.1) never fires while driving normally.
     if (onRamp && bestRamp) {
       // XZ band clamp only — the surface Y is fed to the single height lerp
       // below so the car never snaps vertically to the raw sampled Y.
       targetGroundY = clampIntoRampBand(bestRamp, g.position);
     } else {
       let nearSlot = false;
-      const slotExceptionRadius = SLOT_WIDTH / 2 + 1;
+      // The slot exception must fire BEFORE the road corridor clamp stops the
+      // car. Slots sit SLOT_OFFSET (6) units off the aisle centreline; the
+      // corridor clamp holds the car within ROAD_CORRIDOR_HALF_WIDTH (3.4) of
+      // it, so the closest the car can get while clamped is 6 - 3.4 = 2.6 units
+      // from the slot. The old radius (SLOT_WIDTH/2 + 1 = 2.3) was smaller than
+      // that, so the exception never fired and the car could never enter the
+      // bay — a geometric deadlock. This radius (3.1) fires 0.5 units before
+      // the clamp limit, giving the car a smooth transition into the slot area.
+      const slotExceptionRadius = SLOT_OFFSET - ROAD_CORRIDOR_HALF_WIDTH + 0.5;
       const floorSlots = slotPositionsByFloor.get(floorRef.current);
       if (floorSlots) {
         for (let si = 0; si < floorSlots.length; si++) {

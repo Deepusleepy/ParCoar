@@ -116,6 +116,12 @@ export function isRoadBlocked(
   const direction = roadDirection(lot, self.fromNode, node);
   const blocks = (other: ActiveCar, target: string) => {
     if (other === self || other.parked) return false;
+    // The player is never gated by node coincidence: it reports its graph
+    // node sparsely (every ~150ms) and can sit anywhere between two nodes,
+    // so matching its stale fromNode/toNode would block AI traffic in the
+    // oncoming lane too. Lane-aware blocking of the player is handled by
+    // the physical lateral projection in isNodeEntryBlocked instead.
+    if (other.player) return false;
     if (other.fromNode !== target && other.toNode !== target) return false;
     if (lot.nodes[target]?.type === "slot") return true;
 

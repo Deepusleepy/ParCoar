@@ -75,6 +75,10 @@ export interface StateCar {
   assigned_slot: string | null;
   /** Bay still physically occupied while a departing car reverses out. */
   vacating_slot: string | null;
+  /** Live world position (player only) so the backend can compute
+   *  route_distance from where the car actually is, not the stale
+   *  reported node. x/z are world units (SCALE=1, so = graph coords). */
+  pos?: { x: number; z: number; floor: number };
 }
 
 export interface StateMessage {
