@@ -165,9 +165,15 @@ export function isNodeEntryBlocked(
   const dz = tz - cz;
   const legDist = Math.hypot(dx, dz);
   if (legDist < 1e-4) {
-    // Degenerate: car is effectively at the node; fall back to a simple
-    // radial check so we never silently clear a blocked entry.
-    return Math.hypot(pp.x - tx, pp.z - tz) < CAR_LENGTH;
+    // Degenerate: car is effectively at the node. Use a radial check
+    // but also require the player to be roughly in the same lane
+    // (not clearly in the oncoming lane) to avoid blocking when the
+    // player is passing through an intersection in the perpendicular
+    // direction.
+    const dpx = pp.x - tx;
+    const dpz = pp.z - tz;
+    if (Math.hypot(dpx, dpz) > CAR_LENGTH * 2) return false;
+    return Math.hypot(dpx, dpz) < CAR_LENGTH;
   }
   const ux = dx / legDist;
   const uz = dz / legDist;
@@ -188,8 +194,18 @@ export function isNodeEntryBlocked(
   // lateral < 0 means the player is at +Z (oncoming lane).
   const vx = pp.x - cx;
   const vz = pp.z - cz;
+  const radial = Math.hypot(vx, vz);
   const forward = vx * ux + vz * uz;
   const lateral = vx * uz - vz * ux; // signed: + = same lane, - = oncoming
+
+  // Radial guard: if the player is far from the AI car in ANY direction,
+  // it cannot be a collision risk. This handles turn nodes where the
+  // forward projection onto the NEW leg's direction is near zero even
+  // though the player has reversed far away on the PREVIOUS leg. Without
+  // this, a player who was beside the AI car at an intersection and then
+  // reversed would keep the AI car frozen because forward ≈ 0 relative
+  // to the new leg.
+  if (radial > CAR_LENGTH * 2) return false;
 
   // Player clearly in the oncoming lane (signed lateral <= -threshold)
   // — let the AI car pass.
@@ -414,23 +430,16 @@ export function useSimulation(): SimulationState {
         setLot(data);
         setError(null);
         setLoading(false);
-        const runFill = () => {
-          if (cancelled) return;
-          setPreParked(generatePreParked(data));
-        };
-        const ric = (
-          window as unknown as {
-            requestIdleCallback?: (
-              cb: (deadline: IdleDeadline) => void,
-              opts?: { timeout: number },
-            ) => number;
-          }
-        ).requestIdleCallback;
-        if (ric) {
-          ric(() => runFill(), { timeout: 1000 });
-        } else {
-          setTimeout(runFill, 0);
-        }
+        // Generate pre-parked cars SYNCHRONOUSLY, not via requestIdleCallback.
+        // The previous async generation (requestIdleCallback with a 1s
+        // timeout) could be delayed on a busy page, causing the first
+        // WebSocket state message to report empty occupied_slots. The
+        // backend would then assign AI cars to slots that are visually
+        // occupied by pre-parked cars, causing overlap when the AI car
+        // arrives before the pre-parked cars are reported. Synchronous
+        // generation ensures occupied_slots is populated before the first
+        // state message is sent.
+        if (!cancelled) setPreParked(generatePreParked(data));
       })
       .catch((reason: unknown) => {
         if (cancelled) return;

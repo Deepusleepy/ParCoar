@@ -39,6 +39,23 @@ const MODEL_SCALE: Record<CarSize, number> = {
 const FORWARD_ROT = Math.PI / 2;
 const NON_BODY = new Set(["Windows", "Black", "Grey", "Headlights", "TailLights"]);
 
+/** Regex matching GLTF wheel node names across all three models. */
+const WHEEL_NAME_RE = /(?:BackWheels|FrontLeftWheel|FrontRightWheel)/;
+
+/** Wheel radius per size (from GLTF bounding-box analysis). */
+const WHEEL_RADIUS: Record<CarSize, number> = {
+  small: 0.185,
+  medium: 0.173,
+  large: 0.216,
+};
+
+/** Dark rubber material shared by all AI car wheels. */
+const activeWheelMaterial = new THREE.MeshStandardMaterial({
+  color: 0x1a1a1a,
+  roughness: 0.85,
+  metalness: 0.1,
+});
+
 /* ------------------------------------------------------------------ *
  *  Crease-aware normal smoothing
  * ------------------------------------------------------------------
@@ -587,8 +604,18 @@ interface ActiveMesh {
   local: THREE.Matrix4;
 }
 
+/** A wheel InstancedMesh with its hub-center offset and steer flag. */
+interface ActiveWheelMesh {
+  mesh: THREE.InstancedMesh;
+  /** Hub center in the car's local space (after FORWARD_ROT + scale). */
+  center: THREE.Vector3;
+  /** Whether this wheel steers (front wheels only). */
+  steers: boolean;
+}
+
 interface ActiveSizeBuild {
   meshes: ActiveMesh[];
+  wheelMeshes: ActiveWheelMesh[];
 }
 
 function buildActiveSize(size: CarSize, scene: THREE.Object3D): ActiveSizeBuild {
@@ -609,8 +636,49 @@ function buildActiveSize(size: CarSize, scene: THREE.Object3D): ActiveSizeBuild 
     local: THREE.Matrix4;
   }
   const parts: ActivePart[] = [];
+  const wheelParts: { geometry: THREE.BufferGeometry; center: THREE.Vector3; steers: boolean }[] = [];
   scene.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
+
+    // Detect wheel meshes and handle separately from body parts.
+    if (WHEEL_NAME_RE.test(object.name)) {
+      // Compute the wheel's hub center in the car's local space (after
+      // FORWARD_ROT + scale), then recenter the geometry so the hub sits
+      // at the origin. This lets us spin the wheel in place by composing
+      // translate(hubCenter) * rotateY(spin) around the hub.
+      const local = new THREE.Matrix4().copy(base).multiply(object.matrixWorld);
+      object.geometry.computeBoundingBox();
+      const bb = object.geometry.boundingBox!;
+      const centerLocal = new THREE.Vector3();
+      bb.getCenter(centerLocal);
+      // Apply the same local transform to the center point.
+      centerLocal.applyMatrix4(local);
+
+      // Recenter the geometry at its own center, then apply the local
+      // transform (FORWARD_ROT + scale + mesh-local). The resulting
+      // geometry has vertices centered at the hub, ready for per-wheel
+      // spin/steer rotation.
+      const recentered = object.geometry.clone();
+      recentered.translate(-bb.min.x - (bb.max.x - bb.min.x) / 2,
+                           -bb.min.y - (bb.max.y - bb.min.y) / 2,
+                           -bb.min.z - (bb.max.z - bb.min.z) / 2);
+      // Bake the local transform (FORWARD_ROT + scale) into the geometry
+      // so the wheel mesh's instance matrix can be a simple translate.
+      recentered.applyMatrix4(new THREE.Matrix4().makeRotationY(FORWARD_ROT));
+      recentered.applyMatrix4(new THREE.Matrix4().makeScale(scale, scale, scale));
+      // Bake the mesh's own scene-local transform (object.matrixWorld
+      // relative to the scene root) so wheels at different positions in
+      // the GLTF are correctly placed.
+      // object.matrixWorld is the world matrix; we need the local matrix
+      // (relative to the scene root, which is the GLTF scene). Since the
+      // scene root has identity transform, world = local.
+      recentered.applyMatrix4(object.matrixWorld);
+
+      const steers = /Front/.test(object.name);
+      wheelParts.push({ geometry: recentered, center: centerLocal, steers });
+      return;
+    }
+
     const materials = (
       Array.isArray(object.material) ? object.material : [object.material]
     ).filter((material): material is THREE.Material => material instanceof THREE.Material);
@@ -639,7 +707,15 @@ function buildActiveSize(size: CarSize, scene: THREE.Object3D): ActiveSizeBuild 
     return { mesh, isBody, local };
   });
 
-  return { meshes };
+  const wheelMeshes: ActiveWheelMesh[] = wheelParts.map(({ geometry, center, steers }) => {
+    const mesh = new THREE.InstancedMesh(geometry, activeWheelMaterial, ACTIVE_CAPACITY);
+    mesh.castShadow = true;
+    mesh.count = 0;
+    mesh.frustumCulled = false;
+    return { mesh, center, steers };
+  });
+
+  return { meshes, wheelMeshes };
 }
 
 /** Per-car driving state, preserved across renders for one active AI car. */
@@ -666,6 +742,12 @@ interface ActiveRuntime {
    *  scene graph; only its position/rotation are updated each frame. */
   group: THREE.Group;
   lookAhead: THREE.Vector3;
+  /** Accumulated wheel spin angle (radians). Updated each frame. */
+  wheelSpin: number;
+  /** Current steering angle for front wheels (radians). */
+  wheelSteer: number;
+  /** Previous frame's rotation.y, for computing steer delta. */
+  prevRotationY: number;
 }
 
 /**
@@ -758,12 +840,15 @@ function stepActiveCar(
   // runs at graph crossings, so once an AI car has entered a leg it would
   // drive the whole leg without re-checking the player and could overlap a
   // player that moved into its lane mid-leg. Hold the car this frame when
-  // the player is ahead in the same lane within a few car lengths. The
-  // resolved waypoints already carry the lane shift, so the lateral check
-  // against the current sub-segment direction directly distinguishes
-  // same-lane (block) from oncoming-lane (pass). Ramps stay covered
-  // because the entry gate still runs at the ramp node; the floor check
-  // here accepts the player when within one floor of the leg's fromNode.
+  // the player is ahead in the same lane within a few car lengths.
+  //
+  // The resolved waypoints carry the lane shift, but the player's position
+  // is physics-based (NOT lane-shifted). So we compute lateral from the
+  // SEGMENT CENTERLINE (midpoint of sa->sb), not from the AI car's
+  // lane-shifted position. We use SIGNED lateral to distinguish same-lane
+  // from oncoming-lane, and a radial guard to handle turn nodes where the
+  // forward projection onto the current segment is near zero even though
+  // the player has moved far away on a perpendicular leg.
   const pp = readPlayerPos();
   if (pp && Math.abs(pp.floor - fromNode.floor) < 1) {
     const si = rt.segmentIndex;
@@ -775,18 +860,30 @@ function stepActiveCar(
     if (sLen > 1e-4) {
       const sux = sabx / sLen;
       const suz = sabz / sLen;
-      const svx = pp.x - object.position.x;
-      const svz = pp.z - object.position.z;
-      const sForward = svx * sux + svz * suz;
-      const sLateral = Math.abs(svx * suz - svz * sux);
-      if (
-        sLateral < LANE_WIDTH * 0.65 &&
-        sForward > -CAR_LENGTH * 0.5 &&
-        sForward < CAR_LENGTH * 3
-      ) {
-        car.progress =
-          segmentCount > 0 ? (rt.segmentIndex + rt.segmentProgress) / segmentCount : 0;
-        return;
+      // Use the segment midpoint as the centerline reference point.
+      const midX = (sa.x + sb.x) / 2;
+      const midZ = (sa.z + sb.z) / 2;
+      const svx = pp.x - midX;
+      const svz = pp.z - midZ;
+      const sRadial = Math.hypot(svx, svz);
+      // Radial guard: player too far away to be a collision risk.
+      if (sRadial > CAR_LENGTH * 2) {
+        // skip gate
+      } else {
+        const sForward = svx * sux + svz * suz;
+        const sLateral = svx * suz - svz * sux; // signed: + = same, - = oncoming
+        // Player clearly in the oncoming lane — pass.
+        // Player behind — pass.
+        // Player ahead in same lane within stopping distance — block.
+        if (
+          sLateral > -LANE_WIDTH * 0.4 &&
+          sForward > -CAR_LENGTH * 0.5 &&
+          sForward < CAR_LENGTH * 1.5
+        ) {
+          car.progress =
+            segmentCount > 0 ? (rt.segmentIndex + rt.segmentProgress) / segmentCount : 0;
+          return;
+        }
       }
     }
   }
@@ -929,6 +1026,24 @@ function stepActiveCar(
   while (rotationDifference < -Math.PI) rotationDifference += Math.PI * 2;
   object.rotation.y += rotationDifference * Math.min(1, dt * 10);
   object.rotation.z += (rt.targetPitch - object.rotation.z) * Math.min(1, dt * 6);
+
+  // --- Wheel spin & steer computation ---
+  // Spin: angular velocity = linear speed / wheel radius. The car moves
+  // at `speed` units/sec, so the wheels rotate at speed/radius rad/sec.
+  const radius = WHEEL_RADIUS[rt.size];
+  rt.wheelSpin += (speed / radius) * dt;
+  // Steer: derive from the heading change rate. A positive rotation
+  // delta means turning left (in three.js Y-up, +Y rotation is
+  // counter-clockwise when viewed from above = left turn). Scale to a
+  // visual steer angle and clamp to ~0.5 rad (~28°).
+  const headingDelta = object.rotation.y - rt.prevRotationY;
+  rt.prevRotationY = object.rotation.y;
+  if (dt > 1e-4) {
+    const headingRate = headingDelta / dt;
+    const targetSteer = THREE.MathUtils.clamp(headingRate * 0.12, -0.5, 0.5);
+    // Smooth the steer angle so it doesn't snap.
+    rt.wheelSteer += (targetSteer - rt.wheelSteer) * Math.min(1, dt * 8);
+  }
 }
 
 interface ActiveCarFieldProps {
@@ -977,6 +1092,16 @@ export const ActiveCarField = memo(function ActiveCarField({
     [],
   );
 
+  // Scratch matrices for wheel instance composition (allocated once).
+  const wheelScratch = useMemo(
+    () => ({
+      translate: new THREE.Matrix4(),
+      steer: new THREE.Matrix4(),
+      spin: new THREE.Matrix4(),
+    }),
+    [],
+  );
+
   // Sync the runtime map with the cars array: add new cars, drop gone
   // cars, and reassign per-size instance indices contiguously. The
   // carGroupsRef map is kept in lockstep so the camera rig can follow a
@@ -1018,6 +1143,9 @@ export const ActiveCarField = memo(function ActiveCarField({
             heldNode: null,
             group: new THREE.Group(),
             lookAhead: new THREE.Vector3(),
+            wheelSpin: 0,
+            wheelSteer: 0,
+            prevRotationY: 0,
           };
           rt.group.name = car.id;
           map.set(car.id, rt);
@@ -1050,6 +1178,8 @@ export const ActiveCarField = memo(function ActiveCarField({
     // transform, so the instance matrix is just translate * Ry * Rz * local
     // (Rz carries the ramp pitch the old group.rotation.z held).
     const { transform, rotationY, rotationZ, color } = scratch;
+    // Scratch matrices for wheel composition (allocated once per frame).
+    const wScratch = wheelScratch;
     for (const size of SIZES) {
       const build = builds[size];
       const sizeRts: ActiveRuntime[] = [];
@@ -1073,6 +1203,34 @@ export const ActiveCarField = memo(function ActiveCarField({
         mesh.instanceMatrix.needsUpdate = true;
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       }
+
+      // Write wheel instance matrices. Each wheel's matrix is:
+      //   translate(carPos) * rotateY(heading) * rotateZ(pitch)
+      //   * translate(hubCenter) * rotateY(steer) * rotateY(spin)
+      // The geometry is already recentered at the hub and has FORWARD_ROT
+      // + scale + mesh-local baked in, so no additional local matrix is
+      // needed. The spin rotates around the wheel's axle (Y in the
+      // recentered space, which maps to the car's lateral axis after
+      // FORWARD_ROT). The steer rotates front wheels around the car's
+      // vertical axis before the spin.
+      for (const { mesh, center, steers } of build.wheelMeshes) {
+        for (let i = 0; i < count; i++) {
+          const rt = sizeRts[i];
+          if (!rt) continue;
+          const g = rt.group;
+          transform.makeTranslation(g.position.x, g.position.y, g.position.z);
+          transform.multiply(rotationY.makeRotationY(g.rotation.y));
+          transform.multiply(rotationZ.makeRotationZ(g.rotation.z));
+          transform.multiply(wScratch.translate.makeTranslation(center.x, center.y, center.z));
+          if (steers) {
+            transform.multiply(wScratch.steer.makeRotationY(rt.wheelSteer));
+          }
+          transform.multiply(wScratch.spin.makeRotationY(rt.wheelSpin));
+          mesh.setMatrixAt(i, transform);
+        }
+        mesh.count = count;
+        mesh.instanceMatrix.needsUpdate = true;
+      }
     }
   });
 
@@ -1086,6 +1244,15 @@ export const ActiveCarField = memo(function ActiveCarField({
       ))}
       {builds.large.meshes.map(({ mesh }, index) => (
         <primitive key={`active-l${index}`} object={mesh} />
+      ))}
+      {builds.small.wheelMeshes.map(({ mesh }, index) => (
+        <primitive key={`active-sw${index}`} object={mesh} />
+      ))}
+      {builds.medium.wheelMeshes.map(({ mesh }, index) => (
+        <primitive key={`active-mw${index}`} object={mesh} />
+      ))}
+      {builds.large.wheelMeshes.map(({ mesh }, index) => (
+        <primitive key={`active-lw${index}`} object={mesh} />
       ))}
     </group>
   );

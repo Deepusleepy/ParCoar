@@ -99,4 +99,39 @@ describe("isNodeEntryBlocked — lateral awareness", () => {
     updatePlayerPos(0, 0, -1);
     expect(isNodeEntryBlocked(ai, FIRST_NODE, undefined)).toBe(false);
   });
+
+  it("passes at a turn node when the player has reversed far away on the previous leg", () => {
+    // THE USER'S BUG: AI car is at a turn node (intersection). The player
+    // was beside the AI car, then reversed far away on the previous leg.
+    // The forward projection onto the NEW leg's direction is near zero
+    // (the player moved perpendicular to the new leg), so the old code
+    // kept the AI car frozen. The radial guard should clear this.
+    //
+    // AI car at J0_0_5 (an intersection), heading to J0_1_5 (turns +Z).
+    // Player reversed to J0_0_1 — far away on the previous leg.
+    const ai = makeAICar({ fromNode: "J0_0_5", toNode: "J0_0_5" });
+    const [px, , pz] = toWorld(2.6, 0, 0); // J0_0_1 position
+    updatePlayerPos(px, pz, 0);
+    expect(isNodeEntryBlocked(ai, "J0_1_5", undefined)).toBe(false);
+  });
+
+  it("passes when the player is far from the AI car in any direction (radial guard)", () => {
+    // AI car at E0 (0,0), heading to J0_0_1 (2.6, 0).
+    // Player at (0, 20) — perpendicular to the leg, far away.
+    // Forward ≈ 0, lateral is large, but radial distance is > CAR_LENGTH*2.
+    const ai = makeAICar({ fromNode: ENTRY, toNode: ENTRY });
+    const [px, , pz] = toWorld(0, 20, 0);
+    updatePlayerPos(px, pz, 0);
+    expect(isNodeEntryBlocked(ai, FIRST_NODE, undefined)).toBe(false);
+  });
+
+  it("blocks when the player is close beside the AI car at a turn node", () => {
+    // AI car at J0_0_5 (intersection), heading to J0_1_5 (turns +Z).
+    // Player at J0_0_5 — right at the intersection, same position.
+    // This SHOULD block because the player is close enough to collide.
+    const ai = makeAICar({ fromNode: "J0_0_5", toNode: "J0_0_5" });
+    const [px, , pz] = toWorld(13, 0, 0); // J0_0_5 is at x=13
+    updatePlayerPos(px, pz, 0);
+    expect(isNodeEntryBlocked(ai, "J0_1_5", undefined)).toBe(true);
+  });
 });
