@@ -5,7 +5,7 @@ import {
   isNodeEntryBlocked,
   updatePlayerPos,
 } from "../hooks/useSimulation";
-import { LANE_WIDTH, CAR_LENGTH, toWorld } from "./constants";
+import { LANE_WIDTH, toWorld } from "./constants";
 import lotJson from "../../public/lot.json";
 
 const lot = lotJson as unknown as LotData;
