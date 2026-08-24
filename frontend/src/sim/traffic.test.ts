@@ -151,4 +151,15 @@ describe("isRoadBlocked", () => {
     const occupant = makeCar({ id: "occ", fromNode: "S0_2", toNode: "S0_2", progress: 0.99 });
     expect(isRoadBlocked(lot, [occupant], self, "S0_2", undefined, emptyInstructions)).toBe(true);
   });
+
+  it("never blocks on the player car (lateral awareness handles it)", () => {
+    const self = makeCar({ id: "self", fromNode: "J0_0_1", toNode: "J0_0_1" });
+    const player = makeCar({
+      id: "P0",
+      fromNode: "J0_0_2",
+      toNode: "J0_0_2",
+      player: true,
+    });
+    expect(isRoadBlocked(lot, [player], self, "J0_0_2", undefined, emptyInstructions)).toBe(false);
+  });
 });

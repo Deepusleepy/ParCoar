@@ -80,14 +80,15 @@ const MAX_VERTICAL_STEP = 1.5;
 /** Every car on the road should pass at least one guidance board, or the
  *  garage is not demonstrating anything. */
 const MIN_CARS_WITH_GUIDANCE_FRACTION = 0.9;
-/** Vacuous-pass guard. Car detection depends on /wheel/i still matching a mesh
- *  inside every car group. If that ever stops matching, every frame comes back
- *  empty and all of the physical checks pass without having looked at a single
- *  car — the same "clean garage, bug fully present" lie the pause threshold
- *  once told. The sim state publishes independently of the scene graph, so it
- *  can witness whether cars actually existed: when the sim says the road was
- *  busy for most of the run and the sampler saw poses in fewer than this
- *  fraction of frames, the gate was blind and must say so. */
+/** Vacuous-pass guard. Car detection reads from the carGroupsRef map (exposed
+ *  as window.__parcoarCarGroups) which holds per-car THREE.Group objects with
+ *  position/rotation regardless of whether the renderer uses InstancedMesh or
+ *  individual meshes. If the map is empty or the groups have no positions,
+ *  every frame comes back empty and all of the physical checks pass without
+ *  having looked at a single car. The sim state publishes independently of
+ *  the scene graph, so it can witness whether cars actually existed: when the
+ *  sim says the road was busy for most of the run and the sampler saw poses in
+ *  fewer than this fraction of frames, the gate was blind and must say so. */
 const MIN_FRAMES_WITH_CARS_FRACTION = 0.2;
 /** Floor on how much the run saw at all. The busy-fraction guard above needs
  *  the sim to report a busy lot, but a regression that never spawns a car —
@@ -118,30 +119,29 @@ const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(e.message.slice(0, 200)));
 
 await page.goto(URL, { waitUntil: "load" });
-await page.waitForFunction(() => window.__parcoarSim && window.__parcoarScene, { timeout: 30000 });
+await page.waitForFunction(() => window.__parcoarSim && window.__parcoarScene && window.__parcoarCarGroups, { timeout: 30000 });
 const lot = await page.evaluate(async () => (await fetch("/lot.json")).json());
 await page.waitForTimeout(4000);
 
-// Two samplers. The scene graph one catches physical problems (overlap,
+// Two samplers. The car-groups one catches physical problems (overlap,
 // jumps); the sim-state one catches decision problems (pauses, routing).
+// Car groups are read from the carGroupsRef map (window.__parcoarCarGroups)
+// which works regardless of whether the renderer uses InstancedMesh or
+// individual scene-graph meshes.
 await page.evaluate((secs) => {
   window.__frames = [];
   window.__states = [];
-  const scene = window.__parcoarScene;
-  const isCar = (o) => {
-    if (!o.isGroup || o.parent !== scene) return false;
-    let hit = false;
-    o.traverse((c) => { if (c.isMesh && /wheel/i.test(c.name)) hit = true; });
-    return hit;
-  };
   const tick = () => {
     const frame = [];
-    for (const child of scene.children) {
-      if (!isCar(child)) continue;
-      frame.push({
-        id: child.name || child.uuid.slice(0, 8),
-        x: child.position.x, y: child.position.y, z: child.position.z,
-        yaw: child.rotation.y,
+    const groups = window.__parcoarCarGroups;
+    if (groups && groups.forEach) {
+      groups.forEach((g, id) => {
+        if (!g || !g.position) return;
+        frame.push({
+          id: id || g.uuid.slice(0, 8),
+          x: g.position.x, y: g.position.y, z: g.position.z,
+          yaw: g.rotation.y,
+        });
       });
     }
     window.__frames.push({ t: performance.now(), frame });
@@ -168,13 +168,14 @@ await browser.close();
 const failures = [];
 const note = (name, detail) => failures.push({ name, detail });
 
-// Blind-run guard. The scene graph and the sim state come from different code
+// Blind-run guard. The car groups and the sim state come from different code
 // paths, so one going quiet does not mean the other did. A run with no frames
 // at all checked nothing; a run where the sim kept reporting cars but the
-// frames stayed empty means the /wheel/i matcher no longer finds the car
-// meshes, and every physical check below would pass without seeing anything.
+// frames stayed empty means the carGroupsRef map is empty or the groups have
+// no positions, and every physical check below would pass without seeing
+// anything.
 if (frames.length === 0) {
-  note("no frames were captured", "the scene sampler never ran; nothing physical was checked");
+  note("no frames were captured", "the car-groups sampler never ran; nothing physical was checked");
 } else {
   const withCars = frames.filter((f) => f.frame.length > 0).length;
   const activeStates = states.filter((s) => s.cars.length > 0).length;
@@ -183,7 +184,7 @@ if (frames.length === 0) {
     note("the sampler saw no car poses while the sim reported active cars",
       `${withCars}/${frames.length} frames had any pose across ` +
       `${activeStates}/${states.length} car-occupied state samples; ` +
-      "no mesh in any car group matches /wheel/i anymore, most likely a rename");
+      "the carGroupsRef map is empty or the groups have no position data");
   }
 }
 

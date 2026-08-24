@@ -1,8 +1,9 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useContext, useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { Text } from "@react-three/drei";
-import type { LotData, LotNode, NodeSign, NodeType, SlotSize } from "../types";
+import type { LotData, LotNode, NodeType, SlotSize } from "../types";
+import { NodeSignsContext } from "./SimContext";
 import {
   AISLE_SPACING,
   EDGE_LINE_OFFSET,
@@ -472,6 +473,16 @@ interface SignboardDesc {
   floor: number;
 }
 
+/** Descriptor for a small overhead floor-label sign ("FLOOR A/B/C") at a
+ *  ramp mouth or entrance. Distinct from SignboardDesc: these are compact
+ *  labels, not route-display boards. */
+interface FloorLabelDesc {
+  position: [number, number, number];
+  rotY: number;
+  label: string;
+  isTopFloor: boolean;
+}
+
 /** Descriptor for a post-mounted parking-area info sign at an aisle entry.
  *  Shows the slot number range for that aisle (e.g. "A1 - A16 →"). */
 interface AreaSignDesc {
@@ -484,12 +495,13 @@ interface AreaSignDesc {
 }
 
 /** Classify the lot graph into renderable descriptors. */
-function buildGeometry(lot: LotData) {
+function buildGeometry(lot: LotData, bounds: SlabBounds) {
   const aisles: AisleDesc[] = [];
   const turns: CurveDesc[] = [];
   const ramps: CurveDesc[] = [];
   const slots: SlotDesc[] = [];
   const signboards: SignboardDesc[] = [];
+  const floorLabels: FloorLabelDesc[] = [];
   const areaSigns: AreaSignDesc[] = [];
   const nodes = lot.nodes;
   // Top floor has no ceiling slab above it, so signboards there omit the rods.
@@ -627,7 +639,6 @@ function buildGeometry(lot: LotData) {
     if (!rampEdge) continue;
     const to = nodes[rampEdge.to];
     if (!to) continue;
-    const toId = rampEdge.to;
     const points = rampPoints(
       toWorld(from.x, from.y, from.floor),
       toWorld(to.x, to.y, to.floor),
@@ -678,13 +689,11 @@ function buildGeometry(lot: LotData) {
       const ux = runX / runLen;
       const uz = runZ / runLen;
       const [, mouthY] = toWorld(to.x, to.y, to.floor);
-      signboards.push({
-        nodeId: toId,
+      floorLabels.push({
         position: [tail.x - ux * 3, mouthY, tail.z - uz * 3],
         rotY: Math.atan2(-ux, -uz),
         label: `FLOOR ${String.fromCharCode(65 + to.floor)}`,
         isTopFloor: to.floor === maxFloor,
-        floor: to.floor,
       });
     }
   }
@@ -716,13 +725,11 @@ function buildGeometry(lot: LotData) {
         const ux = dirX / dirLen;
         const uz = dirZ / dirLen;
         const [wx, wy, wz] = toWorld(entryNode.x, entryNode.y, entryNode.floor);
-        signboards.push({
-          nodeId: entryId,
+        floorLabels.push({
           position: [wx - ux * 3, wy, wz - uz * 3],
           rotY: Math.atan2(-ux, -uz),
           label: `FLOOR ${String.fromCharCode(65 + entryNode.floor)}`,
           isTopFloor: entryNode.floor === maxFloor,
-          floor: entryNode.floor,
         });
       }
     }
@@ -811,7 +818,173 @@ function buildGeometry(lot: LotData) {
     }
   }
 
-  return { aisles, turns, ramps, slots, rampHoles, signboards, areaSigns };
+  /* ---------------------------------------------------------------- *
+   *  Merged road geometry
+   *
+   *  Every turn and ramp emits the same set of materials (asphalt ribbon,
+   *  edge lines, concrete divider, lane arrows, ramp soffit). Instead of
+   *  rendering one <mesh> per material per turn/ramp (~50-60 draw calls),
+   *  collect every part by material and merge once into a handful of
+   *  BufferGeometries that render as ~6 draw calls total.
+   *
+   *  Guardrails (perimeter segments + turn rails + ramp rails) are merged
+   *  per floor into one BufferGeometry sharing MAT_GUARDRAIL, dropping
+   *  ~40-60 separate meshes to one per floor.
+   *
+   *  Aisle road boxes are identical except for position/scale, so they go
+   *  into a single InstancedMesh (one draw call for ~36 boxes).
+   * ---------------------------------------------------------------- */
+  const asphaltParts: THREE.BufferGeometry[] = [];
+  const edgeParts: THREE.BufferGeometry[] = [];
+  const dividerParts: THREE.BufferGeometry[] = [];
+  const arrowParts: THREE.BufferGeometry[] = [];
+  const soffitParts: THREE.BufferGeometry[] = [];
+  const guardrailByFloor = new Map<number, THREE.BufferGeometry[]>();
+  const addGuardrail = (floor: number, geo: THREE.BufferGeometry) => {
+    if (geo.attributes.position === undefined) return;
+    const arr = guardrailByFloor.get(floor);
+    if (arr) arr.push(geo);
+    else guardrailByFloor.set(floor, [geo]);
+  };
+
+  // Turns: ribbon, edges, divider, arrows, and two guardrails.
+  for (const turn of turns) {
+    asphaltParts.push(buildRibbon(turn.points, ROAD_WIDTH, ROAD_Y + 0.005));
+    edgeParts.push(
+      buildRibbon(offsetPoints(turn.points, EDGE_LINE_OFFSET), EDGE_LINE_WIDTH, ROAD_Y + 0.02),
+      buildRibbon(offsetPoints(turn.points, -EDGE_LINE_OFFSET), EDGE_LINE_WIDTH, ROAD_Y + 0.02),
+    );
+    dividerParts.push(
+      buildSolidBarAlongPath(turn.points, DIVIDER_WIDTH, DIVIDER_HEIGHT, ROAD_Y + 0.005, MEDIAN_TAPER),
+    );
+    arrowParts.push(buildLaneArrows(turn.points, LANE_ARROW_SPACING));
+    // Guardrails only cover the curved (semicircle) portion of the turn.
+    // turn.points = [entryJunction, semiStart, ...semiMid, semiEnd, exitJunction],
+    // so slice(1, -1) keeps only the semicircle points (semiStart..semiEnd).
+    const curvePts = turn.points.slice(1, turn.points.length - 1);
+    addGuardrail(turn.floor, buildGuardRailGeometry(offsetPoints(curvePts, EDGE_LINE_OFFSET), ROAD_Y));
+    addGuardrail(turn.floor, buildGuardRailGeometry(offsetPoints(curvePts, -EDGE_LINE_OFFSET), ROAD_Y));
+  }
+
+  // Ramps: soffit, ribbon, edges, divider, arrows, and two guardrails.
+  for (const ramp of ramps) {
+    soffitParts.push(
+      buildSolidBarAlongPath(ramp.points, ROAD_WIDTH + 1.2, SOFFIT_THICKNESS, ROAD_Y - 0.1 - SOFFIT_THICKNESS),
+    );
+    asphaltParts.push(buildRibbon(ramp.points, ROAD_WIDTH, ROAD_Y));
+    edgeParts.push(
+      buildRibbon(offsetPoints(ramp.points, EDGE_LINE_OFFSET), EDGE_LINE_WIDTH, ROAD_Y + 0.02),
+      buildRibbon(offsetPoints(ramp.points, -EDGE_LINE_OFFSET), EDGE_LINE_WIDTH, ROAD_Y + 0.02),
+    );
+    dividerParts.push(
+      buildSolidBarAlongPath(ramp.points, DIVIDER_WIDTH, DIVIDER_HEIGHT, ROAD_Y, MEDIAN_TAPER),
+    );
+    arrowParts.push(buildLaneArrows(ramp.points, LANE_ARROW_SPACING));
+    addGuardrail(ramp.floor, buildGuardRailGeometry(offsetPoints(ramp.points, EDGE_LINE_OFFSET), ROAD_Y));
+    addGuardrail(ramp.floor, buildGuardRailGeometry(offsetPoints(ramp.points, -EDGE_LINE_OFFSET), ROAD_Y));
+  }
+
+  // Perimeter guardrails per floor, merged with the turn/ramp rails above.
+  // X-range of the edge parking slots (closest to the south/north slab edges)
+  // so the perimeter rails can be split to avoid obstructing them.
+  const slotEdges: { south: SlotEdge | null; north: SlotEdge | null } = (() => {
+    if (slots.length === 0) return { south: null, north: null };
+    const zs = slots.map((s) => s.pos[2]);
+    const minZ = Math.min(...zs);
+    const maxZ = Math.max(...zs);
+    const south = slots.filter((s) => s.pos[2] === minZ);
+    const north = slots.filter((s) => s.pos[2] === maxZ);
+    return {
+      south: south.length
+        ? { minX: Math.min(...south.map((s) => s.pos[0])), maxX: Math.max(...south.map((s) => s.pos[0])) }
+        : null,
+      north: north.length
+        ? { minX: Math.min(...north.map((s) => s.pos[0])), maxX: Math.max(...north.map((s) => s.pos[0])) }
+        : null,
+    };
+  })();
+  const railMargin = SLOT_WIDTH / 2 + 1;
+  const railCore = coreFootprint(bounds);
+  const floorSet = new Set<number>();
+  for (const n of Object.values(nodes)) floorSet.add(n.floor);
+  for (const f of floorSet) {
+    const slabY = f * FLOOR_HEIGHT;
+    const buildSegs = (z: number, edge: SlotEdge | null): THREE.Vector3[][] => {
+      const gaps: Array<[number, number]> = [];
+      if (edge) gaps.push([edge.minX - railMargin, edge.maxX + railMargin]);
+      if (z >= railCore.minZ && z <= railCore.maxZ) gaps.push([railCore.minX, railCore.maxX]);
+      return spansOutside(bounds.minX, bounds.maxX, gaps).map(([x0, x1]) => [
+        new THREE.Vector3(x0, slabY, z),
+        new THREE.Vector3(x1, slabY, z),
+      ]);
+    };
+    for (const pts of buildSegs(bounds.minZ + 0.6, slotEdges.south)) {
+      addGuardrail(f, buildGuardRailGeometry(pts, 0));
+    }
+    for (const pts of buildSegs(bounds.maxZ - 0.6, slotEdges.north)) {
+      addGuardrail(f, buildGuardRailGeometry(pts, 0));
+    }
+  }
+
+  const roadAsphalt = mergeGeometries(asphaltParts, false) ?? new THREE.BufferGeometry();
+  const roadEdge = mergeGeometries(edgeParts, false) ?? new THREE.BufferGeometry();
+  const roadDivider = mergeGeometries(dividerParts, false) ?? new THREE.BufferGeometry();
+  const roadArrow = mergeGeometries(arrowParts, false) ?? new THREE.BufferGeometry();
+  const roadSoffit = mergeGeometries(soffitParts, false) ?? new THREE.BufferGeometry();
+  // The per-part geometries were copied into the merged buffers; drop them.
+  for (const g of asphaltParts) g.dispose();
+  for (const g of edgeParts) g.dispose();
+  for (const g of dividerParts) g.dispose();
+  for (const g of arrowParts) g.dispose();
+  for (const g of soffitParts) g.dispose();
+
+  const guardrailGeoByFloor = new Map<number, THREE.BufferGeometry>();
+  for (const [f, parts] of guardrailByFloor) {
+    const merged = mergeGeometries(parts, false) ?? new THREE.BufferGeometry();
+    for (const g of parts) g.dispose();
+    guardrailGeoByFloor.set(f, merged);
+  }
+
+  // Aisle road boxes: one global InstancedMesh. A unit box is scaled per
+  // instance to (len, 0.2, ROAD_WIDTH) and positioned at the aisle centre,
+  // replacing ~36 separate <mesh> draw calls with one.
+  const aisleMesh = (() => {
+    const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+    const inst = new THREE.InstancedMesh(boxGeo, MAT_ASPHALT, aisles.length);
+    inst.receiveShadow = true;
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    for (let i = 0; i < aisles.length; i++) {
+      const a = aisles[i];
+      const len = a.x1 - a.x0;
+      const cx = (a.x0 + a.x1) / 2;
+      const baseY = a.floor * FLOOR_HEIGHT + ROAD_Y;
+      m.compose(
+        new THREE.Vector3(cx, baseY - 0.1, a.y),
+        q,
+        new THREE.Vector3(len, 0.2, ROAD_WIDTH),
+      );
+      inst.setMatrixAt(i, m);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    inst.computeBoundingSphere();
+    return inst;
+  })();
+
+  return {
+    slots,
+    rampHoles,
+    signboards,
+    floorLabels,
+    areaSigns,
+    roadAsphalt,
+    roadEdge,
+    roadDivider,
+    roadArrow,
+    roadSoffit,
+    guardrailGeoByFloor,
+    aisleMesh,
+  };
 }
 
 /* ================================================================== *
@@ -950,161 +1123,6 @@ function buildLaneArrows(points: THREE.Vector3[], spacing: number): THREE.Buffer
 /** How far apart lane arrows sit along a turn or a ramp. */
 const LANE_ARROW_SPACING = 12;
 
-/** A straight two-way aisle. The flat paint (edges, centre line, arrows, bay
- *  outlines) is now baked by <FloorPaint>; this component renders only the
- *  raised asphalt box that gives the road its 3D thickness and shadow. */
-const AisleRoad = memo(function AisleRoad({ aisle }: { aisle: AisleDesc }) {
-  const { floor, y, x0, x1 } = aisle;
-  const len = x1 - x0;
-  const cx = (x0 + x1) / 2;
-  const baseY = floor * FLOOR_HEIGHT + ROAD_Y;
-
-  return (
-    <mesh position={[cx, baseY - 0.1, y]} material={MAT_ASPHALT} receiveShadow>
-      <boxGeometry args={[len, 0.2, ROAD_WIDTH]} />
-    </mesh>
-  );
-});
-
-/** A curved two-way turn with a median, edge lines, guardrails, and arrows. */
-const TurnRoad = memo(function TurnRoad({ turn }: { turn: CurveDesc }) {
-  const edgeOffset = EDGE_LINE_OFFSET;
-  const ribbon = useMemo(
-    () => buildRibbon(turn.points, ROAD_WIDTH, ROAD_Y + 0.005),
-    [turn.points],
-  );
-  // Both edge ribbons share MAT_EDGE, so merge them into one geometry.
-  const edges = useMemo(
-    () => {
-      const l = buildRibbon(offsetPoints(turn.points, edgeOffset), EDGE_LINE_WIDTH, ROAD_Y + 0.02);
-      const r = buildRibbon(offsetPoints(turn.points, -edgeOffset), EDGE_LINE_WIDTH, ROAD_Y + 0.02);
-      return mergeGeometries([l, r], false) ?? new THREE.BufferGeometry();
-    },
-    [turn.points, edgeOffset],
-  );
-  // Raised concrete divider on turns (no parking here, cars cannot cross).
-  const divider = useMemo(
-    () => buildSolidBarAlongPath(turn.points, DIVIDER_WIDTH, DIVIDER_HEIGHT, ROAD_Y + 0.005, MEDIAN_TAPER),
-    [turn.points],
-  );
-  // Guardrails only cover the curved (semicircle) portion of the turn.
-  // The straight approach/exit segments are part of the aisle road and have
-  // adjacent parking slots — railing them would drop posts in front of slots.
-  // turn.points = [entryJunction, semiStart, ...semiMid, semiEnd, exitJunction],
-  // so slice(1, -1) keeps only the semicircle points (semiStart..semiEnd).
-  const curvePts = useMemo(
-    () => turn.points.slice(1, turn.points.length - 1),
-    [turn.points],
-  );
-  const leftRailPts = useMemo(
-    () => offsetPoints(curvePts, edgeOffset),
-    [curvePts, edgeOffset],
-  );
-  const rightRailPts = useMemo(
-    () => offsetPoints(curvePts, -edgeOffset),
-    [curvePts, edgeOffset],
-  );
-
-  // Lane arrows all the way round the loop, merged into one geometry.
-  const arrowGeo = useMemo(
-    () => buildLaneArrows(turn.points, LANE_ARROW_SPACING),
-    [turn.points],
-  );
-
-  useEffect(() => {
-    return () => {
-      ribbon.dispose();
-      edges.dispose();
-      divider.dispose();
-      arrowGeo.dispose();
-    };
-  }, [ribbon, edges, divider, arrowGeo]);
-
-  return (
-    <group>
-      {/* Road surface */}
-      <mesh geometry={ribbon} material={MAT_ASPHALT} receiveShadow />
-      {/* Edge lines (left + right merged) */}
-      <mesh geometry={edges} material={MAT_EDGE} />
-      <mesh geometry={divider} material={MAT_DIVIDER} receiveShadow />
-      {/* Guardrails on both outer edges of the turn */}
-      <GuardRailAlongPath points={leftRailPts} yBase={ROAD_Y} />
-      <GuardRailAlongPath points={rightRailPts} yBase={ROAD_Y} />
-      <mesh geometry={arrowGeo} material={MAT_ARROW} />
-    </group>
-  );
-});
-
-/** A two-way ramp between floors with a median, guardrails, and arrows. */
-const RampRoad = memo(function RampRoad({ ramp }: { ramp: CurveDesc }) {
-  const edgeOffset = EDGE_LINE_OFFSET;
-  // Soffit / support slab under the ramp (wider than the road).
-  const soffit = useMemo(
-    () => buildSolidBarAlongPath(ramp.points, ROAD_WIDTH + 1.2, SOFFIT_THICKNESS, ROAD_Y - 0.1 - SOFFIT_THICKNESS),
-    [ramp.points],
-  );
-  // Road surface. No threshold apron: rampPoints() starts and ends exactly
-  // on the floor heights, so the ribbon already meets each deck flush at
-  // ROAD_Y. A flat apron box held at the ramp's final height while the deck
-  // beneath was still climbing would produce a hard step across the
-  // carriageway at the joint.
-  const road = useMemo(
-    () => buildRibbon(ramp.points, ROAD_WIDTH, ROAD_Y),
-    [ramp.points],
-  );
-  // Both edge ribbons share MAT_EDGE, so merge them into one geometry.
-  const edges = useMemo(() => {
-    const l = buildRibbon(offsetPoints(ramp.points, edgeOffset), EDGE_LINE_WIDTH, ROAD_Y + 0.02);
-    const r = buildRibbon(offsetPoints(ramp.points, -edgeOffset), EDGE_LINE_WIDTH, ROAD_Y + 0.02);
-    return mergeGeometries([l, r], false) ?? new THREE.BufferGeometry();
-  }, [ramp.points, edgeOffset]);
-  // Raised concrete divider on ramps (no parking here, cars cannot cross).
-  const divider = useMemo(
-    () => buildSolidBarAlongPath(ramp.points, DIVIDER_WIDTH, DIVIDER_HEIGHT, ROAD_Y, MEDIAN_TAPER),
-    [ramp.points],
-  );
-  // Guardrail paths (offset to both edges of the ramp).
-  const leftRailPts = useMemo(
-    () => offsetPoints(ramp.points, edgeOffset),
-    [ramp.points, edgeOffset],
-  );
-  const rightRailPts = useMemo(
-    () => offsetPoints(ramp.points, -edgeOffset),
-    [ramp.points, edgeOffset],
-  );
-
-  // Lane arrows the whole length of the ramp, pitched to the slope.
-  const arrowGeo = useMemo(
-    () => buildLaneArrows(ramp.points, LANE_ARROW_SPACING),
-    [ramp.points],
-  );
-
-  useEffect(() => {
-    return () => {
-      soffit.dispose();
-      road.dispose();
-      edges.dispose();
-      divider.dispose();
-      arrowGeo.dispose();
-    };
-  }, [soffit, road, edges, divider, arrowGeo]);
-
-  return (
-    <group>
-      {/* Support slab under ramp */}
-      <mesh geometry={soffit} material={MAT_SLAB} receiveShadow />
-      {/* Road surface */}
-      <mesh geometry={road} material={MAT_ASPHALT} receiveShadow />
-      {/* Edge lines (left + right merged) */}
-      <mesh geometry={edges} material={MAT_EDGE} />
-      <mesh geometry={divider} material={MAT_DIVIDER} receiveShadow />
-      {/* Guardrails on both sides of the ramp */}
-      <GuardRailAlongPath points={leftRailPts} yBase={ROAD_Y} />
-      <GuardRailAlongPath points={rightRailPts} yBase={ROAD_Y} />
-      <mesh geometry={arrowGeo} material={MAT_ARROW} />
-    </group>
-  );
-});
 
 /** Structural pillars around the perimeter of one storey, rendered as a single
  *  InstancedMesh. Uses PILLAR_SPACING (10) instead of the lot's
@@ -1161,8 +1179,9 @@ const Pillars = memo(function Pillars({ floor, bounds }: { floor: number; bounds
 
 /**
  * Post-and-rail guardrail along a polyline, built as ONE merged geometry
- * (every post + every rail segment) so the whole rail renders as a single
- * draw call sharing MAT_GUARDRAIL.
+ * (every post + every rail segment) so a whole rail can be merged with every
+ * other rail on the floor and rendered as a single draw call sharing
+ * MAT_GUARDRAIL.
  * Posts: 0.8 high, 0.08 diameter cylinders. Rail: 0.06 diameter horizontal
  * cylinder at 0.7 height, run straight between consecutive posts.
  *
@@ -1171,121 +1190,57 @@ const Pillars = memo(function Pillars({ floor, bounds }: { floor: number; bounds
  * rail is straight between posts, so on tight curves a fixed step leaves too
  * few posts and the rail sags inside the road edge.
  */
-function GuardRailAlongPath({
-  points,
-  yBase,
-}: {
-  points: THREE.Vector3[];
-  yBase: number;
-}) {
-  const geo = useMemo(() => {
-    if (points.length < 2) return new THREE.BufferGeometry();
-    const postPts: THREE.Vector3[] = [points[0].clone()];
-    let sinceLast = 0;
-    let turnedSince = 0;
-    let heading = Math.atan2(points[1].z - points[0].z, points[1].x - points[0].x);
-    for (let i = 1; i < points.length; i++) {
-      sinceLast += points[i].distanceTo(points[i - 1]);
-      const h = Math.atan2(points[i].z - points[i - 1].z, points[i].x - points[i - 1].x);
-      let dh = h - heading;
-      while (dh > Math.PI) dh -= Math.PI * 2;
-      while (dh < -Math.PI) dh += Math.PI * 2;
-      turnedSince += Math.abs(dh);
-      heading = h;
-      if (sinceLast >= POST_SPACING || turnedSince >= POST_MAX_TURN) {
-        postPts.push(points[i].clone());
-        sinceLast = 0;
-        turnedSince = 0;
-      }
+function buildGuardRailGeometry(points: THREE.Vector3[], yBase: number): THREE.BufferGeometry {
+  if (points.length < 2) return new THREE.BufferGeometry();
+  const postPts: THREE.Vector3[] = [points[0].clone()];
+  let sinceLast = 0;
+  let turnedSince = 0;
+  let heading = Math.atan2(points[1].z - points[0].z, points[1].x - points[0].x);
+  for (let i = 1; i < points.length; i++) {
+    sinceLast += points[i].distanceTo(points[i - 1]);
+    const h = Math.atan2(points[i].z - points[i - 1].z, points[i].x - points[i - 1].x);
+    let dh = h - heading;
+    while (dh > Math.PI) dh -= Math.PI * 2;
+    while (dh < -Math.PI) dh += Math.PI * 2;
+    turnedSince += Math.abs(dh);
+    heading = h;
+    if (sinceLast >= POST_SPACING || turnedSince >= POST_MAX_TURN) {
+      postPts.push(points[i].clone());
+      sinceLast = 0;
+      turnedSince = 0;
     }
-    // Ensure a post at the very end.
-    const last = points[points.length - 1];
-    if (postPts[postPts.length - 1].distanceTo(last) > 0.5) {
-      postPts.push(last.clone());
-    }
+  }
+  // Ensure a post at the very end.
+  const last = points[points.length - 1];
+  if (postPts[postPts.length - 1].distanceTo(last) > 0.5) {
+    postPts.push(last.clone());
+  }
 
-    const parts: THREE.BufferGeometry[] = [];
-    const up = new THREE.Vector3(0, 1, 0);
-    for (const p of postPts) {
-      const post = new THREE.CylinderGeometry(0.04, 0.04, 0.8, 8);
-      post.applyMatrix4(new THREE.Matrix4().setPosition(p.x, p.y + yBase + 0.4, p.z));
-      parts.push(post);
-    }
-    for (let i = 0; i < postPts.length - 1; i++) {
-      const a = postPts[i];
-      const b = postPts[i + 1];
-      const mid = a.clone().add(b).multiplyScalar(0.5);
-      const dir = b.clone().sub(a).normalize();
-      const len = a.distanceTo(b);
-      const rail = new THREE.CylinderGeometry(0.03, 0.03, len, 8);
-      const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
-      const matrix = new THREE.Matrix4().compose(
-        new THREE.Vector3(mid.x, mid.y + yBase + 0.7, mid.z),
-        quat,
-        new THREE.Vector3(1, 1, 1),
-      );
-      rail.applyMatrix4(matrix);
-      parts.push(rail);
-    }
-    return mergeGeometries(parts, false) ?? new THREE.BufferGeometry();
-  }, [points, yBase]);
-
-  useEffect(() => () => geo.dispose(), [geo]);
-
-  if (points.length < 2) return null;
-  return <mesh geometry={geo} material={MAT_GUARDRAIL} castShadow />;
+  const parts: THREE.BufferGeometry[] = [];
+  const up = new THREE.Vector3(0, 1, 0);
+  for (const p of postPts) {
+    const post = new THREE.CylinderGeometry(0.04, 0.04, 0.8, 8);
+    post.applyMatrix4(new THREE.Matrix4().setPosition(p.x, p.y + yBase + 0.4, p.z));
+    parts.push(post);
+  }
+  for (let i = 0; i < postPts.length - 1; i++) {
+    const a = postPts[i];
+    const b = postPts[i + 1];
+    const mid = a.clone().add(b).multiplyScalar(0.5);
+    const dir = b.clone().sub(a).normalize();
+    const len = a.distanceTo(b);
+    const rail = new THREE.CylinderGeometry(0.03, 0.03, len, 8);
+    const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
+    const matrix = new THREE.Matrix4().compose(
+      new THREE.Vector3(mid.x, mid.y + yBase + 0.7, mid.z),
+      quat,
+      new THREE.Vector3(1, 1, 1),
+    );
+    rail.applyMatrix4(matrix);
+    parts.push(rail);
+  }
+  return mergeGeometries(parts, false) ?? new THREE.BufferGeometry();
 }
-
-/**
- * Post-and-rail guardrails along the exposed outer edges of a floor.
- * The rails are split into segments that avoid the X-range of edge parking
- * slots so they don't visually obstruct the slot markings.
- */
-const GuardRails = memo(function GuardRails({
-  floor,
-  bounds,
-  southSlots,
-  northSlots,
-}: {
-  floor: number;
-  bounds: SlabBounds;
-  southSlots: SlotEdge | null;
-  northSlots: SlotEdge | null;
-}) {
-  const slabY = floor * FLOOR_HEIGHT;
-
-  /** Build guardrail polylines along one long edge, leaving a gap over the
-   *  slot area so the rails only cover the driving/turn portions, and another
-   *  where the stair core stands. */
-  const segments = useMemo(() => {
-    const margin = SLOT_WIDTH / 2 + 1;
-    const core = coreFootprint(bounds);
-    const buildSegs = (z: number, edge: SlotEdge | null): THREE.Vector3[][] => {
-      const gaps: Array<[number, number]> = [];
-      if (edge) gaps.push([edge.minX - margin, edge.maxX + margin]);
-      if (z >= core.minZ && z <= core.maxZ) gaps.push([core.minX, core.maxX]);
-      return spansOutside(bounds.minX, bounds.maxX, gaps).map(([x0, x1]) => [
-        new THREE.Vector3(x0, slabY, z),
-        new THREE.Vector3(x1, slabY, z),
-      ]);
-    };
-    return {
-      south: buildSegs(bounds.minZ + 0.6, southSlots),
-      north: buildSegs(bounds.maxZ - 0.6, northSlots),
-    };
-  }, [bounds, slabY, southSlots, northSlots]);
-
-  return (
-    <group>
-      {segments.south.map((pts, i) => (
-        <GuardRailAlongPath key={`s${i}`} points={pts} yBase={0} />
-      ))}
-      {segments.north.map((pts, i) => (
-        <GuardRailAlongPath key={`n${i}`} points={pts} yBase={0} />
-      ))}
-    </group>
-  );
-});
 
 /** An entry/exit portal: kerbed island, attendant booth with a lit window,
  *  boom barrier on a proper housing, two side posts, a top bar, and a coloured
@@ -1305,7 +1260,7 @@ const Gate = memo(function Gate({
   return (
     <group position={[x, y, z]}>
       {/* Frame: legs + top bar + boom housing + booth + kerbed island (merged) */}
-      <mesh geometry={GATE_FRAME_GEO} material={MAT_GATE_FRAME} castShadow receiveShadow />
+      <mesh geometry={GATE_FRAME_GEO} material={MAT_GATE_FRAME} receiveShadow />
       {/* Coloured boom arm + tip + label backplate (merged) */}
       <mesh geometry={GATE_BOOM_GEO} material={barMat} />
       {/* Lit booth window */}
@@ -1380,6 +1335,102 @@ const ApproachRoad = memo(function ApproachRoad({
 });
 
 
+/* --- Small overhead floor-label sign ("FLOOR A/B/C") --- */
+const FLOOR_SIGN_W = 3.2;
+const FLOOR_SIGN_H = 1.4;
+const FLOOR_SIGN_Y = 4.2;
+const FLOOR_SIGN_ROD_LEN = FLOOR_HEIGHT - (FLOOR_SIGN_Y + FLOOR_SIGN_H / 2);
+const FLOOR_SIGN_ROD_CY = (FLOOR_HEIGHT + FLOOR_SIGN_Y + FLOOR_SIGN_H / 2) / 2;
+const FLOOR_SIGN_POST_H = FLOOR_SIGN_Y - FLOOR_SIGN_H / 2;
+const FLOOR_SIGN_POST_CY = FLOOR_SIGN_POST_H / 2;
+const FLOOR_SIGN_POST_X = 3.8; // outside the ±3.5 road, even though the sign is narrower
+const FLOOR_SIGN_BODY_GEO = new THREE.BoxGeometry(FLOOR_SIGN_W, FLOOR_SIGN_H, 0.12);
+const FLOOR_SIGN_SCREEN_GEO = new THREE.PlaneGeometry(FLOOR_SIGN_W - 0.3, FLOOR_SIGN_H - 0.25);
+const FLOOR_SIGN_ROD_GEO = new THREE.CylinderGeometry(0.08, 0.08, FLOOR_SIGN_ROD_LEN, 6);
+const FLOOR_SIGN_POST_GEO = new THREE.CylinderGeometry(0.1, 0.12, FLOOR_SIGN_POST_H, 8);
+/** Horizontal arm connecting a top-floor post to the sign panel.
+ *  Length = post offset - sign half-width. */
+const FLOOR_SIGN_ARM_LEN = FLOOR_SIGN_POST_X - FLOOR_SIGN_W / 2;
+const FLOOR_SIGN_ARM_GEO = new THREE.CylinderGeometry(0.06, 0.06, FLOOR_SIGN_ARM_LEN, 6);
+const FLOOR_SIGN_FRAME_MAT = new THREE.MeshStandardMaterial({
+  color: "#1b1f29", metalness: 0.3, roughness: 0.6,
+});
+const FLOOR_SIGN_SCREEN_MAT = new THREE.MeshStandardMaterial({
+  color: "#000000", emissive: "#0a1622", emissiveIntensity: 0.5, roughness: 0.5,
+});
+const FLOOR_SIGN_ROD_MAT = new THREE.MeshStandardMaterial({
+  color: "#080a10", metalness: 0.5, roughness: 0.5,
+});
+
+/** A compact overhead sign labeling which floor a driver has reached.
+ *  Much smaller than the route-display PermanentSignboard — just the floor
+ *  name on a dark panel, hung from short rods (or post-mounted on the top
+ *  floor where there's no ceiling slab). */
+const FloorLabelSign = memo(function FloorLabelSign({
+  position,
+  rotY,
+  label,
+  isTopFloor,
+}: FloorLabelDesc) {
+  return (
+    <group position={position} rotation={[0, rotY, 0]}>
+      {isTopFloor ? (
+        <>
+          <mesh position={[-FLOOR_SIGN_POST_X, FLOOR_SIGN_POST_CY, 0]} geometry={FLOOR_SIGN_POST_GEO} material={FLOOR_SIGN_FRAME_MAT} />
+          <mesh position={[FLOOR_SIGN_POST_X, FLOOR_SIGN_POST_CY, 0]} geometry={FLOOR_SIGN_POST_GEO} material={FLOOR_SIGN_FRAME_MAT} />
+          {/* Horizontal arms from posts to sign panel */}
+          <mesh
+            position={[-(FLOOR_SIGN_W / 2 + FLOOR_SIGN_ARM_LEN / 2), FLOOR_SIGN_Y, 0]}
+            rotation={[0, 0, Math.PI / 2]}
+            geometry={FLOOR_SIGN_ARM_GEO}
+            material={FLOOR_SIGN_FRAME_MAT}
+          />
+          <mesh
+            position={[FLOOR_SIGN_W / 2 + FLOOR_SIGN_ARM_LEN / 2, FLOOR_SIGN_Y, 0]}
+            rotation={[0, 0, Math.PI / 2]}
+            geometry={FLOOR_SIGN_ARM_GEO}
+            material={FLOOR_SIGN_FRAME_MAT}
+          />
+        </>
+      ) : (
+        <>
+          <mesh position={[-FLOOR_SIGN_POST_X, FLOOR_SIGN_ROD_CY, 0]} geometry={FLOOR_SIGN_ROD_GEO} material={FLOOR_SIGN_ROD_MAT} />
+          <mesh position={[FLOOR_SIGN_POST_X, FLOOR_SIGN_ROD_CY, 0]} geometry={FLOOR_SIGN_ROD_GEO} material={FLOOR_SIGN_ROD_MAT} />
+          {/* Horizontal arms from rods to sign panel */}
+          <mesh
+            position={[-(FLOOR_SIGN_W / 2 + FLOOR_SIGN_ARM_LEN / 2), FLOOR_SIGN_Y, 0]}
+            rotation={[0, 0, Math.PI / 2]}
+            geometry={FLOOR_SIGN_ARM_GEO}
+            material={FLOOR_SIGN_ROD_MAT}
+          />
+          <mesh
+            position={[FLOOR_SIGN_W / 2 + FLOOR_SIGN_ARM_LEN / 2, FLOOR_SIGN_Y, 0]}
+            rotation={[0, 0, Math.PI / 2]}
+            geometry={FLOOR_SIGN_ARM_GEO}
+            material={FLOOR_SIGN_ROD_MAT}
+          />
+        </>
+      )}
+      <group position={[0, FLOOR_SIGN_Y, 0]} rotation={[0.25, 0, 0]}>
+        <mesh geometry={FLOOR_SIGN_BODY_GEO} material={FLOOR_SIGN_FRAME_MAT} />
+        <mesh position={[0, 0, 0.07]} geometry={FLOOR_SIGN_SCREEN_GEO} material={FLOOR_SIGN_SCREEN_MAT} />
+        <Text
+          position={[0, 0, 0.08]}
+          fontSize={0.6}
+          color="#38bdf8"
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.02}
+          outlineColor="#000000"
+          letterSpacing={0.08}
+        >
+          {label}
+        </Text>
+      </group>
+    </group>
+  );
+});
+
 /** A post-mounted parking-area info sign at an aisle entry.
  *  Shows the slot number range for that aisle (e.g. "A1 - A16") with an
  *  arrow pointing in the direction of travel. Dark LED aesthetic matching
@@ -1393,7 +1444,7 @@ const AreaSignboard = memo(function AreaSignboard({ sign }: { sign: AreaSignDesc
   return (
     <group position={[x, y, z]} rotation={[0, sign.rotY, 0]}>
       {/* Merged post + tilted panel frame */}
-      <mesh geometry={AREA_SIGN_GEO} material={MAT_AREA_DARK} castShadow />
+      <mesh geometry={AREA_SIGN_GEO} material={MAT_AREA_DARK} />
       {/* Tilted screen group (matches the tilt baked into the panel frame) */}
       <group position={[0, AREA_POST_H + AREA_PANEL_H / 2, 0]} rotation={[0.15, 0, 0]}>
         {/* Emissive screen — true black with dark-blue glow */}
@@ -1429,6 +1480,46 @@ const AreaSignboard = memo(function AreaSignboard({ sign }: { sign: AreaSignDesc
     </group>
   );
 });
+/* ================================================================== *
+ *  Dynamic signboards subtree
+ * ================================================================== */
+
+/**
+ * Renders the permanent direction signboards and feeds each one its live
+ * queue from {@link NodeSignsContext}.
+ *
+ * This is split out of <ParkingLot> and memoised on the (stable) signboard
+ * descriptor array so that dynamic sign updates — which fire on every
+ * park/depart via the sim hook's signSignature change — re-render ONLY this
+ * cheap subtree. <ParkingLot> no longer consumes NodeSignsContext, so the
+ * thousands of memoized lot meshes it reconciles are never touched by a
+ * sign change. Context updates bypass memo for this consumer directly,
+ * which is exactly the behaviour we want: sign changes reach the boards
+ * without dragging the lot shell through reconciliation.
+ */
+const Signboards = memo(function Signboards({ signboards }: { signboards: SignboardDesc[] }) {
+  const nodeSigns = useContext(NodeSignsContext);
+  const signByNodeId = useMemo(
+    () => new Map(nodeSigns?.map((s) => [s.nodeId, s])),
+    [nodeSigns],
+  );
+  return (
+    <>
+      {signboards.map((s, i) => (
+        <PermanentSignboard
+          key={`ps${i}`}
+          position={s.position}
+          rotY={s.rotY}
+          label={s.label}
+          isTopFloor={s.isTopFloor}
+          floor={s.floor}
+          dynamic={signByNodeId.get(s.nodeId)}
+        />
+      ))}
+    </>
+  );
+});
+
 
 
 /* ================================================================== *
@@ -1436,26 +1527,22 @@ const AreaSignboard = memo(function AreaSignboard({ sign }: { sign: AreaSignDesc
  * ================================================================== */
 
 export const ParkingLot = memo(function ParkingLot({
-  nodeSigns,
   /** Lot graph handed down from the app (which fetches it once). When
-   *  absent the component still fetches it itself, so it stays usable
-   *  standalone — but the normal render path no longer double-fetches. */
+   *  `undefined` the component fetches it itself (standalone use); when
+   *  `null` it is still loading and the component waits for the prop rather
+   *  than double-fetching. */
   lot: lotProp,
 }: {
-  nodeSigns?: NodeSign[];
-  lot?: LotData;
+  lot?: LotData | null;
 }) {
-  const fetched = useLot(!lotProp);
+  // Self-fetch only when no provider is supplying the lot at all. `null`
+  // means "loading" (the app is fetching); `undefined` means "standalone".
+  const fetched = useLot(lotProp === undefined);
   const lot = lotProp ?? fetched;
-
-  const geo = useMemo(() => (lot ? buildGeometry(lot) : null), [lot]);
   const bounds = useMemo(() => (lot ? slabBounds(lot) : null), [lot]);
-  // Lookup of dynamic sign data by node id, so each permanent signboard can
-  // show real-time car info when a car is waiting at its node.
-  const signByNodeId = useMemo(
-    () => new Map(nodeSigns?.map((s) => [s.nodeId, s])),
-    [nodeSigns],
-  );
+  // buildGeometry now also produces the merged road geometries and the aisle
+  // InstancedMesh, so it needs the slab bounds (for perimeter guardrails).
+  const geo = useMemo(() => (lot && bounds ? buildGeometry(lot, bounds) : null), [lot, bounds]);
   const floors = useMemo(() => {
     if (!lot) return [];
     const set = new Set<number>();
@@ -1475,18 +1562,19 @@ export const ParkingLot = memo(function ParkingLot({
     return x ? { pos: toWorld(x.x, x.y, x.floor) as [number, number, number], x: x.x, y: x.y, floor: x.floor } : null;
   }, [lot]);
 
-  // X-range of the edge parking slots (closest to the south/north slab edges)
-  // so the perimeter guardrails can be split to avoid obstructing them.
-  const slotEdges = useMemo(() => {
-    if (!geo || geo.slots.length === 0) return { south: null, north: null };
-    const zs = geo.slots.map((s) => s.pos[2]);
-    const minZ = Math.min(...zs);
-    const maxZ = Math.max(...zs);
-    const south = geo.slots.filter((s) => s.pos[2] === minZ);
-    const north = geo.slots.filter((s) => s.pos[2] === maxZ);
-    return {
-      south: south.length ? { minX: Math.min(...south.map((s) => s.pos[0])), maxX: Math.max(...south.map((s) => s.pos[0])) } : null,
-      north: north.length ? { minX: Math.min(...north.map((s) => s.pos[0])), maxX: Math.max(...north.map((s) => s.pos[0])) } : null,
+  // Dispose the merged road geometries and the aisle InstancedMesh when the
+  // lot changes or the component unmounts. The shared materials are module
+  // scope and intentionally not disposed.
+  useEffect(() => {
+    if (!geo) return;
+    return () => {
+      geo.aisleMesh.geometry.dispose();
+      geo.roadAsphalt.dispose();
+      geo.roadEdge.dispose();
+      geo.roadDivider.dispose();
+      geo.roadArrow.dispose();
+      geo.roadSoffit.dispose();
+      for (const g of geo.guardrailGeoByFloor.values()) g.dispose();
     };
   }, [geo]);
 
@@ -1518,40 +1606,44 @@ export const ParkingLot = memo(function ParkingLot({
           <Pillars key={`pil${f}`} floor={f} bounds={bounds} />
         ))}
 
-      {/* Post-and-rail guardrails along the exposed long edges of every storey. */}
-      {floors.map((f) => (
-        <GuardRails
-          key={`rail${f}`}
-          floor={f}
-          bounds={bounds}
-          southSlots={slotEdges.south}
-          northSlots={slotEdges.north}
-        />
-      ))}
+      {/* Aisle road surfaces: one InstancedMesh for every straight aisle
+          across all floors (one draw call replaces ~36). */}
+      <primitive object={geo.aisleMesh} />
 
-      {/* Driving lanes, curved turns, and spiral ramps. */}
-      {geo.aisles.map((a, i) => (
-        <AisleRoad key={`a${i}`} aisle={a} />
-      ))}
-      {geo.turns.map((t, i) => (
-        <TurnRoad key={`t${i}`} turn={t} />
-      ))}
-      {geo.ramps.map((r, i) => (
-        <RampRoad key={`r${i}`} ramp={r} />
-      ))}
+      {/* Curved turns and spiral ramps, merged by material across all
+          turns/ramps: ~6 draw calls replace ~50-60. */}
+      <mesh geometry={geo.roadSoffit} material={MAT_SLAB} receiveShadow />
+      <mesh geometry={geo.roadAsphalt} material={MAT_ASPHALT} receiveShadow />
+      <mesh geometry={geo.roadEdge} material={MAT_EDGE} />
+      <mesh geometry={geo.roadDivider} material={MAT_DIVIDER} receiveShadow />
+      <mesh geometry={geo.roadArrow} material={MAT_ARROW} />
+
+      {/* Guardrails per floor: perimeter segments + turn rails + ramp rails
+          merged into one BufferGeometry sharing MAT_GUARDRAIL (one draw call
+          per floor replaces ~40-60). */}
+      {floors.map((f) => {
+        const g = geo.guardrailGeoByFloor.get(f);
+        if (!g) return null;
+        return <mesh key={`gr${f}`} geometry={g} material={MAT_GUARDRAIL} />;
+      })}
 
       {/* Permanent direction signboards at all turns and ramps. When a car is
           waiting at a board's node, the board becomes a dynamic screen showing
-          that car's colour, plate, direction, and assigned slot. */}
-      {geo.signboards.map((s, i) => (
-        <PermanentSignboard
-          key={`ps${i}`}
+          that car's colour, plate, direction, and assigned slot. Rendered via
+          a separate memoized <Signboards> subtree that consumes
+          NodeSignsContext itself, so dynamic sign updates re-render only the
+          cheap signboard subtree — not the thousands of memoized lot meshes
+          reconciled by <ParkingLot>. */}
+      <Signboards signboards={geo.signboards} />
+
+      {/* Compact floor-label signs at ramp mouths and the entrance. */}
+      {geo.floorLabels.map((s, i) => (
+        <FloorLabelSign
+          key={`fl${i}`}
           position={s.position}
           rotY={s.rotY}
           label={s.label}
           isTopFloor={s.isTopFloor}
-          floor={s.floor}
-          dynamic={signByNodeId.get(s.nodeId)}
         />
       ))}
 

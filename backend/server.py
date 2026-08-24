@@ -2,6 +2,7 @@
 
 import heapq
 import json
+import math
 from websockets.sync.server import serve
 from generate_lot import build_lot
 
@@ -66,6 +67,75 @@ def shortest_path(start: str, goal: str):
             heapq.heappush(queue, (candidate, neighbour))
 
     return None
+
+
+def _node_world(node_id: str) -> tuple[float, float]:
+    """Graph-space (x, y) of a node — matches the frontend's toWorld with SCALE=1."""
+    n = nodes[node_id]
+    return float(n["x"]), float(n["y"])
+
+
+def _edge_cost_between(from_id: str, to_id: str) -> float:
+    """Cost of the edge from_id -> to_id, or Euclidean distance as fallback."""
+    for edge in edges.get(from_id, []):
+        if edge["to"] == to_id:
+            return _edge_cost(edge)
+    fx, fy = _node_world(from_id)
+    tx, ty = _node_world(to_id)
+    return math.hypot(fx - tx, fy - ty)
+
+
+def adjust_distance_for_pos(
+    pos: dict | None, path: list[str], distance: float
+) -> float:
+    """Adjust route_distance using the player's live world position.
+
+    The path starts at the player's last *reported* node, which can be
+    stale by up to one node gap (~3.5 m). Project the player onto the
+    nearest LEG of the path (not the nearest node) and recompute the
+    remaining distance from that projection. This makes the HUD distance
+    decrease smoothly as the car drives, instead of jumping at node
+    crossings: the old nearest-NODE scan flipped to the ahead node once
+    the player passed a segment midpoint, dropping the partial segment
+    and adding a one-gap staircase at every crossing.
+    """
+    if not pos or len(path) < 2:
+        return distance
+
+    px, pz = float(pos["x"]), float(pos["z"])
+    best_leg = -1
+    best_perp = float("inf")
+    best_t = 0.0
+    for i in range(len(path) - 1):
+        ax, ay = _node_world(path[i])
+        bx, by = _node_world(path[i + 1])
+        dx, dy = bx - ax, by - ay
+        seg_len2 = dx * dx + dy * dy
+        if seg_len2 == 0:
+            continue
+        t = ((px - ax) * dx + (pz - ay) * dy) / seg_len2
+        if t < 0:
+            t = 0.0
+        elif t > 1:
+            t = 1.0
+        qx, qy = ax + t * dx, ay + t * dy
+        perp = math.hypot(px - qx, pz - qy)
+        if perp < best_perp:
+            best_perp = perp
+            best_leg = i
+            best_t = t
+
+    if best_leg < 0:
+        # No usable segment (degenerate path): fall back to the original
+        # edge-cost distance so the HUD never freezes.
+        return distance
+
+    # Remaining = projection -> far endpoint of this leg (edge cost scaled
+    # by the un-driven fraction), plus every edge cost after this leg.
+    remaining = (1.0 - best_t) * _edge_cost_between(path[best_leg], path[best_leg + 1])
+    for j in range(best_leg + 1, len(path) - 1):
+        remaining += _edge_cost_between(path[j], path[j + 1])
+    return remaining
 
 
 def unavailable_slots(session: Session, exclude_car: str | None = None) -> set[str]:
@@ -265,6 +335,52 @@ def handle_message(session: Session, message: dict) -> dict:
             continue
 
         if car["node"] == destination:
+            if (
+                not car["leaving"]
+                and destination in session.occupied
+                and car["status"] != "parked"
+            ):
+                # The slot is physically occupied by a pre-parked car (or
+                # another car that already parked). This can happen if the
+                # car was assigned the slot before the occupied_slots
+                # snapshot was reported (e.g. a race between the first
+                # state message and the pre-parked fill). Reassign to a
+                # free slot instead of parking on top of the occupant.
+                # Skip reassignment if the car was already parked (it owns
+                # the slot).
+                # The car is at a slot node, which has no outgoing edges
+                # in the directed graph. Find the junction that connects
+                # to this slot and use it as the starting point for both
+                # slot assignment and pathfinding. The frontend's
+                # resolvePath handles the slot-to-junction bezier.
+                start_node = car["node"]
+                if nodes[start_node]["type"] == "slot":
+                    for src, outs in edges.items():
+                        if any(e["to"] == start_node for e in outs):
+                            start_node = src
+                            break
+                # Temporarily set car["node"] to the junction so
+                # assign_slot's nearest_free_slot can find a path.
+                original_node = car["node"]
+                car["node"] = start_node
+                assign_slot(session, car)
+                car["node"] = original_node
+                if car["slot"] is None:
+                    car["status"] = "no_slot"
+                    instructions.append(_instruction(car, [car["node"]], 0.0, "no_slot"))
+                    continue
+                result = shortest_path(start_node, car["slot"])
+                if result is None:
+                    car["status"] = "no_path"
+                    instructions.append(_instruction(car, [car["node"]], 0.0, "no_path"))
+                    continue
+                path, distance = result
+                # Prepend the slot node so the frontend knows to back out
+                # first via resolvePath's slot bezier.
+                path = [car["node"]] + path
+                car["status"] = "routing"
+                instructions.append(_instruction(car, path, distance, "routing"))
+                continue
             status = "left" if car["leaving"] else "parked"
             car["status"] = status
             release_reservation(session, car_id)
@@ -280,6 +396,12 @@ def handle_message(session: Session, message: dict) -> dict:
             continue
 
         path, distance = result
+        # The player sends its live world position; use it to adjust the
+        # route distance so the HUD decreases smoothly instead of jumping
+        # at node crossings (the reported node is stale by up to ~3.5 m).
+        pos = payload.get("pos")
+        if pos:
+            distance = adjust_distance_for_pos(pos, path, distance)
         car["status"] = "routing"
         instructions.append(_instruction(car, path, distance, "routing"))
 

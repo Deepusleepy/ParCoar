@@ -1,25 +1,40 @@
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { useSimulation } from "./hooks/useSimulation";
 import { Scene, SceneLoadingFallback, type OrbitControlsHandle } from "./sim/Scene";
-import { ActiveCarMesh, ParkedCarField, type ParkedCarInstance } from "./sim/Car";
-import {
-  DrivableCar,
-  type ParkedCarPos,
-  type PlayerSpeedRef,
-} from "./sim/DrivableCar";
+import { ActiveCarField, ParkedCarField, type ParkedCarInstance } from "./sim/Car";
+import type { ParkedCarPos, PlayerSpeedRef } from "./sim/DrivableCar";
+import { SimRenderContext, NodeSignsContext, type SimRenderValue } from "./sim/SimContext";
+import { SlotHighlight } from "./sim/SlotHighlight";
 import { buildRoadSegments } from "./sim/roadSegments";
 import { AISLE_SPACING, bayLabel, CAR_Y_OFFSET, COLOR_HEX, toWorld } from "./sim/constants";
 import type { CameraMode } from "./sim/CameraRig";
-import { RoutePanel, type RoutePanelCar } from "./ui/RoutePanel";
+import type { RoutePanelCar } from "./ui/RoutePanel";
 import {
-  ControlPanel,
   ControlPanelTab,
   DEFAULT_OVERLAYS,
   type Overlays,
 } from "./ui/ControlPanel";
 
+// Code-split the heavy/conditional pieces so the initial bundle is smaller
+// and the browser can start WebGL init without first downloading and parsing
+// the drivable-car physics (2000+ lines, only used in POV/drive mode), the
+// control drawer (only when opened), or the route panel (only when toggled).
+const LazyDrivableCar = lazy(() =>
+  import("./sim/DrivableCar").then((m) => ({ default: m.DrivableCar })),
+);
+const LazyControlPanel = lazy(() =>
+  import("./ui/ControlPanel").then((m) => ({ default: m.ControlPanel })),
+);
+const LazyRoutePanel = lazy(() =>
+  import("./ui/RoutePanel").then((m) => ({ default: m.RoutePanel })),
+);
+
 const EMPTY_SIGNS: import("./types").NodeSign[] = [];
+/** Stable empty array for the DrivableCar routePath prop so the `?? []`
+ *  fallback doesn't create a new array reference each render and break
+ *  React.memo on the (already memoized) DrivableCar component. */
+const EMPTY_PATH: string[] = [];
 
 export function App() {
   const sim = useSimulation();
@@ -28,16 +43,25 @@ export function App() {
   const [routeCarId, setRouteCarId] = useState<string | null>(null);
   const [followCarId, setFollowCarId] = useState<string | null>(null);
   const carGroupsRef = useRef<Map<string, THREE.Group>>(new Map());
+  if (import.meta.env.DEV) {
+    (window as unknown as Record<string, unknown>).__parcoarCarGroups = carGroupsRef.current;
+  }
   const [panelOpen, setPanelOpen] = useState(false);
   const [overlays, setOverlays] = useState<Overlays>(DEFAULT_OVERLAYS);
-  const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0 });
+  const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0, routeDistance: -1 });
+  const autoParkAvailableRef = useRef(false);
 
   const patchOverlays = (patch: Partial<Overlays>) =>
     setOverlays((current) => ({ ...current, ...patch }));
 
   useEffect(() => {
     if (cameraMode !== "follow") return;
-    const ids = sim.activeCars.filter((car) => !car.player).map((car) => car.id);
+    // Only follow active (non-parked, non-leaving) AI cars. When the followed
+    // car parks or leaves, it drops out of this list and we auto-switch to
+    // the next available car.
+    const ids = sim.activeCars
+      .filter((car) => !car.player && !car.parked && !car.leaving)
+      .map((car) => car.id);
     if (followCarId && !ids.includes(followCarId)) setFollowCarId(null);
     if (!followCarId && ids.length > 0) setFollowCarId(ids[0]);
   }, [cameraMode, followCarId, sim.activeCars]);
@@ -61,8 +85,15 @@ export function App() {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const active = document.activeElement;
       if (active instanceof HTMLInputElement || active instanceof HTMLSelectElement) return;
-      if (document.pointerLockElement) return;
       const key = event.key.toLowerCase();
+      // 'v' toggles POV even while the pointer is locked (the normal state
+      // while driving), so the driver can exit the cockpit without first
+      // pressing Escape to release the mouse.
+      if (key === "v") {
+        setCameraMode((current) => (current === "pov" ? "orbit" : "pov"));
+        return;
+      }
+      if (document.pointerLockElement) return;
       if (key === "c") setPanelOpen((open) => !open);
       else if (key === "m") patchOverlays({ routeMap: !overlays.routeMap });
       else if (key === "p") {
@@ -122,71 +153,97 @@ export function App() {
   // The drivable car's live guidance, derived from the same instructions the
   // boards use. No separate channel: the player is just another car.
   const playerCar = sim.activeCars.find((car) => car.player) ?? null;
+
+  // Auto-exit drive/POV when the player parks. The player has no reason to
+  // stay in the cockpit after parking — switch to orbit so they can see the
+  // garage and watch traffic. The player can press V to re-enter if they want.
+  useEffect(() => {
+    if (playerCar?.status === "parked" && (cameraMode === "pov" || cameraMode === "drive")) {
+      setCameraMode("orbit");
+    }
+  }, [playerCar?.status, cameraMode]);
   const playerRoute = sim.carRoutes.find((route) => route.carId === "P0") ?? null;
 
-  if (sim.loading) return <LoadingScreen />;
-  if (sim.error || !lot) {
-    return (
-      <div className="flex h-full w-full items-center justify-center bg-[#0a0b0e] px-6 text-center">
-        <div className="max-w-md rounded-lg border border-red-500/30 bg-black/60 p-5">
-          <div className="text-sm font-semibold text-red-300">GARAGE COULD NOT START</div>
-          <p className="mt-2 text-xs leading-relaxed text-neutral-400">
-            {sim.error ?? "The garage layout is unavailable."}
-          </p>
-          <button
-            type="button"
-            className="mt-4 rounded border border-neutral-700 px-3 py-1.5 text-xs font-semibold text-neutral-200 hover:border-neutral-500"
-            onClick={() => window.location.reload()}
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // The car tree is fed to <Scene> through a context (see SimContents below)
+  // instead of as children, so <Scene>'s memo holds across traffic events.
+  // The provider value is memoized so consumers only re-render when one of
+  // these fields actually changes.
+  const simRenderValue = useMemo<SimRenderValue | null>(
+    () =>
+      lot
+        ? {
+            lot,
+            cameraMode,
+            carGroupsRef,
+            playerSpeedRef,
+            activeCars: sim.activeCars,
+            parkedCars,
+            parkedCarPositions,
+            roadSegments,
+            playerCar,
+            playerRoute,
+            onArrive: sim.onArrive,
+            playerRunId: sim.playerRunId,
+            reportPlayerNode: sim.reportPlayerNode,
+            playerLeaveBay: sim.playerLeaveBay,
+            autoParkAvailableRef,
+          }
+        : null,
+    [
+      lot,
+      cameraMode,
+      carGroupsRef,
+      playerSpeedRef,
+      sim.activeCars,
+      parkedCars,
+      parkedCarPositions,
+      roadSegments,
+      playerCar,
+      playerRoute,
+      sim.onArrive,
+      sim.playerRunId,
+      sim.reportPlayerNode,
+      sim.playerLeaveBay,
+    ],
+  );
+
+  // nodeSigns live in their own context so <ParkingLot> only re-renders when
+  // the signs actually change (the sim hook deduplicates sign updates), not
+  // on every active-car event.
+  const nodeSignsValue = useMemo(
+    () => (overlays.boardGuidance ? sim.nodeSigns : EMPTY_SIGNS),
+    [overlays.boardGuidance, sim.nodeSigns],
+  );
+
+  // Followable cars, with a content-stable reference: the array identity only
+  // changes when the set of followable car ids changes, so a memoized
+  // <CameraControls> skips re-rendering on traffic events that don't touch
+  // the followable set.
+  const followableCars = useStableFollowable(sim.activeCars);
 
   const activeCount = sim.activeCars.length;
   const parkedCount = sim.preParked.length + sim.parked.length;
 
   return (
     <div className="relative h-full w-full bg-[#0a0b0e]">
-      <Scene
-        controlsRef={controlsRef}
-        cameraMode={cameraMode}
-        followCarId={followCarId}
-        carGroupsRef={carGroupsRef}
-        lot={lot}
-        nodeSigns={overlays.boardGuidance ? sim.nodeSigns : EMPTY_SIGNS}
-      >
-        <Suspense fallback={<SceneLoadingFallback />}>
-          <ParkedCarField cars={parkedCars} />
-          {sim.activeCars.filter((car) => !car.player).map((car) => (
-            <ActiveCarMesh
-              key={car.id}
-              car={car}
-              lot={lot}
-              onArrive={sim.onArrive}
-              carGroupsRef={carGroupsRef}
-            />
-          ))}
-          {(cameraMode === "pov" || cameraMode === "drive") && (
-            <DrivableCar
-              lot={lot}
-              carGroupsRef={carGroupsRef}
-              speedRef={playerSpeedRef}
-              parkedCars={parkedCarPositions}
-              roadSegments={roadSegments}
-              pov={cameraMode === "pov"}
-              assignedSlot={playerCar?.slot ?? null}
-              playerStatus={playerCar?.status ?? "routing"}
-              leaving={playerCar?.leaving ?? false}
-              runId={sim.playerRunId}
-              onReportNode={sim.reportPlayerNode}
-              onLeaveBay={sim.playerLeaveBay}
-            />
-          )}
-        </Suspense>
-      </Scene>
+      <NodeSignsContext.Provider value={nodeSignsValue}>
+        <SimRenderContext.Provider value={simRenderValue}>
+          {/* The Canvas mounts unconditionally so WebGL context creation,
+              PMREM bake, lights and the camera rig can all start in parallel
+              with the /lot.json fetch. <ParkingLot> waits for the lot
+              internally; the car tree (SimContents) renders nothing until the
+              lot is available. */}
+          <Scene
+            controlsRef={controlsRef}
+            cameraMode={cameraMode}
+            followCarId={followCarId}
+            carGroupsRef={carGroupsRef}
+            lot={lot}
+          >
+            {SIM_CONTENTS}
+          </Scene>
+        </SimRenderContext.Provider>
+      </NodeSignsContext.Provider>
 
       <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-4">
         {(cameraMode === "pov" || cameraMode === "drive") && (
@@ -197,16 +254,17 @@ export function App() {
             destinationType={playerRoute?.destinationType ?? null}
             distance={playerRoute?.routeDistance ?? 0}
             nextDirection={playerRoute?.nextDirection ?? null}
+            speedRef={playerSpeedRef}
           />
         )}
         <div className="flex items-start justify-between">
-          <div className="rounded-lg border border-neutral-800 bg-black/60 px-3 py-2 backdrop-blur-sm">
+          <div className="rounded-lg border border-neutral-800 bg-[#0a0b0e] px-3 py-2">
             <div className="text-lg font-semibold tracking-tight text-white">ParCoar</div>
             <div className="text-xs text-neutral-400">Parking guidance simulator</div>
           </div>
           <div
             className={
-              "flex flex-col items-end gap-1 rounded-lg border border-neutral-800 bg-black/60 px-3 py-2 text-[11px] backdrop-blur-sm " +
+              "flex flex-col items-end gap-1 rounded-lg border border-neutral-800 bg-[#0a0b0e] px-3 py-2 text-[11px] " +
               (overlays.status ? "" : "hidden")
             }
           >
@@ -230,8 +288,13 @@ export function App() {
                   <span className="text-white">S</span> Brake
                   <span className="mx-1.5 text-neutral-600">|</span>
                   <span className="text-white">A/D</span> Steer
+                  <span className="mx-1.5 text-neutral-600">|</span>
+                  <span className="text-white">V</span> Exit POV
+                  <span className="mx-1.5 text-neutral-600">|</span>
+                  <span className="text-white">P</span> Auto-park
                 </div>
                 <SpeedHud speedRef={playerSpeedRef} />
+                <AutoParkPrompt availableRef={autoParkAvailableRef} />
               </div>
             ) : (
               <div
@@ -245,6 +308,7 @@ export function App() {
                 <span><span className="text-neutral-200">Space / Shift</span> up, down</span>
                 <span><span className="text-neutral-200">Ctrl</span> boost</span>
                 <span><span className="text-neutral-200">Scroll</span> fly forward</span>
+                <span><span className="text-neutral-200">V</span> driver POV</span>
               </div>
             )}
             <button
@@ -263,45 +327,171 @@ export function App() {
         </div>
       </div>
 
-      {overlays.routeMap && cameraMode !== "pov" && cameraMode !== "drive" && (
-        <RoutePanel
-          lot={lot}
-          cars={routePanelCars}
-          selectedCarId={routeCarId}
-          onSelectCar={setRouteCarId}
-        />
+      {overlays.routeMap && lot && cameraMode !== "pov" && cameraMode !== "drive" && (
+        <Suspense fallback={null}>
+          <LazyRoutePanel
+            lot={lot}
+            cars={routePanelCars}
+            selectedCarId={routeCarId}
+            onSelectCar={setRouteCarId}
+          />
+        </Suspense>
       )}
 
       <ControlPanelTab open={panelOpen} onOpen={() => setPanelOpen(true)} />
-      <ControlPanel
-        open={panelOpen}
-        onClose={() => setPanelOpen(false)}
-        settings={sim.settings}
-        onSettings={sim.updateSettings}
-        overlays={overlays}
-        onOverlays={patchOverlays}
-        onSpawn={sim.spawnNow}
-        onClearRoad={sim.clearRoad}
-        onReset={sim.resetGarage}
-        activeCount={activeCount}
-        parkedCount={parkedCount}
-      />
+      {panelOpen && (
+        <Suspense fallback={null}>
+          <LazyControlPanel
+            open={panelOpen}
+            onClose={() => setPanelOpen(false)}
+            settings={sim.settings}
+            onSettings={sim.updateSettings}
+            overlays={overlays}
+            onOverlays={patchOverlays}
+            onSpawn={sim.spawnNow}
+            onClearRoad={sim.clearRoad}
+            onReset={sim.resetGarage}
+            activeCount={activeCount}
+            parkedCount={parkedCount}
+          />
+        </Suspense>
+      )}
 
       <CameraControls
         mode={cameraMode}
         onModeChange={setCameraMode}
         followCarId={followCarId}
         onFollowCarChange={setFollowCarId}
-        activeCars={sim.activeCars}
+        followableCars={followableCars}
       />
+
+      {sim.error && <ErrorOverlay message={sim.error} />}
+      {!lot && !sim.error && <LoadingScreen />}
     </div>
   );
 }
 
+/**
+ * The in-Canvas car tree: parked cars, active AI car meshes, and the
+ * drivable car. Reads everything from SimRenderContext so it takes no props
+ * and the element instance passed to <Scene> is stable for the life of the
+ * app — <Scene>'s memo therefore holds across traffic events, and only this
+ * subtree (the context consumers) re-renders when the sim state changes.
+ */
+const SimContents = memo(function SimContents() {
+  const ctx = useContext(SimRenderContext);
+  if (!ctx) return null;
+  const {
+    lot,
+    cameraMode,
+    carGroupsRef,
+    playerSpeedRef,
+    activeCars,
+    parkedCars,
+    parkedCarPositions,
+    roadSegments,
+    playerCar,
+    playerRoute,
+    onArrive,
+    playerRunId,
+    reportPlayerNode,
+    playerLeaveBay,
+    autoParkAvailableRef,
+  } = ctx;
+  return (
+    <Suspense fallback={<SceneLoadingFallback />}>
+      <ParkedCarField cars={parkedCars} />
+      <SlotHighlight
+        lot={lot}
+        assignedSlot={playerCar?.slot ?? null}
+        playerColor={playerCar?.color ?? "red"}
+        visible={!!playerCar && playerCar.status !== "parked" && !playerCar.leaving}
+      />
+      <ActiveCarField
+        cars={activeCars.filter((car) => !car.player)}
+        lot={lot}
+        onArrive={onArrive}
+        carGroupsRef={carGroupsRef}
+      />
+      {(cameraMode === "pov" || cameraMode === "drive") && (
+        <LazyDrivableCar
+          lot={lot}
+          carGroupsRef={carGroupsRef}
+          speedRef={playerSpeedRef}
+          parkedCars={parkedCarPositions}
+          roadSegments={roadSegments}
+          pov={cameraMode === "pov"}
+          assignedSlot={playerCar?.slot ?? null}
+          routePath={playerRoute?.path ?? EMPTY_PATH}
+          playerStatus={playerCar?.status ?? "routing"}
+          leaving={playerCar?.leaving ?? false}
+          runId={playerRunId}
+          onReportNode={reportPlayerNode}
+          onLeaveBay={playerLeaveBay}
+          onAutoParkAvailable={(available) => {
+            autoParkAvailableRef.current = available;
+          }}
+        />
+      )}
+    </Suspense>
+  );
+});
+
+// A single stable element instance for <Scene>'s children. SimContents has no
+// props and reads from context, so the same element description reconciles
+// forever; context updates still drive SimContents re-renders.
+const SIM_CONTENTS: ReactNode = <SimContents />;
+
+interface FollowableCar {
+  id: string;
+  color: import("./types").CarColor;
+  plate: string;
+  player?: boolean;
+}
+
+/**
+ * Returns the list of non-player active cars with a stable array identity:
+ * the reference only changes when the set of followable car ids changes.
+ * Lets a memoized <CameraControls> skip re-rendering on traffic events that
+ * don't alter the followable set.
+ */
+function useStableFollowable(activeCars: { id: string; player?: boolean; parked?: boolean; leaving?: boolean }[]): FollowableCar[] {
+  const ref = useRef<{ sig: string; list: FollowableCar[] }>({ sig: "", list: [] });
+  return useMemo(() => {
+    const list = activeCars.filter(
+      (car) => !car.player && !car.parked && !car.leaving,
+    ) as FollowableCar[];
+    const sig = list.map((car) => car.id).join(",");
+    if (sig === ref.current.sig) return ref.current.list;
+    ref.current = { sig, list };
+    return list;
+  }, [activeCars]);
+}
+
 function LoadingScreen() {
   return (
-    <div className="flex h-full w-full items-center justify-center bg-[#0a0b0e] text-neutral-300">
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[#0a0b0e] text-neutral-300">
       <span className="text-sm font-semibold tracking-[0.18em] text-neutral-400">LOADING</span>
+    </div>
+  );
+}
+
+function ErrorOverlay({ message }: { message: string }) {
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center bg-[#0a0b0e]/95 px-6 text-center">
+      <div className="max-w-md rounded-lg border border-red-500/30 bg-black/60 p-5">
+        <div className="text-sm font-semibold text-red-300">GARAGE COULD NOT START</div>
+        <p className="mt-2 text-xs leading-relaxed text-neutral-400">
+          {message}
+        </p>
+        <button
+          type="button"
+          className="mt-4 rounded border border-neutral-700 px-3 py-1.5 text-xs font-semibold text-neutral-200 hover:border-neutral-500"
+          onClick={() => window.location.reload()}
+        >
+          Retry
+        </button>
+      </div>
     </div>
   );
 }
@@ -325,6 +515,20 @@ function SpeedHud({ speedRef }: { speedRef: React.RefObject<PlayerSpeedRef> }) {
   );
 }
 
+function AutoParkPrompt({ availableRef }: { availableRef: React.MutableRefObject<boolean> }) {
+  const [available, setAvailable] = useState(false);
+  useEffect(() => {
+    const interval = setInterval(() => setAvailable(availableRef.current), 200);
+    return () => clearInterval(interval);
+  }, [availableRef]);
+  if (!available) return null;
+  return (
+    <div className="pointer-events-none rounded-md border border-emerald-500/60 bg-black/80 px-3 py-1.5 text-[12px] font-semibold tracking-wide text-emerald-400 animate-pulse">
+      Press <span className="text-white">P</span> to auto-park
+    </div>
+  );
+}
+
 const DIRECTION_WORD: Record<string, string> = {
   left: "LEFT",
   right: "RIGHT",
@@ -344,6 +548,7 @@ function PlayerGuidance({
   destinationType,
   distance,
   nextDirection,
+  speedRef,
 }: {
   status: string;
   leaving: boolean;
@@ -351,16 +556,34 @@ function PlayerGuidance({
   destinationType: "bay" | "exit" | null;
   distance: number;
   nextDirection: string | null;
+  speedRef: React.RefObject<PlayerSpeedRef>;
 }) {
+  // Poll the live route distance from the DrivableCar (updated every frame)
+  // so the strip doesn't lag behind by a node gap.
+  const [liveDistance, setLiveDistance] = useState(distance);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const live = speedRef.current?.routeDistance;
+      if (live !== undefined && live >= 0) setLiveDistance(live);
+    }, 100);
+    return () => clearInterval(interval);
+  }, [speedRef]);
+  useEffect(() => {
+    if (speedRef.current?.routeDistance === undefined || speedRef.current.routeDistance < 0) {
+      setLiveDistance(distance);
+    }
+  }, [distance, speedRef]);
+
+  const shownDistance = liveDistance;
   let line: string;
   if (status === "parked") {
     line = `PARKED ${slot ? bayLabel(slot) : ""} — L TO LEAVE`;
   } else if (status === "no_slot") {
     line = "NO FREE BAY";
   } else if (destinationType === "exit" && leaving) {
-    line = `${Math.round(distance)} m · ${DIRECTION_WORD[nextDirection ?? ""] ?? ""} → EXIT`;
+    line = `${Math.round(shownDistance)} m · ${DIRECTION_WORD[nextDirection ?? ""] ?? ""} → EXIT`;
   } else if (slot) {
-    line = `BAY ${bayLabel(slot)} · ${Math.round(distance)} m · ${
+    line = `BAY ${bayLabel(slot)} · ${Math.round(shownDistance)} m · ${
       DIRECTION_WORD[nextDirection ?? ""] ?? ""
     }`;
   } else {
@@ -375,18 +598,18 @@ function PlayerGuidance({
   );
 }
 
-function CameraControls({
+const CameraControls = memo(function CameraControls({
   mode,
   onModeChange,
   followCarId,
   onFollowCarChange,
-  activeCars,
+  followableCars,
 }: {
   mode: CameraMode;
   onModeChange: (mode: CameraMode) => void;
   followCarId: string | null;
   onFollowCarChange: (id: string | null) => void;
-  activeCars: { id: string; color: import("./types").CarColor; plate: string; player?: boolean }[];
+  followableCars: FollowableCar[];
 }) {
   const buttons: { id: CameraMode; label: string }[] = [
     { id: "orbit", label: "Orbit" },
@@ -398,11 +621,10 @@ function CameraControls({
     { id: "pov", label: "POV" },
     { id: "drive", label: "Drive" },
   ];
-  const followable = activeCars.filter((car) => !car.player);
 
   return (
     <div className="pointer-events-none absolute bottom-16 left-1/2 flex -translate-x-1/2 flex-col items-center gap-2">
-      <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1 rounded-lg border border-neutral-800 bg-black/80 p-1 backdrop-blur-sm">
+      <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1 rounded-lg border border-neutral-800 bg-[#0a0b0e] p-1">
         {buttons.map((button, index) => (
           <div key={button.id} className="flex items-center">
             {(index === 2 || index === 5) && <div className="mx-0.5 h-6 w-px bg-neutral-600" />}
@@ -423,9 +645,9 @@ function CameraControls({
       </div>
 
       {mode === "follow" && (
-        <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-neutral-800 bg-black/80 px-2 py-1 backdrop-blur-sm">
+        <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-neutral-800 bg-[#0a0b0e] px-2 py-1">
           <span className="text-[11px] font-semibold tracking-wide text-neutral-500">CAR</span>
-          {followable.length === 0 ? (
+          {followableCars.length === 0 ? (
             <span className="text-[11px] text-neutral-500">none active</span>
           ) : (
             <select
@@ -433,7 +655,7 @@ function CameraControls({
               onChange={(event: { target: { value: string } }) => onFollowCarChange(event.target.value || null)}
               className="bg-transparent text-[11px] font-medium text-neutral-100 outline-none [&>option]:bg-neutral-900"
             >
-              {followable.map((car) => (
+              {followableCars.map((car) => (
                 <option key={car.id} value={car.id}>{car.plate} · {car.color}</option>
               ))}
             </select>
@@ -443,7 +665,7 @@ function CameraControls({
               className="inline-block h-2 w-2 rounded-full"
               style={{
                 backgroundColor: COLOR_HEX[
-                  followable.find((car) => car.id === followCarId)?.color ?? "white"
+                  followableCars.find((car) => car.id === followCarId)?.color ?? "white"
                 ],
               }}
             />
@@ -452,7 +674,7 @@ function CameraControls({
       )}
     </div>
   );
-}
+});
 
 function StatusRow({
   label,
