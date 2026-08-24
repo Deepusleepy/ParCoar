@@ -114,14 +114,18 @@ const fragmentShader = /* glsl */ `
 
     /* ---------- stars (upper hemisphere only) ---------- */
     if (h > 0.0) {
-      // Quantize the view direction into cells; each cell may hold one star.
-      vec3 sp = floor(dir * 220.0);
-      float sh = hash3(sp);
-      // Sparse: ~few hundred stars over the upper hemisphere.
-      float star = step(0.9978, sh);
+      // Quantize the view direction into 3D cells; each cell may hold one
+      // round star (radial falloff inside the cell — square cells read as
+      // square stars once magnified, which looked like confetti).
+      vec3 sp = dir * 240.0;
+      vec3 cell = floor(sp);
+      float sh = hash3(cell);
+      float star = step(0.9982, sh);
+      float d = length(fract(sp) - 0.5);
+      float dotMask = smoothstep(0.32, 0.06, d);
       // Twinkle + per-star brightness variation.
       float twinkle = 0.65 + 0.35 * sin(uTime * 2.5 + sh * 100.0);
-      float bright = star * twinkle * (0.4 + 0.6 * fract(sh * 53.0));
+      float bright = star * dotMask * twinkle * (0.4 + 0.6 * fract(sh * 53.0));
       // Fade in at night, fade out near the horizon.
       float starFade = (1.0 - sunUp) * smoothstep(0.0, 0.12, h);
       sky += vec3(0.9, 0.95, 1.0) * bright * starFade * 1.6;

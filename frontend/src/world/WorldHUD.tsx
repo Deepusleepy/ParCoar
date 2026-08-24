@@ -11,54 +11,87 @@ import {
   BRIDGE_TRUSS_X,
   TRACK_CENTER,
   TRACK_SIZE,
-  DAY_NIGHT_CYCLE_SECONDS,
 } from "./constants";
+import { runtime, type CameraMode } from "./runtime";
 
 /**
- * WorldHUD — minimal overlay for the spectator camera mode.
+ * WorldHUD — minimal overlay for the open world.
  *
- * Shows: time of day (top-left), minimap (top-right), controls hint
- * (bottom-left, fades after 8s), and camera speed (bottom-right).
+ * Drive mode: clock + district (top-left), minimap with heading arrow
+ * (top-right), speed in km/h (bottom-right), fading controls hint
+ * (bottom-left). Fly mode swaps speed for altitude and shows fly hints.
  *
- * The HUD reads the spectator camera position from the R3F camera via a
- * shared ref (passed from WorldApp) and re-renders at a throttled 10fps
- * to avoid per-frame React overhead.
+ * Everything is polled from `runtime` at 10 Hz — no per-frame React work.
  */
 
 const MINIMAP_SIZE = 180;
 const MINIMAP_SCALE = MINIMAP_SIZE / (WORLD_HALF * 2);
 
 export interface WorldHUDProps {
-  /** Live camera position ref (updated by SpectatorCamera every frame). */
-  cameraPosRef?: React.MutableRefObject<{ x: number; y: number; z: number } | null>;
+  mode: CameraMode;
 }
 
-export function WorldHUD({ cameraPosRef }: WorldHUDProps) {
-  const [state, setState] = useState({
-    x: 0,
-    y: 50,
-    z: 150,
-    time: "08:24",
-    location: "City District",
-  });
+interface HudSnapshot {
+  x: number;
+  y: number;
+  z: number;
+  heading: number;
+  speedKmh: number;
+  clock: string;
+  location: string;
+}
 
-  // Throttled update at 10fps
+function snapshot(mode: CameraMode): HudSnapshot {
+  const x = mode === "drive" ? runtime.carX : runtime.flyX;
+  const y = mode === "drive" ? 0 : runtime.flyY;
+  const z = mode === "drive" ? runtime.carZ : runtime.flyZ;
+  return {
+    x,
+    y,
+    z,
+    heading: runtime.carHeading,
+    speedKmh: runtime.carSpeedKmh,
+    clock: formatClock(runtime.timeOfDay),
+    location: getLocationName(x, z),
+  };
+}
+
+function formatClock(t: number): string {
+  const totalMinutes = Math.floor(t * 24 * 60) % (24 * 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+function getLocationName(x: number, z: number): string {
+  if (Math.abs(z - RIVER_Z) < RIVER_HALF_WIDTH) {
+    if (Math.abs(x - BRIDGE_MODERN_X) < 10) return "Modern Bridge";
+    if (Math.abs(x - BRIDGE_TRUSS_X) < 10) return "Truss Bridge";
+    return "The River";
+  }
+  if (z > RIVER_HALF_WIDTH) {
+    if (z > 240) return "South City";
+    if (x < -60) return "West City";
+    if (x > 60) return "East City";
+    return "City District";
+  }
+  const [tx, tz] = TRACK_CENTER;
+  const [tw, td] = TRACK_SIZE;
+  if (Math.abs(x - tx) < tw / 2 + 20 && Math.abs(z - tz) < td / 2 + 20) {
+    return "Race Track";
+  }
+  if (z < -200) return "Rice Paddies";
+  if (x < -60) return "Old Town";
+  return "Town";
+}
+
+export function WorldHUD({ mode }: WorldHUDProps) {
+  const [state, setState] = useState<HudSnapshot>(() => snapshot(mode));
+
   useEffect(() => {
-    const interval = setInterval(() => {
-      const pos = cameraPosRef?.current;
-      const x = pos?.x ?? 0;
-      const z = pos?.z ?? 150;
-      const y = pos?.y ?? 50;
-      setState({
-        x,
-        y,
-        z,
-        time: getInGameTime(),
-        location: getLocationName(x, z),
-      });
-    }, 100);
+    const interval = setInterval(() => setState(snapshot(mode)), 100);
     return () => clearInterval(interval);
-  }, [cameraPosRef]);
+  }, [mode]);
 
   return (
     <div
@@ -71,21 +104,21 @@ export function WorldHUD({ cameraPosRef }: WorldHUDProps) {
         userSelect: "none",
       }}
     >
-      {/* Time of day (top-left) */}
+      {/* Time of day + district (top-left) */}
       <div
         style={{
           position: "absolute",
           top: 16,
           left: 16,
           padding: "8px 12px",
-          background: "rgba(10,11,14,0.7)",
+          background: "rgba(10,11,14,0.66)",
           borderRadius: 8,
           border: "1px solid rgba(255,255,255,0.1)",
           fontSize: 13,
         }}
       >
-        <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: 1 }}>{state.time}</div>
-        <div style={{ fontSize: 10, opacity: 0.5, letterSpacing: 1 }}>{state.location}</div>
+        <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: 1 }}>{state.clock}</div>
+        <div style={{ fontSize: 10, opacity: 0.55, letterSpacing: 1 }}>{state.location}</div>
       </div>
 
       {/* Minimap (top-right) */}
@@ -95,78 +128,50 @@ export function WorldHUD({ cameraPosRef }: WorldHUDProps) {
           top: 16,
           right: 16,
           padding: 4,
-          background: "rgba(10,11,14,0.7)",
+          background: "rgba(10,11,14,0.66)",
           borderRadius: 8,
           border: "1px solid rgba(255,255,255,0.1)",
         }}
       >
-        <Minimap x={state.x} z={state.z} />
+        <Minimap x={state.x} z={state.z} heading={state.heading} mode={mode} />
       </div>
 
-      {/* Controls hint (bottom-left, fades) */}
-      <ControlsHint />
+      <ControlsHint mode={mode} />
 
-      {/* Altitude (bottom-right) */}
+      {/* Speed (drive) / altitude (fly), bottom-right */}
       <div
         style={{
           position: "absolute",
           bottom: 16,
           right: 16,
-          padding: "6px 10px",
-          background: "rgba(10,11,14,0.7)",
+          padding: "6px 12px",
+          background: "rgba(10,11,14,0.66)",
           borderRadius: 8,
           border: "1px solid rgba(255,255,255,0.1)",
-          fontSize: 11,
-          opacity: 0.7,
+          fontSize: mode === "drive" ? 20 : 11,
+          fontWeight: mode === "drive" ? 700 : 400,
+          opacity: 0.85,
+          fontVariantNumeric: "tabular-nums",
         }}
       >
-        ALT {Math.round(state.y)}m
+        {mode === "drive" ? `${Math.round(state.speedKmh)} km/h` : `ALT ${Math.round(state.y)}m`}
       </div>
     </div>
   );
 }
 
-/** Compute in-game time string from elapsed real time. */
-function getInGameTime(): string {
-  // The day/night cycle runs in DayNight.ts. We approximate the time
-  // from the cycle length. This is a rough display — the authoritative
-  // time lives in the DayNight state ref.
-  const start = DAY_NIGHT_START_HOURS;
-  const now = performance.now() / 1000;
-  const cycleProgress = (now % DAY_NIGHT_CYCLE_SECONDS) / DAY_NIGHT_CYCLE_SECONDS;
-  const totalHours = (start + cycleProgress * 24) % 24;
-  const h = Math.floor(totalHours);
-  const m = Math.floor((totalHours - h) * 60);
-  return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
-}
-
-const DAY_NIGHT_START_HOURS = 8.4; // 8:24am
-
-function getLocationName(x: number, z: number): string {
-  if (Math.abs(z - RIVER_Z) < RIVER_HALF_WIDTH) {
-    if (Math.abs(x - BRIDGE_MODERN_X) < 10) return "Modern Bridge";
-    if (Math.abs(x - BRIDGE_TRUSS_X) < 10) return "Old Bridge";
-    return "The River";
-  }
-  if (z > RIVER_HALF_WIDTH) {
-    if (x < -60) return "West City";
-    if (x > 60) return "East City";
-    if (z > 120) return "South City";
-    return "City District";
-  }
-  // Town side
-  const [tx, tz] = TRACK_CENTER;
-  const [tw, td] = TRACK_SIZE;
-  if (Math.abs(x - tx) < tw / 2 + 20 && Math.abs(z - tz) < td / 2 + 20) {
-    return "Race Track";
-  }
-  if (z < -200) return "Rice Paddies";
-  if (x < -60) return "Old Town";
-  return "Town";
-}
-
-/** Canvas-based minimap. */
-function Minimap({ x, z }: { x: number; z: number }) {
+/** Canvas-based minimap with a heading arrow in drive mode. */
+function Minimap({
+  x,
+  z,
+  heading,
+  mode,
+}: {
+  x: number;
+  z: number;
+  heading: number;
+  mode: CameraMode;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -178,7 +183,6 @@ function Minimap({ x, z }: { x: number; z: number }) {
     const h = MINIMAP_SIZE;
     ctx.clearRect(0, 0, w, h);
 
-    // Background
     ctx.fillStyle = "#0a0b0e";
     ctx.fillRect(0, 0, w, h);
 
@@ -190,11 +194,15 @@ function Minimap({ x, z }: { x: number; z: number }) {
     // River
     const [, riverY] = toCanvas(0, RIVER_Z);
     const riverH = RIVER_HALF_WIDTH * 2 * MINIMAP_SCALE;
-    ctx.fillStyle = "#1a2a3a";
+    ctx.fillStyle = "#16283a";
     ctx.fillRect(0, riverY - riverH / 2, w, riverH);
 
-    // City roads
-    ctx.strokeStyle = "#3a3a3e";
+    // City blocks (dark fill so roads read as a grid)
+    ctx.fillStyle = "#141518";
+    ctx.fillRect(0, riverY + riverH / 2, w, h - (riverY + riverH / 2));
+
+    // Roads
+    ctx.strokeStyle = "#3c3d42";
     ctx.lineWidth = 1;
     for (const rx of CITY_NS_ROADS) {
       const [cx] = toCanvas(rx, 0);
@@ -210,8 +218,6 @@ function Minimap({ x, z }: { x: number; z: number }) {
       ctx.lineTo(w, cy);
       ctx.stroke();
     }
-
-    // Town roads
     for (const rx of TOWN_NS_ROADS) {
       const [cx] = toCanvas(rx, 0);
       ctx.beginPath();
@@ -248,18 +254,34 @@ function Minimap({ x, z }: { x: number; z: number }) {
     ctx.ellipse(tcx, tcy, (tw / 2) * MINIMAP_SCALE, (td / 2) * MINIMAP_SCALE, 0, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Camera position
+    // Player: heading arrow (drive) or dot (fly)
     const [cx, cy] = toCanvas(x, z);
-    ctx.fillStyle = "#00e5ff";
-    ctx.beginPath();
-    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "#00e5ff";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 7, 0, Math.PI * 2);
-    ctx.stroke();
-  }, [x, z]);
+    if (mode === "drive") {
+      ctx.save();
+      ctx.translate(cx, cy);
+      // Heading 0 = +Z = down on the minimap (+Z maps to +canvasY).
+      ctx.rotate(Math.PI - heading);
+      ctx.fillStyle = "#00e5ff";
+      ctx.beginPath();
+      ctx.moveTo(0, -7);
+      ctx.lineTo(5, 6);
+      ctx.lineTo(0, 3);
+      ctx.lineTo(-5, 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    } else {
+      ctx.fillStyle = "#00e5ff";
+      ctx.beginPath();
+      ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#00e5ff";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }, [x, z, heading, mode]);
 
   return (
     <canvas
@@ -271,13 +293,14 @@ function Minimap({ x, z }: { x: number; z: number }) {
   );
 }
 
-/** Controls hint that fades out after 8 seconds. */
-function ControlsHint() {
+/** Controls hint that fades out after 9 seconds. */
+function ControlsHint({ mode }: { mode: CameraMode }) {
   const [visible, setVisible] = useState(true);
   useEffect(() => {
-    const timer = setTimeout(() => setVisible(false), 8000);
+    setVisible(true);
+    const timer = setTimeout(() => setVisible(false), 9000);
     return () => clearTimeout(timer);
-  }, []);
+  }, [mode]);
 
   return (
     <div
@@ -292,11 +315,21 @@ function ControlsHint() {
         textShadow: "0 1px 3px rgba(0,0,0,0.8)",
       }}
     >
-      <div>WASD — fly</div>
-      <div>Space / C — up / down</div>
-      <div>Drag — look</div>
-      <div>Scroll — speed</div>
-      <div>Shift — boost</div>
+      {mode === "drive" ? (
+        <>
+          <div>WASD — drive</div>
+          <div>Space — handbrake</div>
+          <div>V — fly camera</div>
+          <div>T — skip 6h</div>
+        </>
+      ) : (
+        <>
+          <div>WASD — fly</div>
+          <div>Space / C — up / down</div>
+          <div>Drag — look · Scroll — speed</div>
+          <div>V — drive</div>
+        </>
+      )}
     </div>
   );
 }

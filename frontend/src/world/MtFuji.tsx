@@ -5,15 +5,82 @@ import { useDayNightState } from "./DayNight";
 import { FUJI_Z, FUJI_HEIGHT, FUJI_WIDTH, FUJI_Y } from "./constants";
 
 /**
- * Mt. Fuji as a billboard plane far to the north (Z=FUJI_Z). The mountain is
- * drawn in the fragment shader as a symmetric triangle with a snow cap. The
- * billboard rotates around Y only to face the camera, so it stays upright
- * regardless of the camera's pitch.
+ * Mt. Fuji — a camera-facing billboard far to the north.
  *
- * The body color is a hazy blue-grey that blends toward the sky color near
- * the base (atmospheric perspective). The snow cap shifts from off-white at
- * day to pink-orange at sunset to near-black at night.
+ * The silhouette is painted ONCE into a canvas texture (concave profile,
+ * irregular snow line, snow fingers, base haze alpha), and a small shader
+ * tints it per time of day (white snow at noon, pink at sunset, dark at
+ * night) and blends the base into the live sky color for atmospheric
+ * perspective. The old fully-procedural shader produced a glowing dome with
+ * staircase edges — painting the shape up front looks like a mountain.
+ *
+ * Texture channels: R = slope shading (0.72..1), G = snow mask, A = alpha.
  */
+
+const TEX_W = 1024;
+const TEX_H = 512;
+
+function paintFuji(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = TEX_W;
+  canvas.height = TEX_H;
+  const ctx = canvas.getContext("2d")!;
+
+  // Deterministic noise for the ridge and snow line.
+  const rand = (seed: number) => {
+    const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  };
+
+  // Concave height profile: gentle near the peak, steep at the base — the
+  // recognizable Fuji silhouette. Slight asymmetry.
+  const profile = (u: number) => {
+    const asym = 0.018 * Math.sin(u * Math.PI);
+    const t = Math.abs(u - 0.5 + asym) * 2; // 0 center → 1 edge
+    return Math.pow(Math.max(0, 1 - t), 1.55);
+  };
+
+  const img = ctx.createImageData(TEX_W, TEX_H);
+  const data = img.data;
+  for (let px = 0; px < TEX_W; px++) {
+    const u = px / (TEX_W - 1);
+    const h = profile(u);
+    // Ridge line with fine noise, in texture-Y pixels.
+    const ridgeY = TEX_H - h * (TEX_H - 20) - 10;
+    // Column-wise snow line: ~38% of the visible height, jagged.
+    const snowJag =
+      (rand(px) - 0.5) * 14 + (rand(Math.floor(px / 7)) - 0.5) * 22;
+    const snowY = ridgeY + h * (TEX_H - 20) * 0.38 + snowJag;
+    // Slope shading: right-facing slope lighter (sun from the right).
+    const shade =
+      0.78 + (u - 0.5 + 0.5) * 0.2 + (rand(Math.floor(px / 13)) - 0.5) * 0.05;
+
+    for (let py = 0; py < TEX_H; py++) {
+      const i = (py * TEX_W + px) * 4;
+      if (py < ridgeY) {
+        data[i + 3] = 0; // sky
+        continue;
+      }
+      // Snow mask: above the jagged snow line, plus fingers reaching below.
+      const finger =
+        rand(Math.floor(px / 5) * 31 + Math.floor(py / 6)) > 0.93 &&
+        py < snowY + 26;
+      const snow = py <= snowY || finger ? 1 : 0;
+      data[i] = Math.max(0, Math.min(255, shade * 255)); // R shade
+      data[i + 1] = snow * 255; // G snow mask
+      // Base haze: fade alpha out over the bottom 5% so the mountain
+      // melts into the horizon instead of ending in a hard cut.
+      const v = py / TEX_H;
+      data[i + 3] = v > 0.95 ? Math.max(0, (1 - v) / 0.05) * 255 : 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
 
 const vertexShader = /* glsl */ `
   varying vec2 vUv;
@@ -25,70 +92,32 @@ const vertexShader = /* glsl */ `
 
 const fragmentShader = /* glsl */ `
   varying vec2 vUv;
-  uniform vec3 bodyColor;
-  uniform vec3 snowColor;
-  uniform vec3 skyColor;
-
-  // Hash for procedural snow edge irregularity.
-  float hash(float n) { return fract(sin(n) * 43758.5453); }
-  float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  uniform sampler2D uMap;
+  uniform vec3 uBodyColor;
+  uniform vec3 uSnowColor;
+  uniform vec3 uSkyColor;
 
   void main() {
-    vec2 uv = vUv;
-    // Concave mountain profile: power curve makes slopes steep at base,
-    // gentle near the peak (like real Fuji). Slight asymmetry for character.
-    float asym = 0.02 * sin(uv.x * 3.14159);
-    float edge = 1.0 - pow(2.0 * abs(uv.x - 0.5 + asym), 1.5);
-    edge = max(edge, 0.0);
-    // Discard everything above the silhouette (transparent sky).
-    if (uv.y > edge) discard;
+    vec4 t = texture2D(uMap, vUv);
+    if (t.a < 0.01) discard;
 
-    // Snow cap with irregular, undulating snow line.
-    float snowLine = edge * 0.55;
-    float jaggle1 = (hash(floor(uv.x * 32.0)) - 0.5) * 0.14;
-    float jaggle2 = (hash(floor(uv.x * 80.0)) - 0.5) * 0.06;
-    bool isSnow = uv.y > snowLine + jaggle1 + jaggle2;
+    vec3 col = mix(uBodyColor * t.r * 1.25, uSnowColor, t.g);
 
-    // Occasional snow fingers below the main snow line.
-    if (!isSnow) {
-      float finger = hash2(floor(vec2(uv.x * 40.0, uv.y * 20.0)));
-      if (finger > 0.92 && uv.y > snowLine - 0.08) isSnow = true;
-    }
+    // Atmospheric haze: blend toward the live sky color near the base.
+    float haze = smoothstep(0.55, 0.02, vUv.y);
+    col = mix(col, uSkyColor, haze * 0.8);
 
-    vec3 col = isSnow ? snowColor : bodyColor;
-
-    // Atmospheric haze: the mountain is hazed, more so at the base. Kept
-    // subtle so the base doesn't glow into a white bloom at the horizon.
-    float haze = smoothstep(0.75, 0.0, uv.y); // 1 at base, 0 at 75% up
-    col = mix(col, skyColor, haze * 0.55);
-    // Even the snow gets a little haze at the base.
-    if (isSnow) {
-      col = mix(col, skyColor, haze * 0.25);
-    }
-
-    // Ridge shading: darker on the left-facing slope, lighter on the right,
-    // to give the cone 3D form (simulated sun from the right).
-    if (!isSnow) {
-      float slope = smoothstep(0.0, 1.0, (uv.x - 0.5) * 2.0);
-      col *= 0.75 + slope * 0.35;
-    }
-
-    // Fade the very bottom edge to transparent so Fuji blends into the
-    // sky/horizon instead of having a hard cardboard cutout edge.
-    float baseAlpha = smoothstep(0.0, 0.04, uv.y);
-
-    gl_FragColor = vec4(col, baseAlpha);
+    gl_FragColor = vec4(col, t.a);
   }
 `;
 
-// Color targets for the snow cap through the day. Kept off-white/blue-grey
-// so the cap doesn't blow out into a white bloom at the horizon.
-const SNOW_DAY = new THREE.Color("#bfc1c4");
+// Color targets for the snow cap through the day.
+const SNOW_DAY = new THREE.Color("#f7f6f2");
 const SNOW_SUNSET = new THREE.Color("#ff9a6a");
-const SNOW_NIGHT = new THREE.Color("#1a1a2a");
+const SNOW_NIGHT = new THREE.Color("#232336");
 
-// Body color base (dark blue-grey). Haze blends it toward sky at the base.
-const FUJI_BODY = new THREE.Color("#4a5666");
+// Body color base (blue-grey).
+const FUJI_BODY = new THREE.Color("#5a6a7c");
 
 export function MtFuji() {
   const stateRef = useDayNightState();
@@ -96,13 +125,15 @@ export function MtFuji() {
   const groupRef = useRef<THREE.Group>(null);
   const matRef = useRef<THREE.ShaderMaterial>(null);
 
+  const texture = useMemo(() => paintFuji(), []);
   const uniforms = useMemo(
     () => ({
-      bodyColor: { value: FUJI_BODY.clone() },
-      snowColor: { value: SNOW_DAY.clone() },
-      skyColor: { value: new THREE.Color("#b8d0f0") },
+      uMap: { value: texture },
+      uBodyColor: { value: FUJI_BODY.clone() },
+      uSnowColor: { value: SNOW_DAY.clone() },
+      uSkyColor: { value: new THREE.Color("#b8d0f0") },
     }),
-    [],
+    [texture],
   );
 
   useFrame(() => {
@@ -117,23 +148,22 @@ export function MtFuji() {
     grp.rotation.y = Math.atan2(dx, dz);
 
     // Snow cap color: day → sunset → night, driven by sun elevation.
-    // sunsetFactor peaks near the horizon (elev ~0), nightFactor when below.
     const elev = Math.sin((s.timeOfDay - 0.25) * Math.PI * 2);
     const sunsetFactor = THREE.MathUtils.clamp(1 - Math.abs(elev) * 3, 0, 1);
     const nightFactor = THREE.MathUtils.clamp(-elev * 2, 0, 1);
-    (mat.uniforms.snowColor.value as THREE.Color)
+    mat.uniforms.uSnowColor.value
       .copy(SNOW_DAY)
       .lerp(SNOW_SUNSET, sunsetFactor)
       .lerp(SNOW_NIGHT, nightFactor);
 
-    // Body color darkens at night.
+    // Body darkens at night.
     const dayFactor = THREE.MathUtils.clamp(s.sunIntensity / 3, 0, 1);
-    (mat.uniforms.bodyColor.value as THREE.Color)
+    mat.uniforms.uBodyColor.value
       .copy(FUJI_BODY)
-      .multiplyScalar(0.3 + dayFactor * 0.7);
+      .multiplyScalar(0.35 + dayFactor * 0.65);
 
-    // Sky color for haze blending = current horizon color.
-    (mat.uniforms.skyColor.value as THREE.Color).copy(s.skyHorizon);
+    // Haze target = current horizon color.
+    (mat.uniforms.uSkyColor.value as THREE.Color).copy(s.skyHorizon);
   });
 
   return (
@@ -145,11 +175,10 @@ export function MtFuji() {
           uniforms={uniforms}
           vertexShader={vertexShader}
           fragmentShader={fragmentShader}
-          side={THREE.DoubleSide}
-          depthWrite={true}
           transparent
+          depthWrite={false}
           fog={false}
-          toneMapped={false}
+          toneMapped
         />
       </mesh>
     </group>
