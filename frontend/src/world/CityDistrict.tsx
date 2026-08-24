@@ -3,6 +3,7 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { DayNightContext } from "./DayNight";
+import type { Box2 } from "./car/physics";
 import {
   CITY_NS_ROADS,
   CITY_EW_ROADS,
@@ -17,21 +18,31 @@ import {
  *
  * Buildings are generated procedurally across the city grid (between the NS
  * and EW roads) and merged by material type so the whole district renders in
- * ~13 draw calls regardless of building count. Window glow and neon signage
- * are driven by the shared day/night state every frame.
+ * ~13 draw calls regardless of building count. Window glow is driven by the
+ * shared day/night state every frame; lit windows emit HDR values (>1.0) so
+ * the bloom pass turns the city into a field of glowing glass after dark —
+ * the night identity of the world.
  *
  * Building variety is the core requirement: every building differs from its
  * neighbors in at least two of height, footprint, color, window pattern, and
  * roof clutter. Four building types are mixed: slab towers, glass curtain-wall
  * towers, podium towers (Tokyo tower-on-a-shop-base), and low-rise shops.
+ *
+ * This module also exports:
+ *  - cityCollisionBoxes: ground-level footprints for car collision.
+ *  - cityBlockRects / makeRng / hashSeed: deterministic layout helpers so
+ *    other systems (signage) can pick spots on the same blocks without
+ *    coupling to this component's React lifecycle.
  */
+
+/** Ground-level building footprints for the car's collision world. */
+export const cityCollisionBoxes: Box2[] = [];
 
 /* ------------------------------------------------------------------ *
  *  Types
  * ------------------------------------------------------------------ */
 
 type BuildingType = "slab" | "glass" | "podium" | "lowrise";
-type NeonColor = "cyan" | "magenta" | "warmwhite" | "red" | "green";
 
 /** An axis-aligned box described by center + half-extents, for facade math. */
 interface FacadeBox {
@@ -50,7 +61,6 @@ interface GeometryGroups {
   awningGeoms: THREE.BufferGeometry[];
   clutterGeoms: THREE.BufferGeometry[];
   windowGeoms: THREE.BufferGeometry[];
-  neonGeoms: Record<NeonColor, THREE.BufferGeometry[]>;
 }
 
 /** Merged geometry ready to attach to a single material. */
@@ -60,7 +70,6 @@ interface CityGeometry {
   awning: THREE.BufferGeometry | null;
   clutter: THREE.BufferGeometry | null;
   windows: THREE.BufferGeometry | null;
-  neon: Record<NeonColor, THREE.BufferGeometry | null>;
 }
 
 /* ------------------------------------------------------------------ *
@@ -97,14 +106,6 @@ const AWNING_COLOR = "#9a6a4a";
 /** Rooftop clutter (water tanks, AC units, antenna masts). */
 const CLUTTER_COLOR = "#2a2a2e";
 
-const NEON_HEX: Record<NeonColor, string> = {
-  cyan: CITY_PALETTE.neonCyan,
-  magenta: CITY_PALETTE.neonMagenta,
-  warmwhite: CITY_PALETTE.neonWarmWhite,
-  red: CITY_PALETTE.neonRed,
-  green: CITY_PALETTE.neonGreen,
-};
-
 /* ------------------------------------------------------------------ *
  *  Window glow shader
  * ------------------------------------------------------------------ *
@@ -138,7 +139,7 @@ const WINDOW_FRAG = /* glsl */ `
   varying float vTint;
   void main() {
     // Daytime base: dark blue-grey glass — clearly visible against light concrete.
-    vec3 dayGlass = vec3(0.25, 0.30, 0.38);
+    vec3 dayGlass = vec3(0.22, 0.27, 0.34);
     // Night glow color: warm or cool per window.
     vec3 nightCol = mix(uGlowWarm, uGlowCool, vTint);
     // Windows light up staggered as uWindowGlow crosses their phase.
@@ -148,10 +149,10 @@ const WINDOW_FRAG = /* glsl */ `
     // Daytime: windows are dark glass with some variation.
     // Nighttime: windows glow with their tint and brightness.
     vec3 col = mix(dayGlass, nightCol, nightLit);
-    // Brightness: during day, windows are at ~0.4-0.6 brightness (visible dark glass).
-    // At night, lit windows are at full brightness, unlit at ~0.05.
-    float dayBright = 0.35 + vBrightness * 0.2;
-    float nightBright = 0.05 + nightLit;
+    // Day: mid-grey glass. Night: HDR output (up to ~2.6x) so the bloom
+    // pass catches lit windows and the city reads as a field of light.
+    float dayBright = 0.32 + vBrightness * 0.18;
+    float nightBright = 0.03 + nightLit * 2.6;
     float brightness = mix(dayBright, nightBright, on);
     gl_FragColor = vec4(col * brightness, 1.0);
   }
@@ -161,14 +162,14 @@ const WINDOW_FRAG = /* glsl */ `
  *  Seeded RNG (deterministic per grid cell)
  * ------------------------------------------------------------------ */
 
-function hashSeed(a: number, b: number): number {
+export function hashSeed(a: number, b: number): number {
   let h = (Math.imul(a, 73856093) ^ Math.imul(b, 19349663)) >>> 0;
   if (h === 0) h = 0x9e3779b9;
   return h;
 }
 
 /** Mulberry32-style PRNG: deterministic, fast, good enough for placement. */
-function makeRng(seed: number): () => number {
+export function makeRng(seed: number): () => number {
   let s = seed >>> 0;
   return () => {
     s = (s + 0x6d2b79f5) >>> 0;
@@ -217,7 +218,7 @@ function splitRange(
  * centerlines. Gaps larger than MAX_BLOCK (outside the road grid) are
  * subdivided so the city fills edge-to-edge.
  */
-function blockIntervals(
+export function blockIntervals(
   roads: readonly number[],
   lo: number,
   hi: number,
@@ -241,6 +242,17 @@ function blockIntervals(
   }
   subdivide(prev, hi);
   return intervals;
+}
+
+/** Every city block rect [x0, x1, z0, z1] — the same cells generateCity uses. */
+export function cityBlockRects(): [number, number, number, number][] {
+  const xIntervals = blockIntervals(CITY_NS_ROADS, -WORLD_HALF, WORLD_HALF);
+  const zIntervals = blockIntervals(CITY_EW_ROADS, CITY_Z_START, CITY_Z_END);
+  const rects: [number, number, number, number][] = [];
+  for (const [x0, x1] of xIntervals) {
+    for (const [z0, z1] of zIntervals) rects.push([x0, x1, z0, z1]);
+  }
+  return rects;
 }
 
 /* ------------------------------------------------------------------ *
@@ -306,8 +318,8 @@ function addWindow(
   const n = g.attributes.position.count;
   // Phase: when the window lights up (staggered across the dusk transition).
   const phase = rngVal;
-  // Brightness: ~15% of windows stay dark, rest vary from dim to bright.
-  const brightness = rngVal < 0.15 ? 0.0 : 0.3 + ((rngVal * 13.7) % 1) * 0.7;
+  // Brightness: ~10% of windows stay dark, rest vary from dim to bright.
+  const brightness = rngVal < 0.1 ? 0.0 : 0.35 + ((rngVal * 13.7) % 1) * 0.65;
   // Tint: mostly warm, some cool, some neutral.
   const tint = ((rngVal * 7.3) % 1) < 0.7 ? rngVal * 0.2 : 0.6 + rngVal * 0.4;
   g.setAttribute("aPhase", new THREE.BufferAttribute(new Float32Array(n).fill(phase), 1));
@@ -336,8 +348,10 @@ function addWindowGrid(
   if (rows < 1) return;
   const colSp = facadeW / cols;
   const rowSp = (facadeH - 1) / rows;
-  const winW = Math.min(1.2, colSp * 0.55);
-  const winH = Math.min(1.5, rowSp * 0.6);
+  // Generous glass-to-wall ratio — Tokyo towers read as mostly glass, and
+  // bigger panes make the night glow legible from driving distance.
+  const winW = Math.min(1.7, colSp * 0.72);
+  const winH = Math.min(2.0, rowSp * 0.72);
   const baseY = box.cy - box.hy + 1 + rowSp / 2;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -465,51 +479,6 @@ function addRooftopClutter(
   }
 }
 
-/** Add a thin emissive neon panel to one facade. */
-function addNeonPanel(
-  box: FacadeBox,
-  w: number,
-  d: number,
-  rng: () => number,
-  G: GeometryGroups,
-): void {
-  const colors: NeonColor[] = ["cyan", "magenta", "warmwhite", "red", "green"];
-  const color = colors[Math.floor(rng() * colors.length)];
-  const face: Face =
-    w >= d ? (rng() < 0.5 ? "pz" : "nz") : rng() < 0.5 ? "px" : "nx";
-  const facadeW = face === "pz" || face === "nz" ? w : d;
-  const panelW = facadeW * (0.4 + rng() * 0.4);
-  const panelH = box.hy * (0.3 + rng() * 0.4);
-  const py = box.cy + (rng() - 0.3) * box.hy * 0.3;
-  const off = (rng() - 0.5) * (facadeW - panelW) * 0.6;
-  let px = 0;
-  let pz = 0;
-  let rotY = 0;
-  if (face === "pz") {
-    px = box.cx + off;
-    pz = box.cz + box.hz + 0.3;
-    rotY = 0;
-  } else if (face === "nz") {
-    px = box.cx + off;
-    pz = box.cz - box.hz - 0.3;
-    rotY = Math.PI;
-  } else if (face === "px") {
-    px = box.cx + box.hx + 0.3;
-    pz = box.cz + off;
-    rotY = Math.PI / 2;
-  } else {
-    px = box.cx - box.hx - 0.3;
-    pz = box.cz + off;
-    rotY = -Math.PI / 2;
-  }
-  // Thin panel (0.08 deep) pushed 0.3 out from the facade to avoid
-  // overlapping the window planes at 0.05.
-  const g = new THREE.BoxGeometry(panelW, panelH, 0.08);
-  g.rotateY(rotY);
-  g.translate(px, py, pz);
-  G.neonGeoms[color].push(g);
-}
-
 /* ------------------------------------------------------------------ *
  *  Setback stacks & floor-line cornices
  * ------------------------------------------------------------------ */
@@ -580,6 +549,11 @@ function addFloorCornices(
  *  Building generation
  * ------------------------------------------------------------------ */
 
+/** Record a ground-level footprint for car collision. */
+function pushAabb(cx: number, cz: number, w: number, d: number): void {
+  cityCollisionBoxes.push([cx - w / 2, cx + w / 2, cz - d / 2, cz + d / 2]);
+}
+
 function generateBuilding(
   type: BuildingType,
   cx: number,
@@ -593,6 +567,7 @@ function generateBuilding(
     const h = 12 + rng() * 45; // 12-57
     const tint = Math.floor(rng() * CONCRETE_TINTS.length);
     const bucket = G.concreteGeoms[tint];
+    pushAabb(cx, cz, w, d);
     if (h > 25) {
       // Setback stack: 2-3 tiers of decreasing footprint.
       const tiers = addSetbackStack(bucket, cx, cz, w, d, h, rng, CONCRETE_TILE);
@@ -602,14 +577,12 @@ function generateBuilding(
       }
       const top = tiers[tiers.length - 1];
       if (rng() < 0.5) addRooftopClutter(top.cx, top.cy + top.hy, top.cz, top.hx * 2, top.hz * 2, rng, G.clutterGeoms);
-      if (rng() < 0.3) addNeonPanel(tiers[0], w, d, rng, G);
     } else {
       addBox(bucket, cx, h / 2, cz, w, h, d, CONCRETE_TILE);
       const box: FacadeBox = { cx, cy: h / 2, cz, hx: w / 2, hy: h / 2, hz: d / 2 };
       addWindowGridOnLongFacades(box, w, d, rng, G.windowGeoms);
       addFloorCornices(bucket, cx, cz, w, d, 0, h, rng);
       if (rng() < 0.5) addRooftopClutter(cx, h, cz, w, d, rng, G.clutterGeoms);
-      if (rng() < 0.3) addNeonPanel(box, w, d, rng, G);
     }
     // L-shape: ~20% of slab buildings get a smaller adjacent wing.
     if (rng() < 0.2) {
@@ -624,6 +597,7 @@ function generateBuilding(
       const lcx = alongX ? cx + side * (w / 2 + lW / 2 - 0.3) : cx + endSide * (w / 2 - lW / 2);
       const lcz = alongX ? cz + endSide * (d / 2 - lD / 2) : cz + side * (d / 2 + lD / 2 - 0.3);
       addBox(lBucket, lcx, lH / 2, lcz, lW, lH, lD, CONCRETE_TILE);
+      pushAabb(lcx, lcz, lW, lD);
       const lbox: FacadeBox = { cx: lcx, cy: lH / 2, cz: lcz, hx: lW / 2, hy: lH / 2, hz: lD / 2 };
       addWindowGridOnLongFacades(lbox, lW, lD, rng, G.windowGeoms);
       addFloorCornices(lBucket, lcx, lcz, lW, lD, 0, lH, rng);
@@ -636,6 +610,7 @@ function generateBuilding(
     const tint = Math.floor(rng() * GLASS_TINTS.length);
     const glassBucket = G.glassGeoms[tint];
     const corniceBucket = G.concreteGeoms[CORNICE_TINT];
+    pushAabb(cx, cz, w, d);
     if (h > 25) {
       // Setback stack for glass towers too (no concrete albedo tile on glass).
       const tiers = addSetbackStack(glassBucket, cx, cz, w, d, h, rng);
@@ -645,14 +620,12 @@ function generateBuilding(
       }
       const top = tiers[tiers.length - 1];
       if (rng() < 0.5) addRooftopClutter(top.cx, top.cy + top.hy, top.cz, top.hx * 2, top.hz * 2, rng, G.clutterGeoms);
-      if (rng() < 0.3) addNeonPanel(tiers[0], w, d, rng, G);
     } else {
       addBox(glassBucket, cx, h / 2, cz, w, h, d);
       const box: FacadeBox = { cx, cy: h / 2, cz, hx: w / 2, hy: h / 2, hz: d / 2 };
       addWindowGridOnLongFacades(box, w, d, rng, G.windowGeoms);
       addFloorCornices(corniceBucket, cx, cz, w, d, 0, h, rng);
       if (rng() < 0.5) addRooftopClutter(cx, h, cz, w, d, rng, G.clutterGeoms);
-      if (rng() < 0.3) addNeonPanel(box, w, d, rng, G);
     }
     return;
   }
@@ -662,6 +635,7 @@ function generateBuilding(
     const baseTint = Math.floor(rng() * CONCRETE_TINTS.length);
     const baseBucket = G.concreteGeoms[baseTint];
     addBox(baseBucket, cx, baseH / 2, cz, w, baseH, d, CONCRETE_TILE);
+    pushAabb(cx, cz, w, d);
     addFloorCornices(baseBucket, cx, cz, w, d, 0, baseH, rng);
     // Tower on top, smaller footprint, offset for variety.
     const tw = w * (0.5 + rng() * 0.3);
@@ -690,14 +664,6 @@ function generateBuilding(
       G.windowGeoms,
     );
     if (rng() < 0.4) addRooftopClutter(tcx, baseH + tH, tcz, tw, td, rng, G.clutterGeoms);
-    if (rng() < 0.15)
-      addNeonPanel(
-        { cx: tcx, cy: baseH + tH / 2, cz: tcz, hx: tw / 2, hy: tH / 2, hz: td / 2 },
-        tw,
-        td,
-        rng,
-        G,
-      );
     return;
   }
 
@@ -706,12 +672,12 @@ function generateBuilding(
   const tint = Math.floor(rng() * CONCRETE_TINTS.length);
   const bucket = G.concreteGeoms[tint];
   addBox(bucket, cx, h / 2, cz, w, h, d, CONCRETE_TILE);
+  pushAabb(cx, cz, w, d);
   const box: FacadeBox = { cx, cy: h / 2, cz, hx: w / 2, hy: h / 2, hz: d / 2 };
   addShopFront(box, w, d, rng, G.windowGeoms);
   // Upper-floor windows on all facades (not just the shop front).
   addWindowGridOnLongFacades(box, w, d, rng, G.windowGeoms);
   addAwning(cx, h, cz, w, d, G.awningGeoms);
-  if (rng() < 0.2) addNeonPanel(box, w, d, rng, G);
 }
 
 /** Generate 1-3 buildings inside one block, set back from the roads. */
@@ -778,7 +744,6 @@ function emptyGroups(): GeometryGroups {
     awningGeoms: [],
     clutterGeoms: [],
     windowGeoms: [],
-    neonGeoms: { cyan: [], magenta: [], warmwhite: [], red: [], green: [] } as Record<NeonColor, THREE.BufferGeometry[]>,
   };
 }
 
@@ -810,13 +775,6 @@ function generateCity(): CityGeometry {
     awning: mergeOrNull(G.awningGeoms),
     clutter: mergeOrNull(G.clutterGeoms),
     windows: mergeOrNull(G.windowGeoms),
-    neon: {
-      cyan: mergeOrNull(G.neonGeoms.cyan),
-      magenta: mergeOrNull(G.neonGeoms.magenta),
-      warmwhite: mergeOrNull(G.neonGeoms.warmwhite),
-      red: mergeOrNull(G.neonGeoms.red),
-      green: mergeOrNull(G.neonGeoms.green),
-    },
   };
 }
 
@@ -830,7 +788,6 @@ interface CityMaterials {
   awningMat: THREE.MeshStandardMaterial;
   clutterMat: THREE.MeshStandardMaterial;
   windowMat: THREE.ShaderMaterial;
-  neonMats: Record<NeonColor, THREE.MeshStandardMaterial>;
 }
 
 function createMaterials(): CityMaterials {
@@ -885,18 +842,7 @@ function createMaterials(): CityMaterials {
     fragmentShader: WINDOW_FRAG,
     toneMapped: true,
   });
-  const neonMats = {} as Record<NeonColor, THREE.MeshStandardMaterial>;
-  (Object.keys(NEON_HEX) as NeonColor[]).forEach((k) => {
-    neonMats[k] = new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#101010"),
-      emissive: new THREE.Color(NEON_HEX[k]),
-      emissiveIntensity: 0,
-      roughness: 0.4,
-      metalness: 0.2,
-      toneMapped: false,
-    });
-  });
-  return { concreteMats, glassMats, awningMat, clutterMat, windowMat, neonMats };
+  return { concreteMats, glassMats, awningMat, clutterMat, windowMat };
 }
 
 /** Procedural concrete normal map — subtle bumps and grain via CanvasTexture. */
@@ -1014,7 +960,10 @@ function makeConcreteAlbedoMap(): THREE.CanvasTexture {
 export function CityDistrict() {
   const dayNightRef = useContext(DayNightContext);
   const mats = useMemo(() => createMaterials(), []);
-  const city = useMemo(() => generateCity(), []);
+  const city = useMemo(() => {
+    cityCollisionBoxes.length = 0; // idempotent under StrictMode double-invoke
+    return generateCity();
+  }, []);
 
   // Drive window glow, glass emissive, and neon intensity from the live
   // day/night state every frame. Materials are stable (useMemo), so closing
@@ -1022,13 +971,8 @@ export function CityDistrict() {
   useFrame(() => {
     const s = dayNightRef?.current;
     if (!s) return;
-    const wg = s.windowGlow;
-    const ni = s.neonIntensity;
-    mats.windowMat.uniforms.uWindowGlow.value = wg;
-    for (const m of mats.glassMats) m.emissiveIntensity = wg * 0.35;
-    for (const k of Object.keys(mats.neonMats) as NeonColor[]) {
-      mats.neonMats[k].emissiveIntensity = 0.15 + ni * 2.4;
-    }
+    mats.windowMat.uniforms.uWindowGlow.value = s.windowGlow;
+    for (const m of mats.glassMats) m.emissiveIntensity = s.windowGlow * 0.5;
   });
 
   if (!dayNightRef) {
@@ -1066,11 +1010,6 @@ export function CityDistrict() {
         <mesh geometry={city.clutter} material={mats.clutterMat} castShadow />
       ) : null}
       {city.windows ? <mesh geometry={city.windows} material={mats.windowMat} /> : null}
-      {(Object.keys(city.neon) as NeonColor[]).map((k) =>
-        city.neon[k] ? (
-          <mesh key={`n${k}`} geometry={city.neon[k]} material={mats.neonMats[k]} />
-        ) : null,
-      )}
     </group>
   );
 }

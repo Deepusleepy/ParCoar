@@ -1,7 +1,7 @@
 import { useMemo, useRef, type ReactNode } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { EffectComposer, Bloom, N8AO, Vignette } from "@react-three/postprocessing";
+import { EffectComposer, Bloom, Vignette } from "@react-three/postprocessing";
 import { useDayNight, DayNightContext, type DayNightRef } from "./DayNight";
 import { SkyDome } from "./SkyDome";
 import { Ground } from "./Ground";
@@ -13,29 +13,30 @@ import { Town } from "./Town";
 import { RaceTrack } from "./RaceTrack";
 import { StreetFurniture } from "./StreetFurniture";
 import { TrainLoop } from "./TrainLoop";
+import { runtime } from "./runtime";
 import {
   PIXEL_BUDGET,
   CAMERA_FAR,
   CAMERA_NEAR,
   CAMERA_FOV,
   SHADOW_MAP_SIZE,
-  CITY_NS_ROADS,
-  CITY_EW_ROADS,
 } from "./constants";
-import type { BloomEffect } from "postprocessing";
 
 /**
  * WorldScene — the R3F Canvas for the open world.
  *
- * Sets up the renderer (ACES tone mapping, soft shadow maps, DPR cap, log
- * depth buffer), the camera (far plane 2000), a PMREM environment map
- * generated from the live sky gradient (so glass/metal surfaces reflect the
- * actual sky), post-processing (Bloom for neon glow, N8AO for contact
- * shadows, Vignette for mood), and the day/night driver that updates the
- * directional sun, ambient, hemisphere, fog, and exposure every frame.
- *
- * The shadow frustum follows the camera so shadows are crisp wherever the
- * spectator flies, instead of being pinned to the origin.
+ * Performance contract (this file is where the frame budget lives):
+ *  - ONE shadow-casting directional light (the sun). The moon is a cheap
+ *    shadowless fill light. Two shadow maps doubled the cost for no read.
+ *  - No SSAO/N8AO: it cost ~40% of the frame for a subtle contact-darkening
+ *    that fog, bloom, and textures already provide.
+ *  - No logarithmic depth buffer: near/far 0.5/2000 has plenty of precision.
+ *  - The PMREM sky environment is generated once per discrete sky state
+ *    (timeOfDay quantized to 1/48) and cached, instead of re-rendering the
+ *    env scene twice a second.
+ *  - Streetlight light pools are fake (emissive ground decals owned by
+ *    StreetFurniture), not real point lights — 9 shadowless point lights
+ *    still cost per-pixel across every material in the scene.
  */
 
 /** DPR cap from the pixel budget. */
@@ -48,15 +49,20 @@ function dprForViewport(): number {
 }
 
 /** Shadow frustum half-extent — tight for crisp shadows, follows camera. */
-const SHADOW_FRUSTUM = 80;
+const SHADOW_FRUSTUM = 90;
+
+/** Time-of-day quantization for the env-map cache (48 steps per day). */
+const ENV_TIME_STEPS = 48;
 
 /**
  * DayNightDriver — applies the live day/night state to the scene's lights,
  * fog, background, and renderer exposure every frame. Also:
- *  - Moves the sun target to follow the camera so the shadow frustum
- *    covers the area around the spectator, not just the origin.
- *  - Generates a PMREM environment map from the sky colors so glass and
- *    metal surfaces reflect the actual sky (fixes the "black glass" bug).
+ *  - Moves the sun to follow the camera so the shadow frustum covers the
+ *    area around the player, not just the origin.
+ *  - Maintains a cached PMREM environment per quantized sky state so glass
+ *    and metal reflect the actual sky without per-second render hitches.
+ *  - Publishes timeOfDay to the shared runtime state for the DOM HUD.
+ *  - KeyT jumps time forward 6 in-game hours (dawn/noon/dusk/midnight).
  */
 function DayNightDriver({ stateRef }: { stateRef: DayNightRef }) {
   const sunRef = useRef<THREE.DirectionalLight>(null);
@@ -64,15 +70,12 @@ function DayNightDriver({ stateRef }: { stateRef: DayNightRef }) {
   const ambientRef = useRef<THREE.AmbientLight>(null);
   const hemiRef = useRef<THREE.HemisphereLight>(null);
   const sunTarget = useMemo(() => new THREE.Object3D(), []);
-  const moonTarget = useMemo(() => new THREE.Object3D(), []);
   const { scene, gl, camera } = useThree();
 
-  // PMREM generator for environment maps from the sky gradient.
+  // PMREM generator + tiny gradient sky scene for env map rendering.
   const pmrem = useMemo(() => new THREE.PMREMGenerator(gl), [gl]);
-  // Reusable scene for env map rendering.
   const envScene = useMemo(() => {
     const s = new THREE.Scene();
-    // A large sphere with a gradient shader for the env map.
     const geo = new THREE.SphereGeometry(100, 16, 8);
     const mat = new THREE.ShaderMaterial({
       uniforms: {
@@ -102,74 +105,61 @@ function DayNightDriver({ stateRef }: { stateRef: DayNightRef }) {
     return { scene: s, mat };
   }, []);
 
-  // Register the sun + moon target objects.
+  // Env-map cache keyed by quantized time-of-day. Each entry is a small
+  // PMREM cube; 48 of these is a few MB at most.
+  const envCache = useRef(new Map<number, THREE.Texture>());
+  const lastEnvKey = useRef(-1);
+
   useMemo(() => {
     scene.add(sunTarget);
-    scene.add(moonTarget);
     return undefined;
-  }, [scene, sunTarget, moonTarget]);
+  }, [scene, sunTarget]);
 
-  // Throttle env map updates (every ~0.5s, not every frame).
-  const envUpdateTimer = useRef(0);
-  const envMapRef = useRef<THREE.Texture | null>(null);
+  // KeyT: skip 6 in-game hours. Bound on window (not the keyboard hook) so
+  // it works regardless of canvas focus.
+  useMemo(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code === "KeyT" && !e.repeat) {
+        stateRef.current.timeOfDay =
+          (stateRef.current.timeOfDay + 0.25) % 1;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [stateRef]);
 
-  useFrame((_, delta) => {
+  useFrame(() => {
     const s = stateRef.current;
+    runtime.timeOfDay = s.timeOfDay;
 
-    // Sun (directional light) — position relative to camera for shadow coverage.
+    // Sun — position relative to the camera so shadows follow the player.
     if (sunRef.current) {
-      // Place the sun relative to the camera so shadows follow the spectator.
       const camPos = camera.position;
-      sunRef.current.position.copy(s.sunPosition).multiplyScalar(200).add(camPos);
+      sunRef.current.position.copy(s.sunPosition).add(camPos);
       sunTarget.position.copy(camPos);
       sunRef.current.target = sunTarget;
       sunRef.current.color.copy(s.sunColor);
       sunRef.current.intensity = s.sunIntensity;
-      // Update shadow camera to follow.
-      if (sunRef.current.shadow.camera) {
-        const sc = sunRef.current.shadow.camera as THREE.OrthographicCamera;
-        sc.left = -SHADOW_FRUSTUM;
-        sc.right = SHADOW_FRUSTUM;
-        sc.top = SHADOW_FRUSTUM;
-        sc.bottom = -SHADOW_FRUSTUM;
-        sc.updateProjectionMatrix();
-      }
     }
 
-    // Moon (second directional light) — opposite the sun, cool blue-white.
-    // Provides subtle directional illumination at night so buildings aren't
-    // flat black. Intensity is derived from the sun: 0 in daylight, ~0.3 at
-    // full night. Follows the camera target like the sun for even coverage.
+    // Moon — cheap shadowless fill light, opposite the sun. Gives night
+    // geometry a cool directional modeling so it isn't flat black.
     if (moonRef.current) {
       const camPos = camera.position;
-      // Moon sits opposite the sun direction.
-      const moonDir = s.sunPosition.clone().multiplyScalar(-1).normalize();
-      moonRef.current.position.copy(moonDir).multiplyScalar(200).add(camPos);
-      moonTarget.position.copy(camPos);
-      moonRef.current.target = moonTarget;
-      // dayFactor = sunIntensity / 3.0 (see DayNight.updateState).
+      moonRef.current.position
+        .copy(s.sunPosition)
+        .multiplyScalar(-1)
+        .add(camPos);
+      moonRef.current.target = sunTarget;
       const nightFactor = 1 - THREE.MathUtils.clamp(s.sunIntensity / 3.0, 0, 1);
-      moonRef.current.intensity = nightFactor * 0.3;
-      // Only run the moon's shadow pass at night — saves a shadow render
-      // pass during the day when the moon intensity is zero anyway.
-      moonRef.current.castShadow = nightFactor > 0.01;
-      if (moonRef.current.shadow.camera) {
-        const mc = moonRef.current.shadow.camera as THREE.OrthographicCamera;
-        mc.left = -SHADOW_FRUSTUM;
-        mc.right = SHADOW_FRUSTUM;
-        mc.top = SHADOW_FRUSTUM;
-        mc.bottom = -SHADOW_FRUSTUM;
-        mc.updateProjectionMatrix();
-      }
+      moonRef.current.intensity = nightFactor * 0.25;
     }
 
-    // Ambient.
+    // Ambient + hemisphere.
     if (ambientRef.current) {
       ambientRef.current.color.copy(s.ambientColor);
       ambientRef.current.intensity = s.ambientIntensity;
     }
-
-    // Hemisphere — tie ground color to actual ground palette.
     if (hemiRef.current) {
       hemiRef.current.color.copy(s.hemiSky);
       hemiRef.current.groundColor.copy(s.hemiGround);
@@ -182,23 +172,26 @@ function DayNightDriver({ stateRef }: { stateRef: DayNightRef }) {
       scene.fog.near = s.fogNear;
       scene.fog.far = s.fogFar;
     }
-
-    // Background = null (the SkyDome handles the sky).
-    scene.background = null;
-
-    // Exposure.
+    scene.background = null; // SkyDome owns the sky
     gl.toneMappingExposure = s.exposure;
 
-    // Update environment map from sky colors (throttled).
-    envUpdateTimer.current += delta;
-    if (envUpdateTimer.current > 0.5) {
-      envUpdateTimer.current = 0;
-      (envScene.mat.uniforms.topColor.value as THREE.Color).copy(s.skyTop);
-      (envScene.mat.uniforms.horizonColor.value as THREE.Color).copy(s.skyHorizon);
-      const newEnv = pmrem.fromScene(envScene.scene, 0.04);
-      if (envMapRef.current) envMapRef.current.dispose();
-      envMapRef.current = newEnv.texture;
-      scene.environment = newEnv.texture;
+    // Environment map: generate once per quantized sky state, reuse after.
+    const envKey = Math.round(s.timeOfDay * ENV_TIME_STEPS) % ENV_TIME_STEPS;
+    if (envKey !== lastEnvKey.current) {
+      const cached = envCache.current.get(envKey);
+      if (cached) {
+        scene.environment = cached;
+        lastEnvKey.current = envKey;
+      } else if (envCache.current.size < ENV_TIME_STEPS + 8) {
+        (envScene.mat.uniforms.topColor.value as THREE.Color).copy(s.skyTop);
+        (envScene.mat.uniforms.horizonColor.value as THREE.Color).copy(
+          s.skyHorizon,
+        );
+        const rt = pmrem.fromScene(envScene.scene, 0.04);
+        envCache.current.set(envKey, rt.texture);
+        scene.environment = rt.texture;
+        lastEnvKey.current = envKey;
+      }
     }
   });
 
@@ -210,77 +203,17 @@ function DayNightDriver({ stateRef }: { stateRef: DayNightRef }) {
         shadow-mapSize-width={SHADOW_MAP_SIZE}
         shadow-mapSize-height={SHADOW_MAP_SIZE}
         shadow-camera-near={1}
-        shadow-camera-far={500}
+        shadow-camera-far={400}
         shadow-camera-left={-SHADOW_FRUSTUM}
         shadow-camera-right={SHADOW_FRUSTUM}
         shadow-camera-top={SHADOW_FRUSTUM}
         shadow-camera-bottom={-SHADOW_FRUSTUM}
         shadow-bias={-0.0002}
         shadow-normalBias={0.04}
-        shadow-radius={4}
       />
-      <directionalLight
-        ref={moonRef}
-        color="#a0b8d8"
-        castShadow
-        shadow-mapSize-width={SHADOW_MAP_SIZE}
-        shadow-mapSize-height={SHADOW_MAP_SIZE}
-        shadow-camera-near={1}
-        shadow-camera-far={500}
-        shadow-camera-left={-SHADOW_FRUSTUM}
-        shadow-camera-right={SHADOW_FRUSTUM}
-        shadow-camera-top={SHADOW_FRUSTUM}
-        shadow-camera-bottom={-SHADOW_FRUSTUM}
-        shadow-bias={-0.0002}
-        shadow-normalBias={0.04}
-        shadow-radius={4}
-      />
+      <directionalLight ref={moonRef} color="#a0b8d8" />
       <ambientLight ref={ambientRef} />
       <hemisphereLight ref={hemiRef} />
-    </>
-  );
-}
-
-/**
- * StreetlightPools — warm point lights placed at every city road
- * intersection (CITY_NS_ROADS × CITY_EW_ROADS). They only emit at night
- * (driven by streetlightIntensity) and give the ground visible light pools
- * so the player can see where they're driving. One light per intersection
- * keeps the grid evenly lit.
- */
-const STREETLIGHT_POOLS: ReadonlyArray<[number, number, number]> = (() => {
-  const pools: Array<[number, number, number]> = [];
-  for (const x of CITY_NS_ROADS) {
-    for (const z of CITY_EW_ROADS) {
-      pools.push([x, 8, z]);
-    }
-  }
-  return pools;
-})();
-
-function StreetlightPools({ stateRef }: { stateRef: DayNightRef }) {
-  const refs = useRef<THREE.PointLight[]>([]);
-  useFrame(() => {
-    const intensity = stateRef.current.streetlightIntensity;
-    for (const l of refs.current) {
-      if (l) l.intensity = intensity * 12;
-    }
-  });
-  return (
-    <>
-      {STREETLIGHT_POOLS.map((pos, i) => (
-        <pointLight
-          key={i}
-          ref={(l) => {
-            if (l) refs.current[i] = l;
-          }}
-          position={pos}
-          color="#ffb066"
-          distance={20}
-          decay={2}
-          intensity={0}
-        />
-      ))}
     </>
   );
 }
@@ -295,7 +228,6 @@ function SceneContents({ children }: { children: ReactNode }) {
   return (
     <DayNightContext.Provider value={stateRef}>
       <DayNightDriver stateRef={stateRef} />
-      <StreetlightPools stateRef={stateRef} />
       <SkyDome />
       <Ground />
       <MtFuji />
@@ -307,16 +239,16 @@ function SceneContents({ children }: { children: ReactNode }) {
       <StreetFurniture />
       <TrainLoop />
       {children}
-      {/* Post-processing: Bloom for neon glow, N8AO for contact shadows, Vignette for mood */}
+      {/* Post: Bloom carries the whole night identity (windows, neon,
+          streetlight pools); Vignette adds focus. No AO — too expensive. */}
       <EffectComposer>
-        <N8AO aoRadius={8} intensity={1.5} distanceFalloff={0.5} />
         <Bloom
-          intensity={0.8}
-          luminanceThreshold={0.6}
-          luminanceSmoothing={0.3}
+          intensity={0.9}
+          luminanceThreshold={0.55}
+          luminanceSmoothing={0.35}
           mipmapBlur
         />
-        <Vignette eskil={false} offset={0.2} darkness={0.6} />
+        <Vignette eskil={false} offset={0.25} darkness={0.55} />
       </EffectComposer>
     </DayNightContext.Provider>
   );
@@ -329,19 +261,19 @@ export interface WorldSceneProps {
 export function WorldScene({ children }: WorldSceneProps) {
   return (
     <Canvas
-      shadows="soft"
+      shadows
       dpr={dprForViewport()}
       gl={{
-        antialias: true,
+        antialias: false, // postprocessing owns the render target anyway
         toneMapping: THREE.ACESFilmicToneMapping,
         toneMappingExposure: 1.0,
-        logarithmicDepthBuffer: true,
+        powerPreference: "high-performance",
       }}
       camera={{
         fov: CAMERA_FOV,
         near: CAMERA_NEAR,
         far: CAMERA_FAR,
-        position: [0, 50, 150],
+        position: [0, 6, 130],
       }}
     >
       <SceneContents>{children}</SceneContents>

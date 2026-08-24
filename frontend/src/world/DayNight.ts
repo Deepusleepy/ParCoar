@@ -105,22 +105,30 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
+// Keyframe colors pre-parsed once — updateState runs every frame and must
+// not allocate.
+const SKY_KEYS_PARSED = SKY_KEYFRAMES.map((k) => ({
+  t: k.t,
+  top: new THREE.Color(k.top),
+  horizon: new THREE.Color(k.horizon),
+}));
+
 /** Interpolate the sky keyframe array to get top/horizon colors at time t. */
 function sampleSky(t: number, top: THREE.Color, horizon: THREE.Color): void {
-  const n = SKY_KEYFRAMES.length;
+  const n = SKY_KEYS_PARSED.length;
   for (let i = 0; i < n - 1; i++) {
-    const a = SKY_KEYFRAMES[i];
-    const b = SKY_KEYFRAMES[i + 1];
+    const a = SKY_KEYS_PARSED[i];
+    const b = SKY_KEYS_PARSED[i + 1];
     if (t >= a.t && t <= b.t) {
       const f = (t - a.t) / (b.t - a.t);
-      top.set(a.top).lerp(new THREE.Color(b.top), f);
-      horizon.set(a.horizon).lerp(new THREE.Color(b.horizon), f);
+      top.copy(a.top).lerp(b.top, f);
+      horizon.copy(a.horizon).lerp(b.horizon, f);
       return;
     }
   }
   // Fallback: first keyframe
-  top.set(SKY_KEYFRAMES[0].top);
-  horizon.set(SKY_KEYFRAMES[0].horizon);
+  top.copy(SKY_KEYS_PARSED[0].top);
+  horizon.copy(SKY_KEYS_PARSED[0].horizon);
 }
 
 /**
@@ -151,6 +159,13 @@ function clockString(t: number): string {
  *  State creation and per-frame update
  * ------------------------------------------------------------------ */
 
+// Shared constant colors for updateState — hoisted so the per-frame path
+// never allocates.
+const SUN_WARM = new THREE.Color("#ff9a4a");
+const SUN_WHITE = new THREE.Color("#fff5e0");
+const AMBIENT_NIGHT = new THREE.Color("#0a1026");
+const AMBIENT_DAY = new THREE.Color("#b0c4e0");
+
 function createInitialState(): DayNightState {
   const s = {
     timeOfDay: DAY_NIGHT_START,
@@ -180,9 +195,7 @@ function updateState(s: DayNightState): void {
   // Sun color: warm orange at sunrise/sunset, white at noon, off at night.
   const dayFactor = THREE.MathUtils.clamp(elev * 2, 0, 1); // 0 below horizon, 1 at noon+
   const horizonGlow = smoothstep(0.15, -0.05, elev); // warm near horizon
-  const sunWarm = new THREE.Color("#ff9a4a");
-  const sunWhite = new THREE.Color("#fff5e0");
-  s.sunColor.copy(sunWhite).lerp(sunWarm, horizonGlow);
+  s.sunColor.copy(SUN_WHITE).lerp(SUN_WARM, horizonGlow);
 
   // Sun intensity: peaks at noon, zero when below horizon.
   s.sunIntensity = dayFactor * 3.0;
@@ -192,9 +205,7 @@ function updateState(s: DayNightState): void {
 
   // Ambient: cool blue at night, warm soft white at day. Never fully dark
   // so geometry stays visible at night (min ~0.08 dark-blue ambient).
-  const nightColor = new THREE.Color("#0a1026");
-  const dayColor = new THREE.Color("#b0c4e0");
-  s.ambientColor.copy(nightColor).lerp(dayColor, dayFactor);
+  s.ambientColor.copy(AMBIENT_NIGHT).lerp(AMBIENT_DAY, dayFactor);
   s.ambientIntensity = lerp(0.08, 0.5, dayFactor);
 
   // Hemisphere: sky color from skyTop, ground dark. Min intensity at night

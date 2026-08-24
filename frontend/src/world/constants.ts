@@ -74,6 +74,17 @@ export const BRIDGE_TRUSS_X = -48;
 /** Bridge width (perpendicular to the river). */
 export const BRIDGE_WIDTH = 16;
 
+/**
+ * Bridge deck height contract. The car's ground-height sampler
+ * (groundHeight.ts) and River.tsx bridge builders must agree on these
+ * numbers: the deck is flat at BRIDGE_DECK_Y across the water, and ramps
+ * linearly from 0 at |z| = BRIDGE_RAMP_START down... up to deck height at
+ * |z| = BRIDGE_RAMP_END. Outside the ramp band (inland) ground is 0.
+ */
+export const BRIDGE_DECK_Y = 2;
+export const BRIDGE_RAMP_START = RIVER_HALF_WIDTH + 8; // 28 — ramp meets ground
+export const BRIDGE_RAMP_END = RIVER_HALF_WIDTH - 4; // 16 — deck fully raised
+
 /* ------------------------------------------------------------------ *
  *  Mt. Fuji billboard
  * ------------------------------------------------------------------ */
@@ -176,8 +187,10 @@ export const CITY_CAR_PHYSICS = {
  *  Rendering
  * ------------------------------------------------------------------ */
 
-/** Pixel budget for the DPR cap. Matches the garage scene. */
-export const PIXEL_BUDGET = 4_500_000;
+/** Pixel budget for the DPR cap. Lower than the garage: the open world is
+ *  fill-rate heavy (bloom, big merged meshes), and a slightly softer image
+ *  is a much better trade than a frame-rate collapse. */
+export const PIXEL_BUDGET = 2_600_000;
 /** Camera far plane — must reach Mt. Fuji at Z=-400 from the city. */
 export const CAMERA_FAR = 2000;
 /** Camera near plane. */

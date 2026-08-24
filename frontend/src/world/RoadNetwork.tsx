@@ -39,7 +39,6 @@ import {
 const Y_ROAD = 0.02;
 const Y_MARKING = 0.04;
 const Y_SIDEWALK = 0.15;
-const Y_BRIDGE_DECK = 2.0;
 
 /** City road width (NS + EW). */
 const CITY_ROAD_WIDTH = 10;

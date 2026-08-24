@@ -30,7 +30,6 @@ import {
 const C_CREAM = new THREE.Color(TOWN_PALETTE.wallCream);
 const C_SAGE = new THREE.Color(TOWN_PALETTE.wallSage);
 const C_TERRA = new THREE.Color(TOWN_PALETTE.wallTerracotta);
-const C_ROOF = new THREE.Color(TOWN_PALETTE.tileRoof);
 const C_VERMILION = new THREE.Color("#c04020");
 const C_STONE = new THREE.Color("#9a958c");
 const C_STONE_DARK = new THREE.Color("#6a6560");
@@ -291,6 +290,7 @@ function groundQuad(
 ): THREE.BufferGeometry {
   const g = new THREE.PlaneGeometry(w, d);
   g.rotateX(-Math.PI / 2);
+  g.translate(cx, 0, cz);
   return toPNC(g, color);
 }
 

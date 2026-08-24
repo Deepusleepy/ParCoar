@@ -1,5 +1,4 @@
 import { memo, useMemo } from "react";
-import * as THREE from "three";
 import type { LotData } from "../types";
 import {
   AISLE_SPACING,
