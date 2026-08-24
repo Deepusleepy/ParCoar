@@ -48,6 +48,7 @@ export function App() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [overlays, setOverlays] = useState<Overlays>(DEFAULT_OVERLAYS);
   const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0, routeDistance: -1 });
+  const autoParkAvailableRef = useRef(false);
 
   const patchOverlays = (patch: Partial<Overlays>) =>
     setOverlays((current) => ({ ...current, ...patch }));
@@ -170,6 +171,7 @@ export function App() {
             playerRunId: sim.playerRunId,
             reportPlayerNode: sim.reportPlayerNode,
             playerLeaveBay: sim.playerLeaveBay,
+            autoParkAvailableRef,
           }
         : null,
     [
@@ -273,8 +275,11 @@ export function App() {
                   <span className="text-white">A/D</span> Steer
                   <span className="mx-1.5 text-neutral-600">|</span>
                   <span className="text-white">V</span> Exit POV
+                  <span className="mx-1.5 text-neutral-600">|</span>
+                  <span className="text-white">P</span> Auto-park
                 </div>
                 <SpeedHud speedRef={playerSpeedRef} />
+                <AutoParkPrompt availableRef={autoParkAvailableRef} />
               </div>
             ) : (
               <div
@@ -376,6 +381,7 @@ const SimContents = memo(function SimContents() {
     playerRunId,
     reportPlayerNode,
     playerLeaveBay,
+    autoParkAvailableRef,
   } = ctx;
   return (
     <Suspense fallback={<SceneLoadingFallback />}>
@@ -401,6 +407,9 @@ const SimContents = memo(function SimContents() {
           runId={playerRunId}
           onReportNode={reportPlayerNode}
           onLeaveBay={playerLeaveBay}
+          onAutoParkAvailable={(available) => {
+            autoParkAvailableRef.current = available;
+          }}
         />
       )}
     </Suspense>
@@ -479,6 +488,20 @@ function SpeedHud({ speedRef }: { speedRef: React.RefObject<PlayerSpeedRef> }) {
     <div className="rounded border border-neutral-700 bg-black/70 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-neutral-200">
       {speed >= 0 ? "" : "R "}
       {Math.abs(speed).toFixed(1)} u/s
+    </div>
+  );
+}
+
+function AutoParkPrompt({ availableRef }: { availableRef: React.MutableRefObject<boolean> }) {
+  const [available, setAvailable] = useState(false);
+  useEffect(() => {
+    const interval = setInterval(() => setAvailable(availableRef.current), 200);
+    return () => clearInterval(interval);
+  }, [availableRef]);
+  if (!available) return null;
+  return (
+    <div className="pointer-events-none rounded-md border border-emerald-500/60 bg-black/80 px-3 py-1.5 text-[12px] font-semibold tracking-wide text-emerald-400 animate-pulse">
+      Press <span className="text-white">P</span> to auto-park
     </div>
   );
 }

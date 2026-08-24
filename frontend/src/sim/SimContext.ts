@@ -32,6 +32,10 @@ export interface SimRenderValue {
   playerRunId: number;
   reportPlayerNode: (nodeId: string) => void;
   playerLeaveBay: () => void;
+  /** Ref that DrivableCar sets to true when auto-park is available.
+   *  The HUD polls this to show a "Press P to park" prompt without
+   *  triggering per-frame re-renders. */
+  autoParkAvailableRef: React.MutableRefObject<boolean>;
 }
 
 export const SimRenderContext = createContext<SimRenderValue | null>(null);

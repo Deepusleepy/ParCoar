@@ -13,6 +13,7 @@ const PREVENT_DEFAULT_KEYS = new Set([
   "KeyA",
   "KeyS",
   "KeyD",
+  "KeyP",
   "Space",
   "ArrowUp",
   "ArrowDown",
