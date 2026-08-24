@@ -72,8 +72,8 @@ interface DrivableCarProps {
 /* ------------------------------------------------------------------ *
  *  Driving physics tuning
  * ------------------------------------------------------------------ */
-const ACCEL_RATE = 14; // units/sec^2 when pressing W
-const BRAKE_RATE = 28; // units/sec^2 when pressing S
+const ACCEL_RATE = 10; // units/sec^2 when pressing W (was 14 — too instant)
+const BRAKE_RATE = 22; // units/sec^2 when pressing S (was 28 — too abrupt)
 const MAX_SPEED = 9; // forward speed cap (parking-appropriate)
 const MAX_REVERSE = MAX_SPEED / 2; // reverse speed cap
 const TURN_RATE = 3.0; // rad/sec at full steering
@@ -86,7 +86,7 @@ const STEER_FADE_START = 3;
  *  car through hairpins a real car would sweep; trimming toward high speed
  *  keeps low speeds nimble and high speeds stable. */
 const STEER_HIGH_SPEED_FADE = 0.25;
-const FRICTION = 0.99; // velocity decay per frame when coasting (at 60fps)
+const FRICTION = 0.997; // velocity decay per frame when coasting (was 0.97 — felt like driving through sand)
 const DRAG = 0.006; // quadratic drag — creates natural acceleration curve
 /** Reverse throttle once S has braked all the way to zero. Deliberately much
  *  softer than BRAKE_RATE: the brake pedal and the reverse pedal are not the
@@ -1226,10 +1226,7 @@ function CarInterior({
       <DoorPanel side={-1} />
       <DoorPanel side={1} />
 
-      {/* Glazing and ultra-thin pillars. The headliner is omitted entirely
-          in POV mode — the CarInterior only renders when pov=true, so there
-          is no roof mesh to block the upper view. The windshield glass and
-          side windows remain for realism. Pillars are 0.02 thick. */}
+      {/* Glazing and ultra-thin pillars. */}
       {[-0.87, 0.87].map((z) => (
         <mesh key={z} position={[1.32, 1.28, z]} rotation={[0, 0, 0.94]} geometry={INTERIOR_GEO.box} scale={[0.02, 0.7, 0.02]}>
           <primitive object={MAT.liner} attach="material" />
@@ -1253,6 +1250,22 @@ function CarInterior({
       ))}
       <mesh position={[-1.05, 1.12, 0]} rotation={[0, Math.PI / 2, 0]} geometry={INTERIOR_GEO.plane} scale={[1.65, 0.34, 1]}>
         <primitive object={MAT.glass} attach="material" />
+      </mesh>
+
+      {/* Headliner: a thin dark roof strip above and behind the driver so
+          the cabin feels enclosed without cropping the forward view.
+          Positioned above the eye line (1.22) at 1.65 and shifted back
+          so it only appears in the upper periphery, not dead-center. */}
+      <mesh position={[-0.3, 1.65, 0]} geometry={INTERIOR_GEO.box} scale={[1.8, 0.03, 1.7]}>
+        <primitive object={MAT.liner} attach="material" />
+      </mesh>
+
+      {/* Hood: a dark surface extending forward from the dashboard top,
+          visible at the bottom of the POV view. Gives a sense of the
+          car's physical extent. Positioned forward of the windshield
+          and slightly lower so it's visible below the dash crest. */}
+      <mesh position={[2.0, 0.78, 0]} rotation={[0, 0, -0.06]} geometry={INTERIOR_GEO.box} scale={[1.2, 0.04, 1.7]}>
+        <primitive object={MAT.dash} attach="material" />
       </mesh>
     </group>
   );
@@ -1295,6 +1308,11 @@ export const DrivableCar = memo(function DrivableCar({
   // a turn bleeds some forward momentum into lateral velocity. Initialised to
   // the spawn heading so the first frame is an identity transform.
   const prevHeadingRef = useRef(0);
+  // Body roll angle (rotation.x) — the car leans into turns like a real
+  // car on suspension. Smoothed toward a target derived from lateral
+  // acceleration (steerAngle × velocity). Without this the car feels like
+  // a hovercraft — no weight transfer cues at all.
+  const bodyRollRef = useRef(0);
   const steerInputRef = useRef(0); // live steering input for the wheel visual
   const steerAngleRef = useRef(0); // smoothed steering angle (radians)
   const floorRef = useRef(0); // current floor (for flat-ground height)
@@ -1580,6 +1598,10 @@ export const DrivableCar = memo(function DrivableCar({
           if (sr) sr.rotation.y = 0;
         }
       }
+      // Reset body roll and pitch so the car sits flat in the bay.
+      g.rotation.x = 0;
+      g.rotation.z = 0;
+      bodyRollRef.current = 0;
       return;
     }
 
@@ -1703,6 +1725,11 @@ export const DrivableCar = memo(function DrivableCar({
           if (sr) sr.rotation.y = visualSteer;
         }
       }
+      // Level out body roll and pitch during auto-park so the car
+      // animates into the slot flat, not carrying a stale tilt.
+      g.rotation.x *= 0.9;
+      g.rotation.z *= 0.9;
+      bodyRollRef.current *= 0.9;
       return;
     }
 
@@ -1831,6 +1858,18 @@ export const DrivableCar = memo(function DrivableCar({
     g.position.x += totalVx * dt;
     g.position.z += totalVz * dt;
     g.rotation.y = heading;
+
+    // --- Body roll: lean into turns like a real car on suspension ---
+    // Lateral acceleration ≈ steerAngle × forward speed. The car leans
+    // outward (away from the turn center), which is rotation.x in the
+    // car's local space (nose dips to the outside). Smoothed so it
+    // doesn't snap — suspension takes time to settle.
+    const lateralAccel = steerAngleRef.current * velocityRef.current;
+    const targetRoll = THREE.MathUtils.clamp(-lateralAccel * 0.012, -0.04, 0.04);
+    const rollLerp = 1 - Math.pow(0.01, dt);
+    bodyRollRef.current += (targetRoll - bodyRollRef.current) * rollLerp;
+    g.rotation.x = bodyRollRef.current;
+
     // Remember this frame's heading as the basis velocityRef/lateralVelRef are
     // now stored in, for next frame's composition.
     prevHeadingRef.current = heading;
@@ -1951,6 +1990,12 @@ export const DrivableCar = memo(function DrivableCar({
     // it tilts to match the slope. We lerp for smooth transitions at the
     // ramp entry/exit so the car doesn't snap. Pitch and height now share
     // the same settling rate so the nose doesn't lead or lag the body.
+    // Add longitudinal weight transfer: nose dives under braking (negative
+    // rotation.z = nose down for +X-facing car), rear squats under
+    // acceleration (positive rotation.z = nose up). Small angles (1-2°)
+    // but they give the car a sense of weight and momentum.
+    const accelPitch = accel ? 0.018 : brake ? -0.028 : 0;
+    targetPitch += accelPitch;
     const pitchLerp = 1 - Math.pow(0.0001, dt);
     g.rotation.z += (targetPitch - g.rotation.z) * pitchLerp;
 

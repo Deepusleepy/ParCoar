@@ -36,6 +36,9 @@ export interface SimRenderValue {
    *  The HUD polls this to show a "Press P to park" prompt without
    *  triggering per-frame re-renders. */
   autoParkAvailableRef: React.MutableRefObject<boolean>;
+  /** Stable callback for DrivableCar to update autoParkAvailableRef.
+   *  Wrapped in useCallback so memo(DrivableCar) doesn't re-render. */
+  onAutoParkAvailable: (available: boolean) => void;
 }
 
 export const SimRenderContext = createContext<SimRenderValue | null>(null);

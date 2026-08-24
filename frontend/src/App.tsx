@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, memo, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { useSimulation } from "./hooks/useSimulation";
 import { Scene, SceneLoadingFallback, type OrbitControlsHandle } from "./sim/Scene";
@@ -50,6 +50,11 @@ export function App() {
   const [overlays, setOverlays] = useState<Overlays>(DEFAULT_OVERLAYS);
   const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0, routeDistance: -1 });
   const autoParkAvailableRef = useRef(false);
+  // Stable callback so memo(DrivableCar) doesn't re-render on every SimContents
+  // render. The callback only mutates a ref — no state, no deps.
+  const onAutoParkAvailable = useCallback((available: boolean) => {
+    autoParkAvailableRef.current = available;
+  }, []);
 
   const patchOverlays = (patch: Partial<Overlays>) =>
     setOverlays((current) => ({ ...current, ...patch }));
@@ -187,6 +192,7 @@ export function App() {
             reportPlayerNode: sim.reportPlayerNode,
             playerLeaveBay: sim.playerLeaveBay,
             autoParkAvailableRef,
+            onAutoParkAvailable,
           }
         : null,
     [
@@ -204,6 +210,7 @@ export function App() {
       sim.playerRunId,
       sim.reportPlayerNode,
       sim.playerLeaveBay,
+      onAutoParkAvailable,
     ],
   );
 
@@ -396,7 +403,7 @@ const SimContents = memo(function SimContents() {
     playerRunId,
     reportPlayerNode,
     playerLeaveBay,
-    autoParkAvailableRef,
+    onAutoParkAvailable,
   } = ctx;
   return (
     <Suspense fallback={<SceneLoadingFallback />}>
@@ -428,9 +435,7 @@ const SimContents = memo(function SimContents() {
           runId={playerRunId}
           onReportNode={reportPlayerNode}
           onLeaveBay={playerLeaveBay}
-          onAutoParkAvailable={(available) => {
-            autoParkAvailableRef.current = available;
-          }}
+          onAutoParkAvailable={onAutoParkAvailable}
         />
       )}
     </Suspense>
