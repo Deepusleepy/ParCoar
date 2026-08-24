@@ -117,8 +117,10 @@ const QUEUE_TOP_Y = RULE_Y - 0.5;
 const QUEUE_PITCH = 0.8;
 const QUEUE_ROWS = 2;
 /** How far the hero chevron is stretched along its own shaft, so the line
- *  reads as "47 m ----> RIGHT" rather than a small tick between two words. */
-const HERO_ARROW_LENGTH = 1.5;
+ *  reads as "47 m ----> RIGHT" rather than a small tick between two words.
+ *  Capped at 0.9 so the arrow (1.5 * 0.9 = 1.35 tall) fits inside the 1.7
+ *  hero block even when rotated 45° for UP/DOWN directions. */
+const HERO_ARROW_LENGTH = 0.9;
 
 /* --- Shared geometry: one of each, reused across all eleven boards. --- */
 const ARROW_SHAPE = (() => {
@@ -278,7 +280,7 @@ function HeroCar({ car }: { car: BoardCar }) {
       </Text>
       <mesh
         position={[0.45, HERO_LINE2_Y, 0.02]}
-        scale={[0.55, HERO_ARROW_LENGTH, 0.55]}
+        scale={[0.45, HERO_ARROW_LENGTH, 0.45]}
         rotation={[0, 0, directionToRotation(car.direction)]}
         geometry={ARROW_GEOMETRY}
         material={ARROW_BRIGHT_MATERIAL}
@@ -364,8 +366,8 @@ function PermanentSignboardImpl({
     <group position={position} rotation={[0, rotY, 0]}>
       {isTopFloor ? (
         <>
-          <mesh position={[-POST_X, POST_CENTER_Y, 0]} geometry={POST_GEO} material={FRAME_MATERIAL} castShadow />
-          <mesh position={[POST_X, POST_CENTER_Y, 0]} geometry={POST_GEO} material={FRAME_MATERIAL} castShadow />
+          <mesh position={[-POST_X, POST_CENTER_Y, 0]} geometry={POST_GEO} material={FRAME_MATERIAL} />
+          <mesh position={[POST_X, POST_CENTER_Y, 0]} geometry={POST_GEO} material={FRAME_MATERIAL} />
         </>
       ) : (
         <>
@@ -376,7 +378,7 @@ function PermanentSignboardImpl({
 
       {/* Board face, tilted down toward the road. */}
       <group position={[0, BOARD_CENTER_Y, 0]} rotation={[0.3, 0, 0]}>
-        <mesh castShadow geometry={BOARD_BODY_GEO} material={FRAME_MATERIAL} />
+        <mesh geometry={BOARD_BODY_GEO} material={FRAME_MATERIAL} />
         <mesh geometry={BOARD_RIM_GEO} material={EDGE_MATERIAL} />
         <mesh position={[0, 0, -0.11]} rotation={[0, Math.PI, 0]} geometry={SCREEN_GEO} material={BACK_MATERIAL} />
         <mesh position={[0, 0, 0.11]} geometry={SCREEN_GEO} material={SCREEN_MATERIAL} />

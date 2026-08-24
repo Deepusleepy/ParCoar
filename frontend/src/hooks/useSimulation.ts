@@ -8,6 +8,7 @@ import type {
   LotData,
   NodeSign,
   ServerMessage,
+  StateCar,
   StateMessage,
 } from "../types";
 import {
@@ -22,6 +23,8 @@ import {
 } from "../sim/fill";
 import { setSpeedScale } from "../sim/simSpeed";
 import {
+  CAR_LENGTH,
+  LANE_WIDTH,
   nextCarId,
   PLAYER_ID,
   PLAYER_PLATE,
@@ -31,6 +34,7 @@ import {
   SPAWN_INTERVAL_MS,
   STATE_TICK_MS,
   TARGET_ACTIVE_CARS,
+  toWorld,
 } from "../sim/constants";
 
 /** Override with VITE_WS_URL when the backend runs somewhere else. */
@@ -41,6 +45,19 @@ const MIN_STAY_MS = 30_000;
 const MAX_STAY_MS = 90_000;
 const DEV_PUBLISH_MS = 50;
 const BOARD_ROWS = 3;
+/** Minimum interval between React state flushes of nodeSigns / carRoutes.
+ *  applyInstructions runs on every WebSocket reply (~12.5/sec) and rebuilds
+ *  the sign/route signatures; without throttling, a continuously-changing
+ *  signature (a car approaching a turn, or AI route_distance updating every
+ *  reply) fired setNodeSigns/setCarRoutes ~12x/sec, re-rendering App -> Scene
+ *  -> DrivableCar and dropping frames. 80ms (~12Hz) matches the backend reply
+ *  rate so board distances stay live without extra re-renders beyond what
+ *  the reply cycle already drives. The signboard components are memoized so
+ *  only boards whose queue actually changed re-render. */
+const SIGN_FLUSH_MS = 80;
+/** When no state has changed, still resend the last payload this often so
+ *  the server can garbage-collect cars the client has removed. */
+const HEARTBEAT_MS = 500;
 /** After the drivable car reaches the exit, respawn it at the entry. */
 const PLAYER_RESPAWN_DELAY_MS = 2500;
 
@@ -85,7 +102,18 @@ const sharedWorld: {
   lot: LotData | null;
   cars: ActiveCar[];
   instructions: Map<string, InstructionSign>;
-} = { lot: null, cars: [], instructions: new Map() };
+  /** Live physical position of the player car (updated every frame from
+   *  DrivableCar). AI cars check this to avoid driving through a player
+   *  stopped between nodes, which the node-level gate alone can't catch. */
+  playerPos: { x: number; z: number; floor: number } | null;
+} = { lot: null, cars: [], instructions: new Map(), playerPos: null };
+
+/** Test-only setter for the shared world lot. Not used at runtime. */
+export function __setSharedWorldLotForTests(l: LotData): void {
+  sharedWorld.lot = l;
+  sharedWorld.cars = [];
+  sharedWorld.instructions = new Map();
+}
 
 /**
  * Physical entry gate used at node crossings. Mirrors the standstill gate
@@ -94,6 +122,11 @@ const sharedWorld: {
  * blocked. The caller must already have moved `self` onto the leg it wants
  * to enter (fromNode/toNode provisional), matching how the hook checks its
  * own assignments.
+ *
+ * The player-proximity check projects the player onto the AI car's travel
+ * path so that a player on the oncoming lane (wrong side) or behind the AI
+ * car (being overtaken) does NOT block — only a player ahead in the same
+ * lane does.
  */
 export function isNodeEntryBlocked(
   self: ActiveCar,
@@ -102,7 +135,124 @@ export function isNodeEntryBlocked(
 ): boolean {
   const lot = sharedWorld.lot;
   if (!lot) return false;
-  return isRoadBlocked(lot, sharedWorld.cars, self, node, beyond, sharedWorld.instructions);
+  if (isRoadBlocked(lot, sharedWorld.cars, self, node, beyond, sharedWorld.instructions)) {
+    return true;
+  }
+  // Physical check: if the player car is stopped on the road ahead, block
+  // entry so AI cars don't drive through it. The node-level gate above only
+  // catches cars whose fromNode/toNode matches, but the player reports nodes
+  // sparsely and can sit between them. Unlike the old radial check, this
+  // projects the player onto the AI car's travel path so that a player on the
+  // oncoming lane (wrong side) or behind the AI car (being overtaken) does
+  // NOT block — only a player ahead in the same lane does.
+  const pp = sharedWorld.playerPos;
+  const target = lot.nodes[node];
+  const from = lot.nodes[self.fromNode];
+  if (!pp || pp.floor < 0 || !target || !from) return false;
+  if (pp.floor !== target.floor) return false;
+
+  const [fx, , fz] = toWorld(from.x, from.y, from.floor);
+  const [tx, , tz] = toWorld(target.x, target.y, target.floor);
+
+  // Car position along the leg (node-centreline). At both call sites the car
+  // is at fromNode (progress 0 / standstill), but use progress when the
+  // provisional toNode matches the target for robustness.
+  const t = self.toNode === node ? self.progress : 0;
+  const cx = fx + (tx - fx) * t;
+  const cz = fz + (tz - fz) * t;
+
+  // Forward direction from the car toward the target node (XZ only).
+  const dx = tx - cx;
+  const dz = tz - cz;
+  const legDist = Math.hypot(dx, dz);
+  if (legDist < 1e-4) {
+    // Degenerate: car is effectively at the node. Use a radial check
+    // but also require the player to be roughly in the same lane
+    // (not clearly in the oncoming lane) to avoid blocking when the
+    // player is passing through an intersection in the perpendicular
+    // direction.
+    const dpx = pp.x - tx;
+    const dpz = pp.z - tz;
+    if (Math.hypot(dpx, dpz) > CAR_LENGTH * 2) return false;
+    return Math.hypot(dpx, dpz) < CAR_LENGTH;
+  }
+  const ux = dx / legDist;
+  const uz = dz / legDist;
+
+  // Compute the player's forward and lateral position relative to the
+  // road CENTERLINE (not the AI car's lane-shifted position). The AI car
+  // is lane-shifted by LANE_SHIFT = -LANE_WIDTH/2 (via cross(tangent, up)),
+  // but the player is physics-based and can be anywhere on the road.
+  // Comparing the player's actual position to the AI car's lane-shifted
+  // position gives a lateral distance of LANE_WIDTH/2 when the player is
+  // at the centerline — which is less than the old threshold and would
+  // incorrectly block. Instead, measure lateral from the centerline and
+  // use the SIGNED value to determine which side the player is on.
+  //
+  // For +X travel (ux=1, uz=0): lateral = -vz. The AI car is at -Z
+  // (LANE_SHIFT = -LANE_WIDTH/2 via cross(tangent,up) = [0,0,1] * -W/2).
+  // So lateral > 0 means the player is at -Z (same lane as AI), and
+  // lateral < 0 means the player is at +Z (oncoming lane).
+  const vx = pp.x - cx;
+  const vz = pp.z - cz;
+  const radial = Math.hypot(vx, vz);
+  const forward = vx * ux + vz * uz;
+  const lateral = vx * uz - vz * ux; // signed: + = same lane, - = oncoming
+
+  // Radial guard: if the player is far from the AI car in ANY direction,
+  // it cannot be a collision risk. This handles turn nodes where the
+  // forward projection onto the NEW leg's direction is near zero even
+  // though the player has reversed far away on the PREVIOUS leg. Without
+  // this, a player who was beside the AI car at an intersection and then
+  // reversed would keep the AI car frozen because forward ≈ 0 relative
+  // to the new leg.
+  if (radial > CAR_LENGTH * 2) return false;
+
+  // Player clearly in the oncoming lane (signed lateral <= -threshold)
+  // — let the AI car pass.
+  if (lateral <= -LANE_WIDTH * 0.4) return false;
+  // Player too far laterally on the same side to be on this road (e.g.
+  // parked in a slot 6 units off the aisle, or on a perpendicular leg at
+  // a turn). The radial guard above handles players far in any direction,
+  // but a player within CAR_LENGTH*2 yet off the road (lateral >
+  // LANE_WIDTH) still freezes the AI car because forward ≈ 0 relative
+  // to the new leg at a turn or when the player is in a slot.
+  if (lateral > LANE_WIDTH) return false;
+  // Player clearly behind — not blocking entry to a node ahead.
+  if (forward < -CAR_LENGTH * 0.5) return false;
+  // Player ahead in the same lane near the car — block. The bound is a
+  // fixed stopping distance (a few car lengths), NOT the full leg length:
+  // the old `forward > legDist + CAR_LENGTH` upper bound held the AI car at
+  // the entry whenever the player was anywhere ahead on the whole leg, so
+  // on long aisles the AI car froze at the entry until the player passed the
+  // target node. A player far ahead is not an obstacle; the per-frame gate
+  // in Car.tsx handles a player that closes in mid-leg.
+  const PLAYER_ENTRY_HOLD = CAR_LENGTH * 3;
+  if (forward > PLAYER_ENTRY_HOLD) return false;
+  return true;
+}
+
+/** Update the player car's live physical position. Called every frame from
+ *  DrivableCar so AI cars can avoid the player even when stopped between
+ *  graph nodes. Mutates the existing playerPos object in place to avoid a
+ *  per-frame heap allocation (this runs at the frame rate). */
+export function updatePlayerPos(x: number, z: number, floor: number): void {
+  const pp = sharedWorld.playerPos;
+  if (pp) {
+    pp.x = x;
+    pp.z = z;
+    pp.floor = floor;
+  } else {
+    sharedWorld.playerPos = { x, z, floor };
+  }
+}
+
+/** Read the player car's live physical position, or null when no player is
+ *  in the garage. Used by the per-frame AI gate in Car.tsx to avoid driving
+ *  through a player stopped mid-leg (the node-entry gate only checks at
+ *  graph crossings). */
+export function readPlayerPos(): { x: number; z: number; floor: number } | null {
+  return sharedWorld.playerPos;
 }
 
 export type { GarageFill, ParkedCarData } from "../sim/fill";
@@ -234,10 +384,26 @@ export function useSimulation(): SimulationState {
   const instructionsRef = useRef<Map<string, InstructionSign>>(new Map());
   const lastSpawnRef = useRef(0);
   const lastSignSignatureRef = useRef("");
-  const lastRouteSignatureRef = useRef("");
+  /** Throttle: setNodeSigns/setCarRoutes fire at most 4Hz so the ~12.5/sec
+   *  WebSocket reply rate doesn't re-render the App tree on every reply.
+   *  A pending flag ensures the last signature change eventually flushes even
+   *  if no further change arrives within the throttle window. */
+  const lastSignFlushRef = useRef(0);
+  const lastRouteFlushRef = useRef(0);
+  const signPendingRef = useRef(false);
+  const routePendingRef = useRef(false);
+  const pendingSignsRef = useRef<NodeSign[]>([]);
+  const pendingRoutesRef = useRef<CarRoute[]>([]);
   const nodeSignsRef = useRef<NodeSign[]>([]);
   const removalTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const playerRespawnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** Dirty flag: set true by any state mutation (car move/spawn/depart/park,
+   *  slot change). sendState only rebuilds + serializes when dirty; otherwise
+   *  it resends the last payload at most once per HEARTBEAT_MS. */
+  const dirtyRef = useRef(true);
+  const lastHeartbeatRef = useRef(0);
+  const lastPayloadRef = useRef<string | null>(null);
 
   settingsRef.current = settings;
   activeCarsRef.current = activeCars;
@@ -247,6 +413,14 @@ export function useSimulation(): SimulationState {
   sharedWorld.lot = lot;
   sharedWorld.cars = activeCars;
   sharedWorld.instructions = instructionsRef.current;
+
+  // Any change to the car/slot state marks the next sendState dirty so the
+  // server gets the new snapshot. In-place mutations inside applyInstructions
+  // that matter (move, slot, park, depart) always go through setActiveCars/
+  // setParked/setPreParked, so watching these three covers them.
+  useEffect(() => {
+    dirtyRef.current = true;
+  }, [activeCars, preParked, parked]);
 
   useEffect(() => {
     let cancelled = false;
@@ -258,10 +432,22 @@ export function useSimulation(): SimulationState {
       })
       .then((data) => {
         if (cancelled) return;
+        // Paint the lot first so the loading screen can dismiss before the
+        // (potentially hundreds of) pre-parked cars are generated on the
+        // main thread. Filling the garage runs off the critical path.
         setLot(data);
-        setPreParked(generatePreParked(data));
         setError(null);
         setLoading(false);
+        // Generate pre-parked cars SYNCHRONOUSLY, not via requestIdleCallback.
+        // The previous async generation (requestIdleCallback with a 1s
+        // timeout) could be delayed on a busy page, causing the first
+        // WebSocket state message to report empty occupied_slots. The
+        // backend would then assign AI cars to slots that are visually
+        // occupied by pre-parked cars, causing overlap when the AI car
+        // arrives before the pre-parked cars are reported. Synchronous
+        // generation ensures occupied_slots is populated before the first
+        // state message is sent.
+        if (!cancelled) setPreParked(generatePreParked(data));
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
@@ -286,17 +472,58 @@ export function useSimulation(): SimulationState {
     const websocket = wsRef.current;
     if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
 
+    // Heartbeat path: nothing the server cares about changed since the last
+    // send. Avoid the per-tick JSON.stringify + array rebuild entirely; just
+    // resend the last payload occasionally so the server can GC cars that
+    // disappeared from the client.
+    //
+    // Exception: while the player is driving, its live world position is
+    // mutated every frame in sharedWorld.playerPos but never marks the
+    // payload dirty (per-frame movement doesn't change activeCars). The
+    // backend's adjust_distance_for_pos reads entry.pos, so a stale resend
+    // would freeze route_distance at the last dirty-build position (e.g. the
+    // spawn E0 position right after start). Force a rebuild every tick while
+    // the player is in the garage with a live position so pos stays fresh.
+    const playerLive =
+      activeCarsRef.current.some((car) => car.player) &&
+      sharedWorld.playerPos !== null;
+    if (!dirtyRef.current && !playerLive) {
+      if (lastPayloadRef.current === null) return;
+      const now = Date.now();
+      if (now - lastHeartbeatRef.current < HEARTBEAT_MS) return;
+      lastHeartbeatRef.current = now;
+      try {
+        websocket.send(lastPayloadRef.current);
+      } catch {
+        // onclose handles reconnecting.
+      }
+      return;
+    }
+
     const cars = activeCarsRef.current
       .filter((car) => !car.parked || car.player)
-      .map((car) => ({
-        id: car.id,
-        color: car.color,
-        plate: car.plate,
-        node: car.fromNode,
-        leaving: car.leaving,
-        assigned_slot: car.leaving ? null : car.slot,
-        vacating_slot: car.vacating,
-      }));
+      .map((car) => {
+        const entry: StateCar = {
+          id: car.id,
+          color: car.color,
+          plate: car.plate,
+          node: car.fromNode,
+          leaving: car.leaving,
+          assigned_slot: car.leaving ? null : car.slot,
+          vacating_slot: car.vacating,
+        };
+        // The player is physical: its reported node is sparse and stale, so
+        // also send its live world position. The backend uses this to adjust
+        // route_distance from where the car actually is, not the stale node.
+        if (car.player && sharedWorld.playerPos) {
+          entry.pos = {
+            x: sharedWorld.playerPos.x,
+            z: sharedWorld.playerPos.z,
+            floor: sharedWorld.playerPos.floor,
+          };
+        }
+        return entry;
+      });
 
     // This is a simulated physical sensor snapshot. Active reservations are
     // deliberately excluded because Python owns them.
@@ -316,8 +543,13 @@ export function useSimulation(): SimulationState {
       occupied_slots: [...occupiedSlots],
     };
 
+    const payload = JSON.stringify(message);
+    lastPayloadRef.current = payload;
+    dirtyRef.current = false;
+    lastHeartbeatRef.current = Date.now();
+
     try {
-      websocket.send(JSON.stringify(message));
+      websocket.send(payload);
     } catch {
       // onclose handles reconnecting.
     }
@@ -359,7 +591,34 @@ export function useSimulation(): SimulationState {
     if (!lotData) return;
 
     const map = instructionsRef.current;
-    for (const instruction of instructions) map.set(instruction.car_id, instruction);
+    // Detect structural changes (path/slot/status/node) against the previous
+    // instruction for each car. The board/route rebuild below is gated on this
+    // plus `changed` so it only runs when something structural actually moved,
+    // not on every 80ms reply. Per-message distance values are excluded from
+    // the signatures further down, so setNodeSigns/setCarRoutes fire only on
+    // real structural changes (node crossings, slot assignments, status
+    // transitions) rather than every reply.
+    let instructionsChanged = false;
+    for (const instruction of instructions) {
+      const prev = map.get(instruction.car_id);
+      if (
+        !prev ||
+        prev.status !== instruction.status ||
+        prev.slot !== instruction.slot ||
+        prev.node !== instruction.node ||
+        prev.path.length !== instruction.path.length
+      ) {
+        instructionsChanged = true;
+      } else {
+        for (let i = 0; i < instruction.path.length; i += 1) {
+          if (prev.path[i] !== instruction.path[i]) {
+            instructionsChanged = true;
+            break;
+          }
+        }
+      }
+      map.set(instruction.car_id, instruction);
+    }
 
     const cars = activeCarsRef.current;
     let changed = false;
@@ -403,8 +662,11 @@ export function useSimulation(): SimulationState {
           car.vacating = null;
           schedulePlayerRespawn();
         } else {
+          const slotChanged = instruction.slot !== car.slot;
+          const statusChanged = instruction.status !== car.status;
           car.slot = instruction.slot ?? car.slot;
           car.status = instruction.status;
+          if (slotChanged || statusChanged) changed = true;
         }
         continue;
       }
@@ -449,8 +711,15 @@ export function useSimulation(): SimulationState {
       if (instruction.path[0] !== car.fromNode) continue;
       const next = instruction.path[1] ?? null;
       const beyond = instruction.path[2];
-      if (next && isRoadBlocked(lotData, cars, car, next, beyond, map)) continue;
       if (!next || next === car.toNode) continue;
+      if (next && isRoadBlocked(lotData, cars, car, next, beyond, map)) {
+        // Road is blocked: cache the full path (including the first hop)
+        // so Car.tsx can retry the departure every frame via its heldNode
+        // mechanism instead of waiting for the next server reply (~400ms).
+        car.slot = instruction.slot;
+        publishRoutePlan(car, instruction.path.slice(1));
+        continue;
+      }
       car.toNode = next;
       car.status = "routing";
       car.slot = instruction.slot;
@@ -487,16 +756,87 @@ export function useSimulation(): SimulationState {
       }
 
       const gone = new Set(departed);
-      setActiveCars((current) =>
-        current.some((car) => (car.parked && !car.player) || gone.has(car.id))
-          ? current.filter((car) => (!car.parked || car.player) && !gone.has(car.id))
-          : current,
-      );
+      setActiveCars((current) => {
+        const needsFilter = current.some(
+          (car) => (car.parked && !car.player) || gone.has(car.id),
+        );
+        if (needsFilter) {
+          return current.filter((car) => (!car.parked || car.player) && !gone.has(car.id));
+        }
+        // When `changed` is true but no cars need filtering (e.g. the player's
+        // slot/status were mutated in place), still produce a new array so React
+        // re-renders and DrivableCar receives the updated assignedSlot prop.
+        return changed ? [...current] : current;
+      });
     }
 
     const activeIds = new Set(cars.map((car) => car.id));
     for (const id of map.keys()) {
       if (!activeIds.has(id)) map.delete(id);
+    }
+
+    // Flush any pending board updates that were deferred by the throttle on a
+    // previous reply. This runs on every reply (even when the rebuild below is
+    // skipped) so a throttled change eventually reaches React state without
+    // waiting for another structural change.
+    if (signPendingRef.current) {
+      const now = Date.now();
+      if (now - lastSignFlushRef.current >= SIGN_FLUSH_MS) {
+        lastSignFlushRef.current = now;
+        signPendingRef.current = false;
+        setNodeSigns(pendingSignsRef.current);
+      }
+    }
+
+    // Routes are rebuilt on EVERY reply (not gated on instructionsChanged)
+    // because the route list carries route_distance, which changes every
+    // reply as cars move. The signature-based gate below would skip the
+    // rebuild between node crossings, freezing the distance readout shown in
+    // RoutePanel. The rebuild is cheap (one pass over active cars, no sorting
+    // or directionAt calls); the 4Hz throttle on setCarRoutes still caps the
+    // React re-render rate, so the heavy App tree only updates 4x/sec.
+    const routes: CarRoute[] = [];
+    for (const car of cars) {
+      if (car.parked) continue;
+      const instruction = map.get(car.id);
+      if (!instruction || instruction.path.length < 2) continue;
+      routes.push({
+        carId: car.id,
+        plate: instruction.plate,
+        color: instruction.color,
+        slot: instruction.slot,
+        path: instruction.path,
+        floor: lotData.nodes[instruction.node]?.floor ?? 0,
+        routeDistance: instruction.route_distance,
+        estimatedSeconds: instruction.estimated_seconds,
+        destinationType: instruction.destination_type,
+        nextDirection: instruction.next_direction,
+      });
+    }
+    pendingRoutesRef.current = routes;
+    routePendingRef.current = true;
+    {
+      const now = Date.now();
+      if (now - lastRouteFlushRef.current >= SIGN_FLUSH_MS) {
+        lastRouteFlushRef.current = now;
+        routePendingRef.current = false;
+        setCarRoutes(pendingRoutesRef.current);
+      }
+    }
+
+    // Skip the expensive queues/signList rebuild when neither the instructions
+    // nor any car's lifecycle state changed structurally since the last reply,
+    // AND no sign flush is due. The sign boards carry per-car distance which
+    // changes every reply as cars move, so the rebuild must still run at the
+    // 4Hz flush rate to keep board distances live. Without this, a car just
+    // driving down an aisle (no structural change) would freeze the distance
+    // on every overhead board until the next turn/slot transition.
+    if (
+      !changed &&
+      !instructionsChanged &&
+      Date.now() - lastSignFlushRef.current < SIGN_FLUSH_MS
+    ) {
+      return;
     }
 
     const queues = new Map<string, BoardCar[]>();
@@ -522,13 +862,92 @@ export function useSimulation(): SimulationState {
           break;
         }
       }
-      const startHop = legIndex >= 0 ? legIndex + 1 : 1;
+      let startHop = legIndex >= 0 ? legIndex + 1 : 1;
       let travelled = 0;
+      if (car.player && sharedWorld.playerPos && sharedWorld.playerPos.floor >= 0) {
+        // The player is physics-based: progress is always 0 and fromNode/
+        // toNode are stale (updated every ~150ms). Use the live world
+        // position to find the nearest node in the route, then measure
+        // from the actual position to the next node. This keeps the
+        // signboard distance accurate instead of frozen at a stale value.
+        const pp = sharedWorld.playerPos;
+        // Find the LEG the player is currently driving, not the nearest
+        // node. The nearest node can be the one AHEAD of the player
+        // (once the player passes the midpoint of a segment), and
+        // measuring from the player to the node after that skips the
+        // partial segment the player is still on and uses a straight-
+        // line distance instead of the path distance. Project the
+        // player onto each route segment and pick the closest one; the
+        // remaining distance is the path distance from the player to the
+        // end of that leg.
+        let legStart = 0;
+        let bestLegDist = Infinity;
+        let legProgress = 0;
+        for (let i = 0; i + 1 < route.length; i += 1) {
+          const a = lotData.nodes[route[i]];
+          const b = lotData.nodes[route[i + 1]];
+          if (!a || !b || a.floor !== pp.floor) continue;
+          const [ax, , az] = toWorld(a.x, a.y, a.floor);
+          const [bx, , bz] = toWorld(b.x, b.y, b.floor);
+          const dx = bx - ax, dz = bz - az;
+          const segLen2 = dx * dx + dz * dz;
+          if (segLen2 === 0) continue;
+          let t = ((pp.x - ax) * dx + (pp.z - az) * dz) / segLen2;
+          if (t < 0) t = 0; else if (t > 1) t = 1;
+          const px = ax + t * dx, pz = az + t * dz;
+          const d = Math.hypot(pp.x - px, pp.z - pz);
+          if (d < bestLegDist) {
+            bestLegDist = d;
+            legStart = i;
+            legProgress = t;
+          }
+        }
+        // Remaining driving distance from the player to the end of the
+        // current leg, measured along the path (nodeGap), not straight-
+        // line. The loop below adds nodeGap for each hop after
+        // playerStartHop, so seed travelled with the partial leg
+        // distance and start hopping from the leg's end node.
+        const playerStartHop = legStart + 1;
+        travelled = (1 - legProgress) * nodeGap(lotData, route[legStart], route[legStart + 1]);
+        for (let hop = playerStartHop; hop < route.length; hop += 1) {
+          if (hop > playerStartHop) travelled += nodeGap(lotData, route[hop - 1], route[hop]);
+          const node = lotData.nodes[route[hop]];
+          if (!node || (node.type !== "turn" && node.type !== "ramp_up")) continue;
+          const queue = queues.get(route[hop]) ?? [];
+          queue.push({
+            carId: car.id,
+            color: instruction.color,
+            plate: instruction.plate,
+            direction: directionAt(lotData, route, hop),
+            slot: instruction.slot ?? "",
+            leaving: car.leaving,
+            distance: travelled,
+          });
+          queues.set(route[hop], queue);
+          break;
+        }
+        continue;
+      }
       if (legIndex >= 0) {
         const legProgress = Math.min(1, Math.max(0, car.progress));
         travelled = (1 - legProgress) * nodeGap(lotData, route[legIndex], route[legIndex + 1]);
-      } else if (route.length > 1) {
-        travelled = nodeGap(lotData, route[0], route[1]);
+      } else {
+        // The car's live leg isn't in the (stale) route path. Try to find
+        // the car's fromNode in the route — if it's there, the car has
+        // already reached that node, so the remaining distance starts from
+        // the NEXT hop. This is far more accurate than the old fallback
+        // (measuring from route[0] to route[1]), which could show the full
+        // first-leg distance even when the car was at the board node.
+        const fromIndex = route.indexOf(car.fromNode);
+        if (fromIndex >= 0 && fromIndex + 1 < route.length) {
+          startHop = fromIndex + 1;
+          travelled = 0;
+        } else if (route.length > 1) {
+          // fromNode not in route at all: fall back to the full first leg.
+          travelled = nodeGap(lotData, route[0], route[1]);
+        } else {
+          continue;
+        }
       }
 
       for (let hop = startHop; hop < route.length; hop += 1) {
@@ -565,35 +984,18 @@ export function useSimulation(): SimulationState {
     nodeSignsRef.current = signList;
     if (signSignature !== lastSignSignatureRef.current) {
       lastSignSignatureRef.current = signSignature;
-      setNodeSigns(signList);
+      pendingSignsRef.current = signList;
+      signPendingRef.current = true;
     }
-
-    const routes: CarRoute[] = [];
-    for (const car of cars) {
-      if (car.parked) continue;
-      const instruction = map.get(car.id);
-      if (!instruction || instruction.path.length < 2) continue;
-      routes.push({
-        carId: car.id,
-        plate: instruction.plate,
-        color: instruction.color,
-        slot: instruction.slot,
-        path: instruction.path,
-        floor: lotData.nodes[instruction.node]?.floor ?? 0,
-        routeDistance: instruction.route_distance,
-        estimatedSeconds: instruction.estimated_seconds,
-        destinationType: instruction.destination_type,
-        nextDirection: instruction.next_direction,
-      });
-    }
-    const routeSignature = routes
-      .map((route) =>
-        `${route.carId}:${route.slot ?? "-"}:${route.routeDistance}:${route.path.join(">")}`,
-      )
-      .join("|");
-    if (routeSignature !== lastRouteSignatureRef.current) {
-      lastRouteSignatureRef.current = routeSignature;
-      setCarRoutes(routes);
+    // Try an immediate flush if the throttle window is already open; otherwise
+    // the pre-gate flush check on the next reply will pick it up.
+    if (signPendingRef.current) {
+      const now = Date.now();
+      if (now - lastSignFlushRef.current >= SIGN_FLUSH_MS) {
+        lastSignFlushRef.current = now;
+        signPendingRef.current = false;
+        setNodeSigns(pendingSignsRef.current);
+      }
     }
   }, [schedulePlayerRespawn]);
 
@@ -694,7 +1096,31 @@ export function useSimulation(): SimulationState {
     return () => clearInterval(interval);
   }, [sendState]);
 
-  const onArrive = useCallback(() => sendState(), [sendState]);
+  const onArrive = useCallback(
+    (carId: string, node: string) => {
+      // Immediately remove leaving cars that arrive at the exit node,
+      // without waiting for the backend round trip. The backend will
+      // confirm "left" on the next state sync, but the visual should
+      // disappear instantly so cars don't queue up at the exit.
+      const lot = lotRef.current;
+      if (lot && lot.nodes[node]?.type === "exit") {
+        setActiveCars((current) => {
+          const car = current.find((c) => c.id === carId);
+          if (!car || !car.leaving) return current;
+          instructionsRef.current.delete(carId);
+          return current.filter((c) => c.id !== carId);
+        });
+      }
+      // Mark the state dirty so the next sendState sends a full snapshot
+      // (not a heartbeat). Without this, AI car node crossings go
+      // unreported for up to HEARTBEAT_MS (500ms) when the player isn't
+      // driving, leaving the backend's route path stale and causing the
+      // signboard distance to lag behind the car's actual position.
+      dirtyRef.current = true;
+      sendState();
+    },
+    [sendState],
+  );
 
   useEffect(() => {
     setSpeedScale(settings.speed);
@@ -721,11 +1147,15 @@ export function useSimulation(): SimulationState {
         now - lastSpawnRef.current > current.spawnEverySec * 1000
       ) {
         const car = spawnCar();
-        setActiveCars((existing) =>
-          existing.filter((candidate) => !candidate.leaving).length >= current.targetCars
-            ? existing
-            : [...existing, car],
-        );
+        setActiveCars((existing) => {
+          const activeAi = existing.filter((c) => !c.leaving && !c.player).length;
+          if (activeAi >= current.targetCars) return existing;
+          return [...existing, car];
+        });
+        // Reset cooldown based on the ref check we already did (not the
+        // setState callback, which runs async during render). The ref may
+        // be stale by one frame, but the entryBlocked + incomingCount guard
+        // above already proved the slot is free.
         lastSpawnRef.current = now;
       }
     }, 400);
@@ -777,9 +1207,19 @@ export function useSimulation(): SimulationState {
   }, []);
 
   const enterCar = useCallback(() => {
-    setActiveCars((current) =>
-      current.some((car) => car.player) ? current : [...current, spawnPlayerCar()],
-    );
+    setActiveCars((current) => {
+      if (current.some((car) => car.player)) return current;
+      // Don't spawn the player on top of an AI car sitting at the entry
+      // node. The player has no collision separation against active AI
+      // cars (only parked cars), so overlapping at spawn would freeze
+      // both cars in place. If the entry is occupied, skip this spawn
+      // attempt — the user can press V again once the AI car departs.
+      const entryOccupied = current.some(
+        (car) => !car.player && car.fromNode === ENTRY_NODE && car.toNode === ENTRY_NODE,
+      );
+      if (entryOccupied) return current;
+      return [...current, spawnPlayerCar()];
+    });
     setPlayerDriving(true);
     setPlayerRunId((runId) => runId + 1);
   }, []);

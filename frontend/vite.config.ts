@@ -12,4 +12,28 @@ export default defineConfig({
     port: 5180,
     strictPort: true,
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split the heavy, stable vendor libs into their own chunks so that
+        // app-code changes don't force the browser to re-download three.js /
+        // drei / fiber, and so the initial parse/eval of app code isn't
+        // blocked on the whole graph.
+        manualChunks(id: string) {
+          if (id.includes("node_modules")) {
+            if (id.includes("three") || id.includes("@react-three/fiber")) {
+              return "three";
+            }
+            if (id.includes("@react-three/drei")) {
+              return "drei";
+            }
+            if (id.includes("react") || id.includes("scheduler")) {
+              return "react";
+            }
+          }
+          return undefined;
+        },
+      },
+    },
+  },
 });
