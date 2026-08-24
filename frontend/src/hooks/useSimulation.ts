@@ -444,15 +444,28 @@ export function useSimulation(): SimulationState {
 
     const cars = activeCarsRef.current
       .filter((car) => !car.parked || car.player)
-      .map((car) => ({
-        id: car.id,
-        color: car.color,
-        plate: car.plate,
-        node: car.fromNode,
-        leaving: car.leaving,
-        assigned_slot: car.leaving ? null : car.slot,
-        vacating_slot: car.vacating,
-      }));
+      .map((car) => {
+        const entry: StateCar = {
+          id: car.id,
+          color: car.color,
+          plate: car.plate,
+          node: car.fromNode,
+          leaving: car.leaving,
+          assigned_slot: car.leaving ? null : car.slot,
+          vacating_slot: car.vacating,
+        };
+        // The player is physical: its reported node is sparse and stale, so
+        // also send its live world position. The backend uses this to adjust
+        // route_distance from where the car actually is, not the stale node.
+        if (car.player && sharedWorld.playerPos) {
+          entry.pos = {
+            x: sharedWorld.playerPos.x,
+            z: sharedWorld.playerPos.z,
+            floor: sharedWorld.playerPos.floor,
+          };
+        }
+        return entry;
+      });
 
     // This is a simulated physical sensor snapshot. Active reservations are
     // deliberately excluded because Python owns them.
@@ -793,6 +806,56 @@ export function useSimulation(): SimulationState {
       }
       const startHop = legIndex >= 0 ? legIndex + 1 : 1;
       let travelled = 0;
+      if (car.player && sharedWorld.playerPos && sharedWorld.playerPos.floor >= 0) {
+        // The player is physics-based: progress is always 0 and fromNode/
+        // toNode are stale (updated every ~150ms). Use the live world
+        // position to find the nearest node in the route, then measure
+        // from the actual position to the next node. This keeps the
+        // signboard distance accurate instead of frozen at a stale value.
+        const pp = sharedWorld.playerPos;
+        let nearestIdx = 0;
+        let nearestDist = Infinity;
+        for (let i = 0; i < route.length; i++) {
+          const rn = lotData.nodes[route[i]];
+          if (!rn || rn.floor !== pp.floor) continue;
+          const [rx, , rz] = toWorld(rn.x, rn.y, rn.floor);
+          const d = Math.hypot(pp.x - rx, pp.z - rz);
+          if (d < nearestDist) {
+            nearestDist = d;
+            nearestIdx = i;
+          }
+        }
+        // Distance from the player to the next node in the path.
+        if (nearestIdx < route.length - 1) {
+          const next = lotData.nodes[route[nearestIdx + 1]];
+          if (next) {
+            const [nx, , nz] = toWorld(next.x, next.y, next.floor);
+            travelled = Math.hypot(pp.x - nx, pp.z - nz);
+          }
+        }
+        // travelled now holds the distance from the car to route[nearestIdx+1].
+        // The loop below adds nodeGap for each hop after startHop, so set
+        // startHop to nearestIdx+1 to skip the hops the car has already passed.
+        const playerStartHop = nearestIdx + 1;
+        for (let hop = playerStartHop; hop < route.length; hop += 1) {
+          if (hop > playerStartHop) travelled += nodeGap(lotData, route[hop - 1], route[hop]);
+          const node = lotData.nodes[route[hop]];
+          if (!node || (node.type !== "turn" && node.type !== "ramp_up")) continue;
+          const queue = queues.get(route[hop]) ?? [];
+          queue.push({
+            carId: car.id,
+            color: instruction.color,
+            plate: instruction.plate,
+            direction: directionAt(lotData, route, hop),
+            slot: instruction.slot ?? "",
+            leaving: car.leaving,
+            distance: travelled,
+          });
+          queues.set(route[hop], queue);
+          break;
+        }
+        continue;
+      }
       if (legIndex >= 0) {
         const legProgress = Math.min(1, Math.max(0, car.progress));
         travelled = (1 - legProgress) * nodeGap(lotData, route[legIndex], route[legIndex + 1]);
