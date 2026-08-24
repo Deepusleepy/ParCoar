@@ -56,7 +56,12 @@ export function App() {
 
   useEffect(() => {
     if (cameraMode !== "follow") return;
-    const ids = sim.activeCars.filter((car) => !car.player).map((car) => car.id);
+    // Only follow active (non-parked, non-leaving) AI cars. When the followed
+    // car parks or leaves, it drops out of this list and we auto-switch to
+    // the next available car.
+    const ids = sim.activeCars
+      .filter((car) => !car.player && !car.parked && !car.leaving)
+      .map((car) => car.id);
     if (followCarId && !ids.includes(followCarId)) setFollowCarId(null);
     if (!followCarId && ids.length > 0) setFollowCarId(ids[0]);
   }, [cameraMode, followCarId, sim.activeCars]);
@@ -148,6 +153,15 @@ export function App() {
   // The drivable car's live guidance, derived from the same instructions the
   // boards use. No separate channel: the player is just another car.
   const playerCar = sim.activeCars.find((car) => car.player) ?? null;
+
+  // Auto-exit drive/POV when the player parks. The player has no reason to
+  // stay in the cockpit after parking — switch to orbit so they can see the
+  // garage and watch traffic. The player can press V to re-enter if they want.
+  useEffect(() => {
+    if (playerCar?.status === "parked" && (cameraMode === "pov" || cameraMode === "drive")) {
+      setCameraMode("orbit");
+    }
+  }, [playerCar?.status, cameraMode]);
   const playerRoute = sim.carRoutes.find((route) => route.carId === "P0") ?? null;
 
   // The car tree is fed to <Scene> through a context (see SimContents below)
@@ -441,10 +455,12 @@ interface FollowableCar {
  * Lets a memoized <CameraControls> skip re-rendering on traffic events that
  * don't alter the followable set.
  */
-function useStableFollowable(activeCars: { id: string; player?: boolean }[]): FollowableCar[] {
+function useStableFollowable(activeCars: { id: string; player?: boolean; parked?: boolean; leaving?: boolean }[]): FollowableCar[] {
   const ref = useRef<{ sig: string; list: FollowableCar[] }>({ sig: "", list: [] });
   return useMemo(() => {
-    const list = activeCars.filter((car) => !car.player) as FollowableCar[];
+    const list = activeCars.filter(
+      (car) => !car.player && !car.parked && !car.leaving,
+    ) as FollowableCar[];
     const sig = list.map((car) => car.id).join(",");
     if (sig === ref.current.sig) return ref.current.list;
     ref.current = { sig, list };

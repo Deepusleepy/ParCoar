@@ -1080,7 +1080,25 @@ export function useSimulation(): SimulationState {
     return () => clearInterval(interval);
   }, [sendState]);
 
-  const onArrive = useCallback(() => sendState(), [sendState]);
+  const onArrive = useCallback(
+    (carId: string, node: string) => {
+      // Immediately remove leaving cars that arrive at the exit node,
+      // without waiting for the backend round trip. The backend will
+      // confirm "left" on the next state sync, but the visual should
+      // disappear instantly so cars don't queue up at the exit.
+      const lot = lotRef.current;
+      if (lot && lot.nodes[node]?.type === "exit") {
+        setActiveCars((current) => {
+          const car = current.find((c) => c.id === carId);
+          if (!car || !car.leaving) return current;
+          instructionsRef.current.delete(carId);
+          return current.filter((c) => c.id !== carId);
+        });
+      }
+      sendState();
+    },
+    [sendState],
+  );
 
   useEffect(() => {
     setSpeedScale(settings.speed);
