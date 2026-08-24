@@ -86,17 +86,12 @@ const PITCH_LIMIT = Math.PI / 2 - 0.05;
  *  fixed 45°; the cockpit modes override it here, per mode, and every other
  *  mode restores the baseline on switch.
  *
- *  At 45° the cabin occluders (binnacle, wheel rim, dash crest below; roof
- *  liner, visors, mirror above) letterbox roughly a third of the frame —
- *  measured at the old eye they cut everything below -1.2°…-6.6° and above
- *  +8.0°…+8.9°. The occluders sit at fixed angles from the eye, so widening
- *  the FOV does not move those cutoffs — every extra degree goes to the
- *  visible exterior band. 57° gave ~17° of world; 65° gives ~25°, which is
- *  the difference between "driving a box" and "seeing the road, the pillars,
- *  and the adjacent bays" in a tight garage. 65° sits inside the 60-75°
- *  range real cockpit cams use, so edge distortion stays imperceptible. */
+ *  80° gives the widest useful view for a parking garage cockpit — tight
+ *  spaces, pillars, and adjacent bays all stay visible without excessive
+ *  edge distortion. The thin dashboard design keeps the lower occlusion
+ *  minimal so most of the 80° band shows the road. */
 const SPECTATOR_FOV = 45;
-const COCKPIT_FOV = 65;
+const COCKPIT_FOV = 80;
 /** FOV easing time constant (seconds): a 45↔65 change settles in ~3τ ≈
  *  0.25 s, so switching modes breathes instead of snapping. Exponential in
  *  dt directly — lerpK() clamps its strength to ≤1 and cannot express a
@@ -107,12 +102,10 @@ const FOV_TIME_CONSTANT = 0.08;
 const POV_YAW_LIMIT = Math.PI * 0.6;
 const POV_PITCH_LIMIT = Math.PI * 0.25;
 /** How much of the remaining view offset closes per second of movement.
- *  At 0.6 the offset keeps ~49% after 1s and ~12% after 3s, so a glance
- *  back while reversing lingers long after the driver wants to face
- *  forward again. 1.2 closes to ~30% in 1s and ~3% in 2s — the view
- *  recenters about as fast as a driver would turn their head back, without
- *  snapping. */
-const POV_RECENTER_SPEED = 1.2;
+ *  0.8 closes gently — the view recenters smoothly without the snappy
+ *  head-flick that 1.2 produced. The driver's glance lingers naturally
+ *  and returns forward without fighting the user. */
+const POV_RECENTER_SPEED = 0.8;
 /** Player speed above which the POV view starts re-centring (u/s). 4 u/s is
  *  actually driving, not the creep that happens the instant you touch the
  *  throttle — so a glance survives a momentary nudge. */
@@ -126,9 +119,10 @@ const POV_LOOK_LOCK_KEY = "AltLeft";
  *  seat), but the look direction levels itself partially — the way a real
  *  driver's inner ear keeps the horizon from swinging fully with the nose.
  *  1 = view tilts 1:1 with the car (nauseating on ramps); 0 = view stays
- *  world-level regardless of slope (feels disconnected from the car). 0.65
- *  keeps ramp climbs readable without the full-cockpit swing. */
-const POV_PITCH_FOLLOW = 0.65;
+ *  world-level regardless of slope (feels disconnected from the car). 0.3
+ *  keeps a subtle sense of the slope without the wild swing that 0.65
+ *  produced — the #1 source of "weird movements" in POV. */
+const POV_PITCH_FOLLOW = 0.3;
 
 /** Default vantage for Reset View: a high 3/4 aerial over the lot. */
 /** Where "Reset View" puts you: the same opening shot the app starts on. Keep
@@ -602,16 +596,14 @@ export function CameraRig({
         camera.lookAt(driveLookRef.current);
       } else {
         // POV: driver's-eye position inside the cabin (right-hand drive).
-        // The eye sits at headrest height (~1.41 is the headrest top, so
-        // 1.42 reads as a head resting against it) and just ahead of the
-        // wheel column. From here the binnacle/rim/dash crest only occlude
-        // below about -8…-12° and the roof furniture above about +5°, so
-        // with COCKPIT_FOV the exterior band is wide enough to see tarmac
-        // from ~8 units out. The earlier seat-level eye (-0.30, 1.31) gave
-        // a ~10° letterbox of world in a 45° frame.
-        const EYE_FWD = -0.1;
+        // The eye sits at driver head height (1.38), forward near the
+        // windshield base (0.35), on the right-hand side (-0.42 = driver).
+        // The headliner mesh is hidden in POV mode (see CarInterior) so
+        // the only upper occlusion is the thin windshield header. The dash
+        // crest at 0.85 is well below the eye, keeping the lower view open.
+        const EYE_FWD = 0.35;
         const EYE_RIGHT = 0.42;
-        const EYE_UP = 1.42;
+        const EYE_UP = 1.38;
         // Eye POSITION: the head rides in the cabin, so it tilts 1:1 with
         // the car (full yaw + ramp pitch). The look direction below levels
         // itself partially — see POV_PITCH_FOLLOW.
@@ -655,7 +647,7 @@ export function CameraRig({
         tmpQuat.current.setFromEuler(tmpEuler.current);
         tmpQuatLook.current.premultiply(tmpQuat.current);
         tmpLook.current
-          .set(EYE_FWD + 14, EYE_UP - 0.5, -EYE_RIGHT)
+          .set(EYE_FWD + 14, EYE_UP - 0.4, -EYE_RIGHT)
           .applyQuaternion(tmpQuatLook.current)
           .add(carPos);
         camera.lookAt(tmpLook.current);

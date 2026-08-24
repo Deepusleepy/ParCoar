@@ -659,16 +659,16 @@ const INTERIOR_GEO = {
 };
 
 function makeDashboardShell(): THREE.ExtrudeGeometry {
-  // The X/Y profile gives the dash a rolled lower fascia and a rising upper
-  // surface instead of presenting the driver with one axis-aligned slab.
+  // Ultra-low minimalist EV dash: crest at Y=0.85, well below the driver's
+  // eye at 1.42. The thin fascia maximizes windscreen viewing area.
   const profile = new THREE.Shape();
   profile.moveTo(0.91, 0.72);
   profile.lineTo(1.46, 0.72);
-  profile.quadraticCurveTo(1.58, 0.76, 1.58, 0.88);
-  profile.lineTo(1.56, 0.98);
-  profile.quadraticCurveTo(1.5, 1.09, 1.34, 1.12);
-  profile.quadraticCurveTo(1.13, 1.09, 0.95, 0.97);
-  profile.quadraticCurveTo(0.89, 0.85, 0.91, 0.72);
+  profile.quadraticCurveTo(1.58, 0.76, 1.58, 0.80);
+  profile.lineTo(1.56, 0.82);
+  profile.quadraticCurveTo(1.5, 0.85, 1.34, 0.85);
+  profile.quadraticCurveTo(1.13, 0.83, 0.95, 0.80);
+  profile.quadraticCurveTo(0.89, 0.76, 0.91, 0.72);
   const geometry = new THREE.ExtrudeGeometry(profile, {
     depth: 1.76,
     steps: 1,
@@ -700,39 +700,25 @@ function makeTube(
 const DASH_SHELL_GEO = makeDashboardShell();
 const DASH_COWL_GEO = makeTube(
   [
-    new THREE.Vector3(0.93, 1.015, 0.79),
-    new THREE.Vector3(0.94, 1.035, 0.34),
-    new THREE.Vector3(0.925, 1.07, -0.1),
-    new THREE.Vector3(0.89, 1.13, -0.45),
-    new THREE.Vector3(0.93, 1.045, -0.79),
+    new THREE.Vector3(0.93, 0.9, 0.79),
+    new THREE.Vector3(0.94, 0.92, 0.34),
+    new THREE.Vector3(0.925, 0.96, -0.1),
+    new THREE.Vector3(0.89, 1.0, -0.45),
+    new THREE.Vector3(0.93, 0.93, -0.79),
   ],
-  0.038,
+  0.03,
 );
 const DASH_STITCH_GEO = makeTube(
   [
-    new THREE.Vector3(0.889, 0.955, 0.78),
-    new THREE.Vector3(0.895, 0.97, 0.28),
-    new THREE.Vector3(0.884, 0.995, -0.12),
-    new THREE.Vector3(0.865, 1.025, -0.47),
-    new THREE.Vector3(0.892, 0.975, -0.78),
+    new THREE.Vector3(0.889, 0.84, 0.78),
+    new THREE.Vector3(0.895, 0.86, 0.28),
+    new THREE.Vector3(0.884, 0.89, -0.12),
+    new THREE.Vector3(0.865, 0.92, -0.47),
+    new THREE.Vector3(0.892, 0.87, -0.78),
   ],
   0.006,
   false,
   56,
-);
-const BINNACLE_HOOD_GEO = makeTube(
-  [
-    new THREE.Vector3(-0.29, -0.1, 0),
-    new THREE.Vector3(-0.285, 0.09, 0),
-    new THREE.Vector3(-0.21, 0.17, 0),
-    new THREE.Vector3(0, 0.195, 0),
-    new THREE.Vector3(0.21, 0.17, 0),
-    new THREE.Vector3(0.285, 0.09, 0),
-    new THREE.Vector3(0.29, -0.1, 0),
-  ],
-  0.031,
-  false,
-  44,
 );
 const STEERING_RIM_GEO = makeTube(
   [
@@ -752,19 +738,7 @@ const STEERING_RIM_GEO = makeTube(
   true,
   64,
 );
-const REV_ARC_GEO = new THREE.TorusGeometry(0.087, 0.006, 7, 28, Math.PI * 1.55);
 
-const REV_TICKS = Array.from({ length: 7 }, (_, index) => {
-  const angle = Math.PI * (0.15 + index * 0.205);
-  return {
-    position: [Math.cos(angle) * 0.087, Math.sin(angle) * 0.087, 0.024] as const,
-    rotation: angle + Math.PI / 2,
-    red: index >= 5,
-  };
-});
-
-const CLIMATE_BUTTONS = [-0.12, -0.04, 0.04, 0.12] as const;
-const VENT_SLATS = [-0.035, 0.035] as const;
 const STEERING_BUTTONS: readonly [number, number][] = [
   [-0.11, 0.055],
   [-0.075, 0.085],
@@ -822,10 +796,13 @@ interface CarExteriorProps {
    *  animated). Steering is applied as a rotation about world Y, separate
    *  from the spin group so the two rotations never share an object. */
   steerRefs: React.MutableRefObject<(THREE.Group | null)[]>;
+  /** When true, hide the opaque GLTF body panels so they don't block the
+   *  driver's-eye view from inside the cabin. Wheels remain visible. */
+  pov?: boolean;
 }
 
 /** Loads the GLTF body, removes wheel nodes, recolors with race-red clearcoat. */
-function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
+function CarExteriorInner({ wheelRefs, steerRefs, pov = false }: CarExteriorProps) {
   const { scene } = useGLTF(PLAYER_MODEL_PATH);
 
   const { bodyMat, glassMat, scene: cloned } = useMemo(() => {
@@ -907,7 +884,7 @@ function CarExteriorInner({ wheelRefs, steerRefs }: CarExteriorProps) {
       {/* GLTF body — rotated to face +X, scaled to 4.5 length.
           Hidden in POV mode so its opaque panels don't block the cockpit
           view; the procedural CarInterior provides the visible dashboard. */}
-      <primitive object={cloned} rotation={[0, PLAYER_FORWARD_ROT, 0]} scale={PLAYER_MODEL_SCALE} />
+      <primitive object={cloned} rotation={[0, PLAYER_FORWARD_ROT, 0]} scale={PLAYER_MODEL_SCALE} visible={!pov} />
 
       {/* Procedural wheels with spin + steer refs (animated in DrivableCar
           useFrame). Three nested groups keep the three rotations on separate
@@ -951,6 +928,8 @@ function CarExterior(props: CarExteriorProps) {
   );
 }
 
+
+
 /* ------------------------------------------------------------------ *
  *  CarInterior — hand-built Octavia VRS-inspired cockpit
  *
@@ -965,144 +944,32 @@ interface InteriorInstrumentProps {
 
 function InstrumentCluster({ speedoRef }: InteriorInstrumentProps) {
   return (
-    <group position={[0.885, 1.055, -0.42]} rotation={[0, -Math.PI / 2, 0]}>
-      {/* Deep bezel, illuminated panel, and reflective cover read as one recessed display. */}
-      <mesh geometry={INTERIOR_GEO.box} scale={[0.57, 0.28, 0.045]}>
-        <primitive object={MAT.dashTrim} attach="material" />
+    <group position={[0.885, 0.82, -0.42]} rotation={[0, -Math.PI / 2, 0]}>
+      {/* Thin floating display strip — modern EV-style. Sits just above the
+          dash crest at 0.85, barely visible in the lower periphery. */}
+      <mesh geometry={INTERIOR_GEO.box} scale={[0.32, 0.025, 0.008]}>
+        <primitive object={MAT.glossBlack} attach="material" />
       </mesh>
-      <mesh position={[0, 0, 0.027]} geometry={INTERIOR_GEO.box} scale={[0.52, 0.235, 0.018]}>
-        <primitive object={MAT.tft} attach="material" />
-      </mesh>
-      <mesh position={[0, 0, 0.039]} geometry={INTERIOR_GEO.box} scale={[0.525, 0.24, 0.008]}>
-        <primitive object={MAT.displayGlass} attach="material" />
-      </mesh>
-
-      {/* The padded U-shaped hood follows the display rather than sitting above it as a slab. */}
-      <mesh position={[0, 0.005, 0.006]} geometry={BINNACLE_HOOD_GEO}>
-        <primitive object={MAT.dashTrim} attach="material" />
-      </mesh>
-      <mesh position={[0, 0.165, -0.025]} geometry={INTERIOR_GEO.box} scale={[0.46, 0.045, 0.13]}>
-        <primitive object={MAT.dash} attach="material" />
-      </mesh>
-
-      {/* Static rev-counter arc and ticks keep the virtual cockpit legible at zero speed. */}
-      <group position={[-0.135, -0.005, 0.043]}>
-        <mesh geometry={REV_ARC_GEO} rotation={[0, 0, 0.22]}>
-          <primitive object={MAT.chromeTrim} attach="material" />
-        </mesh>
-        {REV_TICKS.map((tick, index) => (
-          <mesh
-            key={index}
-            position={tick.position}
-            rotation={[0, 0, tick.rotation]}
-            geometry={INTERIOR_GEO.box}
-            scale={[0.018, 0.004, 0.006]}
-          >
-            <primitive object={tick.red ? MAT.vrsRed : MAT.chromeTrim} attach="material" />
-          </mesh>
-        ))}
-      </group>
-
-      {/* Live speed text retained from the previous cockpit implementation. */}
       <Text
         ref={speedoRef}
-        position={[0.09, 0.015, 0.052]}
-        fontSize={0.14}
+        position={[0, 0, 0.006]}
+        fontSize={0.022}
         color="#e7f4ff"
         anchorX="center"
         anchorY="middle"
       >
         0
       </Text>
-      <Text
-        position={[0.09, -0.075, 0.052]}
-        fontSize={0.035}
-        color="#78a8c8"
-        anchorX="center"
-        anchorY="middle"
-      >
-        km/h
-      </Text>
-      <Text
-        position={[-0.135, -0.085, 0.052]}
-        fontSize={0.035}
-        color="#ef2028"
-        anchorX="center"
-        anchorY="middle"
-      >
-        VRS
-      </Text>
-    </group>
-  );
-}
-
-function DashboardVent({ x }: { x: number }) {
-  return (
-    <group position={[x, 0.02, 0.04]}>
-      <mesh geometry={INTERIOR_GEO.box} scale={[0.13, 0.135, 0.04]}>
-        <primitive object={MAT.vent} attach="material" />
-      </mesh>
-      {VENT_SLATS.map((y) => (
-        <mesh
-          key={y}
-          position={[0, y, 0.026]}
-          geometry={INTERIOR_GEO.box}
-          scale={[0.105, 0.009, 0.022]}
-        >
-          <primitive object={MAT.chrome} attach="material" />
-        </mesh>
-      ))}
     </group>
   );
 }
 
 function CenterStack() {
   return (
-    <group position={[0.925, 0.885, 0.08]} rotation={[0, -Math.PI / 2 - 0.12, 0]}>
-      {/* Landscape display and bezel are yawed toward the right-hand driver. */}
-      <mesh geometry={INTERIOR_GEO.box} scale={[0.54, 0.255, 0.055]}>
+    <group position={[0.925, 0.82, 0.08]} rotation={[0, -Math.PI / 2 - 0.12, 0]}>
+      {/* Minimal gloss-black strip — no climate controls, no vents, no knobs. */}
+      <mesh geometry={INTERIOR_GEO.box} scale={[0.34, 0.025, 0.008]}>
         <primitive object={MAT.glossBlack} attach="material" />
-      </mesh>
-      <mesh position={[0, 0.015, 0.034]} geometry={INTERIOR_GEO.box} scale={[0.47, 0.19, 0.018]}>
-        <primitive object={MAT.screen} attach="material" />
-      </mesh>
-      <mesh position={[-0.1, 0.02, 0.047]} geometry={INTERIOR_GEO.box} scale={[0.018, 0.13, 0.008]}>
-        <primitive object={MAT.redAccent} attach="material" />
-      </mesh>
-      <mesh position={[0.08, 0.045, 0.047]} geometry={INTERIOR_GEO.box} scale={[0.21, 0.025, 0.008]}>
-        <primitive object={MAT.chromeTrim} attach="material" />
-      </mesh>
-
-      <DashboardVent x={-0.35} />
-      <DashboardVent x={0.35} />
-
-      {/* Climate strip, rotary temperature controls, and physical shortcut keys. */}
-      <mesh position={[0, -0.185, 0]} geometry={INTERIOR_GEO.box} scale={[0.48, 0.095, 0.055]}>
-        <primitive object={MAT.dashTrim} attach="material" />
-      </mesh>
-      {[-0.19, 0.19].map((x) => (
-        <mesh
-          key={x}
-          position={[x, -0.185, 0.044]}
-          rotation={[Math.PI / 2, 0, 0]}
-          geometry={INTERIOR_GEO.cylinder}
-          scale={[0.028, 0.018, 0.028]}
-        >
-          <primitive object={MAT.chrome} attach="material" />
-        </mesh>
-      ))}
-      {CLIMATE_BUTTONS.map((x) => (
-        <mesh
-          key={x}
-          position={[x, -0.185, 0.044]}
-          geometry={INTERIOR_GEO.box}
-          scale={[0.045, 0.026, 0.018]}
-        >
-          <primitive object={MAT.button} attach="material" />
-        </mesh>
-      ))}
-      <mesh position={[0, -0.185, 0.058]} geometry={INTERIOR_GEO.box} scale={[0.025, 0.014, 0.01]}>
-        <primitive object={MAT.vrsRed} attach="material" />
       </mesh>
     </group>
   );
@@ -1261,7 +1128,7 @@ function CarInterior({
     const dt = Math.min(delta, 1 / 30);
     const target = steerRef.current * 2.2;
     smoothSteer.current += (target - smoothSteer.current) * Math.min(1, dt * 12);
-    if (wheelRef.current) wheelRef.current.rotation.z = smoothSteer.current;
+    if (wheelRef.current) wheelRef.current.rotation.z = -smoothSteer.current;
 
     // Troika text only resyncs when the rounded value changes, not every frame.
     const nextSpeed = Math.round(Math.abs(speedRef.current) * 10);
@@ -1345,47 +1212,33 @@ function CarInterior({
       <DoorPanel side={-1} />
       <DoorPanel side={1} />
 
-      {/* Glazing, pillars, and headliner close the cabin without crossing the body shell. */}
+      {/* Glazing and ultra-thin pillars. The headliner is omitted entirely
+          in POV mode — the CarInterior only renders when pov=true, so there
+          is no roof mesh to block the upper view. The windshield glass and
+          side windows remain for realism. Pillars are 0.02 thick. */}
       {[-0.87, 0.87].map((z) => (
-        <mesh key={z} position={[1.32, 1.30, z]} rotation={[0, 0, 0.94]} geometry={INTERIOR_GEO.box} scale={[0.06, 0.8, 0.07]}>
+        <mesh key={z} position={[1.32, 1.28, z]} rotation={[0, 0, 0.94]} geometry={INTERIOR_GEO.box} scale={[0.02, 0.7, 0.02]}>
           <primitive object={MAT.liner} attach="material" />
         </mesh>
       ))}
-      <group position={[1.32, 1.30, 0]} rotation={[0, -Math.PI / 2, 0]}>
-        <mesh rotation={[0.94, 0, 0]} geometry={INTERIOR_GEO.plane} scale={[1.72, 0.95, 1]}>
+      <group position={[1.32, 1.28, 0]} rotation={[0, -Math.PI / 2, 0]}>
+        <mesh rotation={[0.94, 0, 0]} geometry={INTERIOR_GEO.plane} scale={[1.72, 1.1, 1]}>
           <primitive object={MAT.glass} attach="material" />
         </mesh>
       </group>
       {([-1, 1] as const).map((side) => (
         <mesh
           key={side}
-          position={[0.06, 1.16, 0.915 * side]}
+          position={[0.06, 1.12, 0.915 * side]}
           rotation={[0, side === 1 ? Math.PI : 0, 0]}
           geometry={INTERIOR_GEO.plane}
-          scale={[2.05, 0.31, 1]}
+          scale={[2.05, 0.36, 1]}
         >
           <primitive object={MAT.glass} attach="material" />
         </mesh>
       ))}
-      <mesh position={[-1.05, 1.15, 0]} rotation={[0, Math.PI / 2, 0]} geometry={INTERIOR_GEO.plane} scale={[1.65, 0.29, 1]}>
+      <mesh position={[-1.05, 1.12, 0]} rotation={[0, Math.PI / 2, 0]} geometry={INTERIOR_GEO.plane} scale={[1.65, 0.34, 1]}>
         <primitive object={MAT.glass} attach="material" />
-      </mesh>
-      <mesh position={[0.04, 1.534, 0]} geometry={INTERIOR_GEO.box} scale={[2.0, 0.025, 1.72]}>
-        <primitive object={MAT.liner} attach="material" />
-      </mesh>
-      {[-0.48, 0.48].map((z) => (
-        <mesh key={z} position={[0.78, 1.505, z]} rotation={[0, 0, -0.08]} geometry={INTERIOR_GEO.box} scale={[0.42, 0.025, 0.3]}>
-          <primitive object={MAT.liner} attach="material" />
-        </mesh>
-      ))}
-      <mesh position={[1.05, 1.5, 0]} geometry={INTERIOR_GEO.cylinder} scale={[0.012, 0.065, 0.012]}>
-        <primitive object={MAT.dashTrim} attach="material" />
-      </mesh>
-      <mesh position={[1.0, 1.455, 0]} geometry={INTERIOR_GEO.box} scale={[0.045, 0.095, 0.29]}>
-        <primitive object={MAT.dashTrim} attach="material" />
-      </mesh>
-      <mesh position={[0.974, 1.455, 0]} geometry={INTERIOR_GEO.box} scale={[0.009, 0.07, 0.245]}>
-        <primitive object={MAT.mirror} attach="material" />
       </mesh>
     </group>
   );
@@ -2314,7 +2167,7 @@ export const DrivableCar = memo(function DrivableCar({
   return (
     <>
       <group ref={groupRef} position={spawn.pos} rotation={[0, spawn.heading, 0]}>
-        <CarExterior wheelRefs={wheelRefs} steerRefs={steerRefs} />
+        <CarExterior wheelRefs={wheelRefs} steerRefs={steerRefs} pov={pov} />
         {/* The procedural interior exists only to be seen from the driver's-eye
             camera. Rendering it in third person draws the box-model cockpit
             through the GLTF body (roof liner, windows, seats all clip), so it
