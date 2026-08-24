@@ -163,11 +163,11 @@ export function WorldCar() {
     const s = stateRef.current;
     const night = s.streetlightIntensity;
     if (headlightMatRef.current) {
-      headlightMatRef.current.emissiveIntensity = 0.4 + night * 5;
+      headlightMatRef.current.emissiveIntensity = 0.08 + night * 5;
     }
     if (taillightMatRef.current) {
       taillightMatRef.current.emissiveIntensity =
-        0.6 + night * 2 + (brake > 0 ? 4 : 0);
+        0.12 + night * 2 + (brake > 0 ? 3.5 : 0);
     }
     if (beamRef.current) {
       const mat = beamRef.current.material as THREE.MeshBasicMaterial;
