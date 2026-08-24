@@ -50,10 +50,11 @@ const BOARD_ROWS = 3;
  *  the sign/route signatures; without throttling, a continuously-changing
  *  signature (a car approaching a turn, or AI route_distance updating every
  *  reply) fired setNodeSigns/setCarRoutes ~12x/sec, re-rendering App -> Scene
- *  -> DrivableCar and dropping frames. 250ms (4Hz) is well above the rate at
- *  which a human reads a turn board or a route list, so the boards/HUD stay
- *  responsive while the heavy tree stops re-rendering on every reply. */
-const SIGN_FLUSH_MS = 250;
+ *  -> DrivableCar and dropping frames. 80ms (~12Hz) matches the backend reply
+ *  rate so board distances stay live without extra re-renders beyond what
+ *  the reply cycle already drives. The signboard components are memoized so
+ *  only boards whose queue actually changed re-render. */
+const SIGN_FLUSH_MS = 80;
 /** When no state has changed, still resend the last payload this often so
  *  the server can garbage-collect cars the client has removed. */
 const HEARTBEAT_MS = 500;
@@ -861,7 +862,7 @@ export function useSimulation(): SimulationState {
           break;
         }
       }
-      const startHop = legIndex >= 0 ? legIndex + 1 : 1;
+      let startHop = legIndex >= 0 ? legIndex + 1 : 1;
       let travelled = 0;
       if (car.player && sharedWorld.playerPos && sharedWorld.playerPos.floor >= 0) {
         // The player is physics-based: progress is always 0 and fromNode/
@@ -930,8 +931,23 @@ export function useSimulation(): SimulationState {
       if (legIndex >= 0) {
         const legProgress = Math.min(1, Math.max(0, car.progress));
         travelled = (1 - legProgress) * nodeGap(lotData, route[legIndex], route[legIndex + 1]);
-      } else if (route.length > 1) {
-        travelled = nodeGap(lotData, route[0], route[1]);
+      } else {
+        // The car's live leg isn't in the (stale) route path. Try to find
+        // the car's fromNode in the route — if it's there, the car has
+        // already reached that node, so the remaining distance starts from
+        // the NEXT hop. This is far more accurate than the old fallback
+        // (measuring from route[0] to route[1]), which could show the full
+        // first-leg distance even when the car was at the board node.
+        const fromIndex = route.indexOf(car.fromNode);
+        if (fromIndex >= 0 && fromIndex + 1 < route.length) {
+          startHop = fromIndex + 1;
+          travelled = 0;
+        } else if (route.length > 1) {
+          // fromNode not in route at all: fall back to the full first leg.
+          travelled = nodeGap(lotData, route[0], route[1]);
+        } else {
+          continue;
+        }
       }
 
       for (let hop = startHop; hop < route.length; hop += 1) {
@@ -1095,6 +1111,12 @@ export function useSimulation(): SimulationState {
           return current.filter((c) => c.id !== carId);
         });
       }
+      // Mark the state dirty so the next sendState sends a full snapshot
+      // (not a heartbeat). Without this, AI car node crossings go
+      // unreported for up to HEARTBEAT_MS (500ms) when the player isn't
+      // driving, leaving the backend's route path stale and causing the
+      // signboard distance to lag behind the car's actual position.
+      dirtyRef.current = true;
       sendState();
     },
     [sendState],
