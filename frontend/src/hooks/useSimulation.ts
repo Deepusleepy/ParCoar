@@ -8,6 +8,7 @@ import type {
   LotData,
   NodeSign,
   ServerMessage,
+  StateCar,
   StateMessage,
 } from "../types";
 import {

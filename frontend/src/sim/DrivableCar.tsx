@@ -14,7 +14,6 @@ import {
   LANE_WIDTH,
   ROAD_WIDTH,
   SLOT_OFFSET,
-  SLOT_WIDTH,
   toWorld,
 } from "./constants";
 
