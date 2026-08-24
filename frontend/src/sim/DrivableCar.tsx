@@ -2058,38 +2058,58 @@ export const DrivableCar = memo(function DrivableCar({
     // --- Live route distance for the guidance strip ---
     // The server's routeDistance is measured from the last reported node, so
     // it lags by up to one node gap (~3.5 m). Compute the true remaining
-    // distance every frame: find where the car sits on its route path, measure
-    // from the car's position to the next node, then add the rest of the path.
-    // Uses the precomputed routePathData (world-space XZ + inter-node gaps) so
-    // no toWorld() or nodeGap() call happens inside useFrame.
+    // distance every frame by projecting the car onto the nearest SEGMENT of
+    // the route path, then measuring from that projection to the segment's far
+    // endpoint plus every precomputed gap after it. Uses routePathData
+    // (world-space XZ + inter-node gaps) so no toWorld()/nodeGap() runs here.
+    //
+    // This replaces the old nearest-NODE scan, which measured from the car to
+    // the node AFTER the nearest one. Whenever the car was closer to the AHEAD
+    // node of its current leg (i.e. past the segment midpoint), the nearest
+    // node flipped to that ahead node and the whole current segment was
+    // skipped, so the distance jumped by one node gap at every crossing and
+    // read ~one gap too large whenever the car sat near a node (e.g. directly
+    // under a signboard). Segment projection is continuous and monotonic.
     if (speedRef && routePath.length >= 2) {
       const rpNodes = routePathData.nodes;
       const rpGaps = routePathData.gaps;
-      let liveDist = 0;
-      // Find the nearest node in the route path on the current floor.
-      let nearestIdx = -1;
-      let nearestDist = Infinity;
-      for (let i = 0; i < rpNodes.length; i++) {
-        const n = rpNodes[i];
-        if (n.floor !== floorRef.current) continue;
-        const d = Math.hypot(g.position.x - n.x, g.position.z - n.z);
-        if (d < nearestDist) {
-          nearestDist = d;
-          nearestIdx = i;
-        }
+      const px = g.position.x;
+      const pz = g.position.z;
+      const fl = floorRef.current;
+      let liveDist = -1;
+      let bestPerp = Infinity;
+      for (let i = 0; i < rpNodes.length - 1; i++) {
+        const a = rpNodes[i];
+        const b = rpNodes[i + 1];
+        // Keep the scan on the current floor. A ramp segment is counted when
+        // EITHER endpoint is on this floor, so the distance stays continuous
+        // through floor transitions instead of snapping when floorRef flips.
+        if (a.floor !== fl && b.floor !== fl) continue;
+        const segLen = rpGaps[i];
+        if (!(segLen > 0)) continue;
+        const abx = b.x - a.x;
+        const abz = b.z - a.z;
+        // Project the car onto segment A->B, clamped to the segment.
+        const t = Math.min(
+          1,
+          Math.max(0, ((px - a.x) * abx + (pz - a.z) * abz) / (segLen * segLen)),
+        );
+        const qx = a.x + t * abx;
+        const qz = a.z + t * abz;
+        const perp = Math.hypot(px - qx, pz - qz);
+        if (perp >= bestPerp) continue;
+        bestPerp = perp;
+        // Remaining = projection -> far endpoint, plus every hop after this.
+        let rem = (1 - t) * segLen;
+        for (let h = i + 1; h < rpNodes.length - 1; h++) rem += rpGaps[h];
+        liveDist = rem;
       }
-      if (nearestIdx >= 0 && nearestIdx < rpNodes.length - 1) {
-        // Distance from car to the next node in the path.
-        const next = rpNodes[nearestIdx + 1];
-        liveDist = Math.hypot(g.position.x - next.x, g.position.z - next.z);
-        // Add the remaining node-to-node gaps (precomputed).
-        for (let h = nearestIdx + 1; h < rpNodes.length - 1; h++) {
-          liveDist += rpGaps[h];
-        }
-      } else if (nearestIdx === rpNodes.length - 1) {
-        // At the last node: distance is how far the car is from it.
-        const last = rpNodes[nearestIdx];
-        liveDist = Math.hypot(g.position.x - last.x, g.position.z - last.z);
+      // No segment on the current floor (e.g. route already advanced to a
+      // floor the car hasn't registered): fall back to straight-line distance
+      // to the last node so the HUD never freezes at a stale value.
+      if (liveDist < 0) {
+        const last = rpNodes[rpNodes.length - 1];
+        liveDist = Math.hypot(px - last.x, pz - last.z);
       }
       speedRef.current.routeDistance = liveDist;
     } else if (speedRef) {

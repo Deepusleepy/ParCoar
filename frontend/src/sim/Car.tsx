@@ -8,6 +8,7 @@ import {
   AISLE_SPACING,
   CAR_DIMS,
   CAR_Y_OFFSET,
+  CAR_LENGTH,
   CAR_SPEED,
   COLOR_HEX,
   LANE_WIDTH,
@@ -15,7 +16,7 @@ import {
 } from "./constants";
 import { resolvePath } from "./paths";
 import { getSpeedScale } from "./simSpeed";
-import { isNodeEntryBlocked, readRoutePlan } from "../hooks/useSimulation";
+import { isNodeEntryBlocked, readPlayerPos, readRoutePlan } from "../hooks/useSimulation";
 
 const MODEL_PATHS: Record<CarSize, string> = {
   small: "/models/car_sport.glb",
@@ -752,6 +753,44 @@ function stepActiveCar(
 
   let segmentCount = points.length - 1;
   const speed = CAR_SPEED * getSpeedScale();
+
+  // Per-frame player gate: the node-entry gate (isNodeEntryBlocked) only
+  // runs at graph crossings, so once an AI car has entered a leg it would
+  // drive the whole leg without re-checking the player and could overlap a
+  // player that moved into its lane mid-leg. Hold the car this frame when
+  // the player is ahead in the same lane within a few car lengths. The
+  // resolved waypoints already carry the lane shift, so the lateral check
+  // against the current sub-segment direction directly distinguishes
+  // same-lane (block) from oncoming-lane (pass). Ramps stay covered
+  // because the entry gate still runs at the ramp node; the floor check
+  // here accepts the player when within one floor of the leg's fromNode.
+  const pp = readPlayerPos();
+  if (pp && Math.abs(pp.floor - fromNode.floor) < 1) {
+    const si = rt.segmentIndex;
+    const sa = points[si];
+    const sb = points[si + 1];
+    const sabx = sb.x - sa.x;
+    const sabz = sb.z - sa.z;
+    const sLen = Math.hypot(sabx, sabz);
+    if (sLen > 1e-4) {
+      const sux = sabx / sLen;
+      const suz = sabz / sLen;
+      const svx = pp.x - object.position.x;
+      const svz = pp.z - object.position.z;
+      const sForward = svx * sux + svz * suz;
+      const sLateral = Math.abs(svx * suz - svz * sux);
+      if (
+        sLateral < LANE_WIDTH * 0.65 &&
+        sForward > -CAR_LENGTH * 0.5 &&
+        sForward < CAR_LENGTH * 3
+      ) {
+        car.progress =
+          segmentCount > 0 ? (rt.segmentIndex + rt.segmentProgress) / segmentCount : 0;
+        return;
+      }
+    }
+  }
+
   rt.segmentProgress += (speed * dt) / Math.max(
     points[rt.segmentIndex].distanceTo(points[rt.segmentIndex + 1]),
     0.001,
