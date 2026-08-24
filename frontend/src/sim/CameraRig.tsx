@@ -86,12 +86,12 @@ const PITCH_LIMIT = Math.PI / 2 - 0.05;
  *  fixed 45°; the cockpit modes override it here, per mode, and every other
  *  mode restores the baseline on switch.
  *
- *  80° gives the widest useful view for a parking garage cockpit — tight
- *  spaces, pillars, and adjacent bays all stay visible without excessive
- *  edge distortion. The thin dashboard design keeps the lower occlusion
- *  minimal so most of the 80° band shows the road. */
+ *  68° is narrow enough that the car interior fills the view and feels
+ *  substantial (80° miniaturized everything), but wide enough to see
+ *  adjacent bays and pillars in tight parking garage spaces. Racing games
+ *  typically use 60-75° for cockpit view. */
 const SPECTATOR_FOV = 45;
-const COCKPIT_FOV = 80;
+const COCKPIT_FOV = 68;
 /** FOV easing time constant (seconds): a 45↔65 change settles in ~3τ ≈
  *  0.25 s, so switching modes breathes instead of snapping. Exponential in
  *  dt directly — lerpK() clamps its strength to ≤1 and cannot express a
@@ -237,6 +237,14 @@ export function CameraRig({
   /** Smoothed look target for the follow chase cam (same jitter fix as
    *  driveLookRef: AI heading steps arrive smoothed, not 1:1). */
   const followLookRef = useRef(new THREE.Vector3());
+  /** Smoothed position + look target for the POV cockpit cam. Without
+   *  smoothing, every micro-variation in the car's heading hits the camera
+   *  1:1, amplified by the look-ahead distance — the "entire car shakes"
+   *  effect. The drive/follow modes already smooth; POV was the only one
+   *  that didn't. */
+  const povPosRef = useRef(new THREE.Vector3());
+  const povLookRef = useRef(new THREE.Vector3());
+  const povHasInitRef = useRef(false);
   /** Current camera FOV, eased toward the mode's target each frame. */
   const fovRef = useRef(SPECTATOR_FOV);
 
@@ -502,6 +510,7 @@ export function CameraRig({
     povPitchOffsetRef.current = 0;
     hasPrevPlayerPosRef.current = false;
     povLookLockRef.current = false;
+    povHasInitRef.current = false;
   }, [mode]);
 
   // --- Per-frame camera driving. ---
@@ -596,21 +605,33 @@ export function CameraRig({
         camera.lookAt(driveLookRef.current);
       } else {
         // POV: driver's-eye position inside the cabin (right-hand drive).
-        // The eye sits at driver head height (1.38), forward near the
-        // windshield base (0.35), on the right-hand side (-0.42 = driver).
-        // The headliner mesh is hidden in POV mode (see CarInterior) so
-        // the only upper occlusion is the thin windshield header. The dash
-        // crest at 0.85 is well below the eye, keeping the lower view open.
-        const EYE_FWD = 0.35;
+        // The eye sits at driver head height, forward near the windshield
+        // base, on the right-hand side (-0.42 = driver). The headliner mesh
+        // is hidden in POV mode (see CarInterior) so the only upper
+        // occlusion is the thin windshield header. The dash crest is well
+        // below the eye, keeping the lower view open.
+        const EYE_FWD = 0.15;
         const EYE_RIGHT = 0.42;
-        const EYE_UP = 1.38;
+        const EYE_UP = 1.22;
         // Eye POSITION: the head rides in the cabin, so it tilts 1:1 with
         // the car (full yaw + ramp pitch). The look direction below levels
         // itself partially — see POV_PITCH_FOLLOW.
         tmpEuler.current.set(0, yaw, pitch, "XYZ");
         tmpQuat.current.setFromEuler(tmpEuler.current);
         tmpFwd2.current.set(EYE_FWD, EYE_UP, -EYE_RIGHT).applyQuaternion(tmpQuat.current).add(carPos);
-        camera.position.copy(tmpFwd2.current);
+
+        // Smooth the camera position. The raw eye position jumps every frame
+        // from heading/position micro-changes; without smoothing the entire
+        // view shakes. Drive and follow modes already smooth; POV was the
+        // only mode that did a raw copy. A high lerp factor (0.92) keeps the
+        // camera responsive while killing the jitter.
+        const povFirstFrame = !povHasInitRef.current;
+        if (povFirstFrame) {
+          povPosRef.current.copy(tmpFwd2.current);
+        } else {
+          povPosRef.current.lerp(tmpFwd2.current, lerpK(0.92, dt));
+        }
+        camera.position.copy(povPosRef.current);
 
         // Re-centre the view while the car moves; measure speed from the
         // group itself so no external wiring is needed.
@@ -646,11 +667,22 @@ export function CameraRig({
         );
         tmpQuat.current.setFromEuler(tmpEuler.current);
         tmpQuatLook.current.premultiply(tmpQuat.current);
+        // Reduced look-ahead from 14 to 8: the old 14-unit offset amplified
+        // heading changes (0.035 rad/frame at full lock → 0.49 unit swing in
+        // the look target). 8 keeps the forward view without the swing.
         tmpLook.current
-          .set(EYE_FWD + 14, EYE_UP - 0.4, -EYE_RIGHT)
+          .set(EYE_FWD + 8, EYE_UP - 0.4, -EYE_RIGHT)
           .applyQuaternion(tmpQuatLook.current)
           .add(carPos);
-        camera.lookAt(tmpLook.current);
+        // Smooth the look target too — same reason as the position. Without
+        // this, lookAt() gets a fresh jittery target every frame.
+        if (povFirstFrame) {
+          povLookRef.current.copy(tmpLook.current);
+        } else {
+          povLookRef.current.lerp(tmpLook.current, lerpK(0.95, dt));
+        }
+        povHasInitRef.current = true;
+        camera.lookAt(povLookRef.current);
       }
       return;
     }
