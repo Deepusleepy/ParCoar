@@ -91,36 +91,51 @@ def adjust_distance_for_pos(
     """Adjust route_distance using the player's live world position.
 
     The path starts at the player's last *reported* node, which can be
-    stale by up to one node gap (~3.5 m). Find the nearest node in the
-    path to the player's actual position, then recompute the remaining
-    distance from there. This makes the HUD distance decrease smoothly
-    as the car drives, instead of jumping at node crossings.
+    stale by up to one node gap (~3.5 m). Project the player onto the
+    nearest LEG of the path (not the nearest node) and recompute the
+    remaining distance from that projection. This makes the HUD distance
+    decrease smoothly as the car drives, instead of jumping at node
+    crossings: the old nearest-NODE scan flipped to the ahead node once
+    the player passed a segment midpoint, dropping the partial segment
+    and adding a one-gap staircase at every crossing.
     """
     if not pos or len(path) < 2:
         return distance
 
     px, pz = float(pos["x"]), float(pos["z"])
-    # Find the nearest node in the path to the player's actual position.
-    best_idx = 0
-    best_dist = float("inf")
-    for i, node_id in enumerate(path):
-        nx, ny = _node_world(node_id)
-        d = math.hypot(px - nx, pz - ny)
-        if d < best_dist:
-            best_dist = d
-            best_idx = i
+    best_leg = -1
+    best_perp = float("inf")
+    best_t = 0.0
+    for i in range(len(path) - 1):
+        ax, ay = _node_world(path[i])
+        bx, by = _node_world(path[i + 1])
+        dx, dy = bx - ax, by - ay
+        seg_len2 = dx * dx + dy * dy
+        if seg_len2 == 0:
+            continue
+        t = ((px - ax) * dx + (pz - ay) * dy) / seg_len2
+        if t < 0:
+            t = 0.0
+        elif t > 1:
+            t = 1.0
+        qx, qy = ax + t * dx, ay + t * dy
+        perp = math.hypot(px - qx, pz - qy)
+        if perp < best_perp:
+            best_perp = perp
+            best_leg = i
+            best_t = t
 
-    # Distance from the player to the next node in the path.
-    if best_idx < len(path) - 1:
-        nx, ny = _node_world(path[best_idx + 1])
-        remaining = math.hypot(px - nx, pz - ny)
-        # Add the rest of the path from best_idx+1 to the end.
-        for j in range(best_idx + 1, len(path) - 1):
-            remaining += _edge_cost_between(path[j], path[j + 1])
-        return remaining
-    else:
-        # Player is at or past the last node (destination).
-        return best_dist
+    if best_leg < 0:
+        # No usable segment (degenerate path): fall back to the original
+        # edge-cost distance so the HUD never freezes.
+        return distance
+
+    # Remaining = projection -> far endpoint of this leg (edge cost scaled
+    # by the un-driven fraction), plus every edge cost after this leg.
+    remaining = (1.0 - best_t) * _edge_cost_between(path[best_leg], path[best_leg + 1])
+    for j in range(best_leg + 1, len(path) - 1):
+        remaining += _edge_cost_between(path[j], path[j + 1])
+    return remaining
 
 
 def unavailable_slots(session: Session, exclude_car: str | None = None) -> set[str]:

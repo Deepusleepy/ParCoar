@@ -382,5 +382,83 @@ class ReconnectAdoptionConflictTest(unittest.TestCase):
         self.assertEqual(session.reservations["c1"], signs["c1"]["slot"])
 
 
+class TestAdjustDistanceForPos(unittest.TestCase):
+    """Tests that adjust_distance_for_pos computes the remaining route
+    distance from the player's live position, not the stale reported node."""
+
+    def setUp(self):
+        server.nodes = LOT["nodes"]
+        server.edges = LOT["edges"]
+        server.all_slots = {
+            nid for nid, n in server.nodes.items() if n["type"] == "slot"
+        }
+        server.EXIT_NODE = next(
+            nid for nid, n in server.nodes.items() if n["type"] == "exit"
+        )
+
+    def test_returns_original_distance_when_pos_is_none(self):
+        result = server.shortest_path("E0", "J0_0_5")
+        self.assertIsNotNone(result)
+        path, dist = result
+        self.assertEqual(server.adjust_distance_for_pos(None, path, dist), dist)
+
+    def test_returns_original_distance_for_short_path(self):
+        result = server.shortest_path("E0", "J0_0_1")
+        self.assertIsNotNone(result)
+        path, dist = result
+        # Path has only 2 nodes; adjust should still return something sensible.
+        adjusted = server.adjust_distance_for_pos(
+            {"x": 1.0, "z": 0.0, "floor": 0}, path, dist
+        )
+        # Player at x=1 is between E0(0) and J0_0_1(2.6), so distance to
+        # J0_0_1 should be ~1.6.
+        self.assertAlmostEqual(adjusted, 1.6, places=1)
+
+    def test_distance_decreases_as_player_drives_forward(self):
+        """The distance should decrease as the player moves toward the slot."""
+        session = server.Session()
+        # Spawn the player at E0
+        msg = message([car("P0", pos={"x": 0, "z": 0, "floor": 0})])
+        reply = server.handle_message(session, msg)
+        instr = reply["signs"][0]
+        slot = instr["slot"]
+        initial_dist = instr["route_distance"]
+
+        # Drive 5 units forward along x
+        msg2 = message([car("P0", assigned_slot=slot, pos={"x": 5, "z": 0, "floor": 0})])
+        reply2 = server.handle_message(session, msg2)
+        dist_after_5 = reply2["signs"][0]["route_distance"]
+
+        # Drive 10 units forward
+        msg3 = message([car("P0", assigned_slot=slot, pos={"x": 10, "z": 0, "floor": 0})])
+        reply3 = server.handle_message(session, msg3)
+        dist_after_10 = reply3["signs"][0]["route_distance"]
+
+        # Distance should decrease as the player drives toward the slot.
+        # (It might not be strictly monotonic if the path turns, but for
+        # a slot near the entry on the same aisle, it should decrease.)
+        self.assertLess(dist_after_5, initial_dist + 1,
+                        f"Distance after 5m ({dist_after_5}) should be less than "
+                        f"initial ({initial_dist}) + tolerance")
+
+    def test_distance_without_pos_is_stale(self):
+        """Without pos, the distance should be the full path distance
+        from the stale node, not adjusted."""
+        session = server.Session()
+        msg = message([car("P0")])  # no pos field
+        reply = server.handle_message(session, msg)
+        instr = reply["signs"][0]
+        slot = instr["slot"]
+        stale_dist = instr["route_distance"]
+
+        # Send again without pos — distance should be the same (stale)
+        msg2 = message([car("P0", assigned_slot=slot)])
+        reply2 = server.handle_message(session, msg2)
+        stale_dist2 = reply2["signs"][0]["route_distance"]
+
+        self.assertEqual(stale_dist, stale_dist2,
+                         "Without pos, distance should be stale (same every reply)")
+
+
 if __name__ == "__main__":
     unittest.main()

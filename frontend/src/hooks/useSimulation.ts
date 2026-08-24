@@ -107,6 +107,13 @@ const sharedWorld: {
   playerPos: { x: number; z: number; floor: number } | null;
 } = { lot: null, cars: [], instructions: new Map(), playerPos: null };
 
+/** Test-only setter for the shared world lot. Not used at runtime. */
+export function __setSharedWorldLotForTests(l: LotData): void {
+  sharedWorld.lot = l;
+  sharedWorld.cars = [];
+  sharedWorld.instructions = new Map();
+}
+
 /**
  * Physical entry gate used at node crossings. Mirrors the standstill gate
  * in applyInstructions: a car may not roll into a graph node while another
@@ -165,25 +172,39 @@ export function isNodeEntryBlocked(
   const ux = dx / legDist;
   const uz = dz / legDist;
 
-  // Shift the car position into its driving lane (left-hand offset, matching
-  // resolvePath's LANE_SHIFT = -LANE_WIDTH/2 applied via cross(tangent, up)).
-  const carX = cx + uz * (LANE_WIDTH / 2);
-  const carZ = cz - ux * (LANE_WIDTH / 2);
-
-  // Project the player onto the path: forward (along travel) and lateral
-  // (perpendicular) distances relative to the AI car's lane position.
-  const vx = pp.x - carX;
-  const vz = pp.z - carZ;
+  // Compute the player's forward and lateral position relative to the
+  // road CENTERLINE (not the AI car's lane-shifted position). The AI car
+  // is lane-shifted by LANE_SHIFT = -LANE_WIDTH/2 (via cross(tangent, up)),
+  // but the player is physics-based and can be anywhere on the road.
+  // Comparing the player's actual position to the AI car's lane-shifted
+  // position gives a lateral distance of LANE_WIDTH/2 when the player is
+  // at the centerline — which is less than the old threshold and would
+  // incorrectly block. Instead, measure lateral from the centerline and
+  // use the SIGNED value to determine which side the player is on.
+  //
+  // For +X travel (ux=1, uz=0): lateral = -vz. The AI car is at -Z
+  // (LANE_SHIFT = -LANE_WIDTH/2 via cross(tangent,up) = [0,0,1] * -W/2).
+  // So lateral > 0 means the player is at -Z (same lane as AI), and
+  // lateral < 0 means the player is at +Z (oncoming lane).
+  const vx = pp.x - cx;
+  const vz = pp.z - cz;
   const forward = vx * ux + vz * uz;
-  const lateral = Math.abs(vx * uz - vz * ux);
+  const lateral = vx * uz - vz * ux; // signed: + = same lane, - = oncoming
 
-  // Player in the oncoming lane — let the AI car pass.
-  if (lateral >= LANE_WIDTH * 0.65) return false;
-  // Player behind the AI car — not blocking entry to a node ahead.
+  // Player clearly in the oncoming lane (signed lateral <= -threshold)
+  // — let the AI car pass.
+  if (lateral <= -LANE_WIDTH * 0.4) return false;
+  // Player clearly behind — not blocking entry to a node ahead.
   if (forward < -CAR_LENGTH * 0.5) return false;
-  // Player well past the target node — already cleared the entry.
-  if (forward > legDist + CAR_LENGTH) return false;
-  // Player ahead in the same lane near the target node — block.
+  // Player ahead in the same lane near the car — block. The bound is a
+  // fixed stopping distance (a few car lengths), NOT the full leg length:
+  // the old `forward > legDist + CAR_LENGTH` upper bound held the AI car at
+  // the entry whenever the player was anywhere ahead on the whole leg, so
+  // on long aisles the AI car froze at the entry until the player passed the
+  // target node. A player far ahead is not an obstacle; the per-frame gate
+  // in Car.tsx handles a player that closes in mid-leg.
+  const PLAYER_ENTRY_HOLD = CAR_LENGTH * 3;
+  if (forward > PLAYER_ENTRY_HOLD) return false;
   return true;
 }
 
@@ -200,6 +221,14 @@ export function updatePlayerPos(x: number, z: number, floor: number): void {
   } else {
     sharedWorld.playerPos = { x, z, floor };
   }
+}
+
+/** Read the player car's live physical position, or null when no player is
+ *  in the garage. Used by the per-frame AI gate in Car.tsx to avoid driving
+ *  through a player stopped mid-leg (the node-entry gate only checks at
+ *  graph crossings). */
+export function readPlayerPos(): { x: number; z: number; floor: number } | null {
+  return sharedWorld.playerPos;
 }
 
 export type { GarageFill, ParkedCarData } from "../sim/fill";
@@ -430,7 +459,18 @@ export function useSimulation(): SimulationState {
     // send. Avoid the per-tick JSON.stringify + array rebuild entirely; just
     // resend the last payload occasionally so the server can GC cars that
     // disappeared from the client.
-    if (!dirtyRef.current) {
+    //
+    // Exception: while the player is driving, its live world position is
+    // mutated every frame in sharedWorld.playerPos but never marks the
+    // payload dirty (per-frame movement doesn't change activeCars). The
+    // backend's adjust_distance_for_pos reads entry.pos, so a stale resend
+    // would freeze route_distance at the last dirty-build position (e.g. the
+    // spawn E0 position right after start). Force a rebuild every tick while
+    // the player is in the garage with a live position so pos stays fresh.
+    const playerLive =
+      activeCarsRef.current.some((car) => car.player) &&
+      sharedWorld.playerPos !== null;
+    if (!dirtyRef.current && !playerLive) {
       if (lastPayloadRef.current === null) return;
       const now = Date.now();
       if (now - lastHeartbeatRef.current < HEARTBEAT_MS) return;
@@ -814,30 +854,44 @@ export function useSimulation(): SimulationState {
         // from the actual position to the next node. This keeps the
         // signboard distance accurate instead of frozen at a stale value.
         const pp = sharedWorld.playerPos;
-        let nearestIdx = 0;
-        let nearestDist = Infinity;
-        for (let i = 0; i < route.length; i++) {
-          const rn = lotData.nodes[route[i]];
-          if (!rn || rn.floor !== pp.floor) continue;
-          const [rx, , rz] = toWorld(rn.x, rn.y, rn.floor);
-          const d = Math.hypot(pp.x - rx, pp.z - rz);
-          if (d < nearestDist) {
-            nearestDist = d;
-            nearestIdx = i;
+        // Find the LEG the player is currently driving, not the nearest
+        // node. The nearest node can be the one AHEAD of the player
+        // (once the player passes the midpoint of a segment), and
+        // measuring from the player to the node after that skips the
+        // partial segment the player is still on and uses a straight-
+        // line distance instead of the path distance. Project the
+        // player onto each route segment and pick the closest one; the
+        // remaining distance is the path distance from the player to the
+        // end of that leg.
+        let legStart = 0;
+        let bestLegDist = Infinity;
+        let legProgress = 0;
+        for (let i = 0; i + 1 < route.length; i += 1) {
+          const a = lotData.nodes[route[i]];
+          const b = lotData.nodes[route[i + 1]];
+          if (!a || !b || a.floor !== pp.floor) continue;
+          const [ax, , az] = toWorld(a.x, a.y, a.floor);
+          const [bx, , bz] = toWorld(b.x, b.y, b.floor);
+          const dx = bx - ax, dz = bz - az;
+          const segLen2 = dx * dx + dz * dz;
+          if (segLen2 === 0) continue;
+          let t = ((pp.x - ax) * dx + (pp.z - az) * dz) / segLen2;
+          if (t < 0) t = 0; else if (t > 1) t = 1;
+          const px = ax + t * dx, pz = az + t * dz;
+          const d = Math.hypot(pp.x - px, pp.z - pz);
+          if (d < bestLegDist) {
+            bestLegDist = d;
+            legStart = i;
+            legProgress = t;
           }
         }
-        // Distance from the player to the next node in the path.
-        if (nearestIdx < route.length - 1) {
-          const next = lotData.nodes[route[nearestIdx + 1]];
-          if (next) {
-            const [nx, , nz] = toWorld(next.x, next.y, next.floor);
-            travelled = Math.hypot(pp.x - nx, pp.z - nz);
-          }
-        }
-        // travelled now holds the distance from the car to route[nearestIdx+1].
-        // The loop below adds nodeGap for each hop after startHop, so set
-        // startHop to nearestIdx+1 to skip the hops the car has already passed.
-        const playerStartHop = nearestIdx + 1;
+        // Remaining driving distance from the player to the end of the
+        // current leg, measured along the path (nodeGap), not straight-
+        // line. The loop below adds nodeGap for each hop after
+        // playerStartHop, so seed travelled with the partial leg
+        // distance and start hopping from the leg's end node.
+        const playerStartHop = legStart + 1;
+        travelled = (1 - legProgress) * nodeGap(lotData, route[legStart], route[legStart + 1]);
         for (let hop = playerStartHop; hop < route.length; hop += 1) {
           if (hop > playerStartHop) travelled += nodeGap(lotData, route[hop - 1], route[hop]);
           const node = lotData.nodes[route[hop]];
@@ -1097,9 +1151,19 @@ export function useSimulation(): SimulationState {
   }, []);
 
   const enterCar = useCallback(() => {
-    setActiveCars((current) =>
-      current.some((car) => car.player) ? current : [...current, spawnPlayerCar()],
-    );
+    setActiveCars((current) => {
+      if (current.some((car) => car.player)) return current;
+      // Don't spawn the player on top of an AI car sitting at the entry
+      // node. The player has no collision separation against active AI
+      // cars (only parked cars), so overlapping at spawn would freeze
+      // both cars in place. If the entry is occupied, skip this spawn
+      // attempt — the user can press V again once the AI car departs.
+      const entryOccupied = current.some(
+        (car) => !car.player && car.fromNode === ENTRY_NODE && car.toNode === ENTRY_NODE,
+      );
+      if (entryOccupied) return current;
+      return [...current, spawnPlayerCar()];
+    });
     setPlayerDriving(true);
     setPlayerRunId((runId) => runId + 1);
   }, []);
