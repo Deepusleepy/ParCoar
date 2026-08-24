@@ -5,6 +5,7 @@ import { Scene, SceneLoadingFallback, type OrbitControlsHandle } from "./sim/Sce
 import { ActiveCarField, ParkedCarField, type ParkedCarInstance } from "./sim/Car";
 import type { ParkedCarPos, PlayerSpeedRef } from "./sim/DrivableCar";
 import { SimRenderContext, NodeSignsContext, type SimRenderValue } from "./sim/SimContext";
+import { SlotHighlight } from "./sim/SlotHighlight";
 import { buildRoadSegments } from "./sim/roadSegments";
 import { AISLE_SPACING, bayLabel, CAR_Y_OFFSET, COLOR_HEX, toWorld } from "./sim/constants";
 import type { CameraMode } from "./sim/CameraRig";
@@ -386,6 +387,12 @@ const SimContents = memo(function SimContents() {
   return (
     <Suspense fallback={<SceneLoadingFallback />}>
       <ParkedCarField cars={parkedCars} />
+      <SlotHighlight
+        lot={lot}
+        assignedSlot={playerCar?.slot ?? null}
+        playerColor={playerCar?.color ?? "red"}
+        visible={!!playerCar && playerCar.status !== "parked" && !playerCar.leaving}
+      />
       <ActiveCarField
         cars={activeCars.filter((car) => !car.player)}
         lot={lot}
