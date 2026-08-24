@@ -1536,6 +1536,53 @@ export const DrivableCar = memo(function DrivableCar({
     carGroupsRef.current.set(PLAYER_CAR_KEY, g);
     if (g.name !== PLAYER_CAR_KEY) g.name = PLAYER_CAR_KEY;
 
+    // --- Parked lock: once the backend confirms "parked", snap the car to
+    // the assigned slot and freeze it there. The player can press L to leave,
+    // which sets status back to "leaving" and re-enables physics. Without this
+    // the car keeps responding to collisions and drifts out of the bay. ---
+    if (playerStatus === "parked" && assignedSlotPos && !leaving) {
+      const slotNode = lot.nodes[assignedSlot!];
+      const aisleY = Math.round(slotNode.y / AISLE_SPACING) * AISLE_SPACING;
+      const targetYaw = slotNode.y < aisleY ? Math.PI / 2 : -Math.PI / 2;
+      g.position.set(
+        assignedSlotPos.x,
+        floorRef.current * FLOOR_HEIGHT + ROAD_Y + CAR_Y_OFFSET,
+        assignedSlotPos.z,
+      );
+      headingRef.current = targetYaw;
+      g.rotation.y = targetYaw;
+      velocityRef.current = 0;
+      lateralVelRef.current = 0;
+      steerAngleRef.current = 0;
+      // Keep shadow under the car.
+      if (shadowRef.current) {
+        shadowRef.current.position.set(
+          g.position.x,
+          g.position.y - CAR_Y_OFFSET - ROAD_Y + SHADOW_LIFT,
+          g.position.z,
+        );
+      }
+      // Update player position for AI awareness.
+      updatePlayerPos(g.position.x, g.position.z, floorRef.current);
+      if (speedRef) speedRef.current.speed = 0;
+      liveSpeedRef.current = 0;
+      // Clear auto-park offer if it was active.
+      if (autoParkOfferedRef.current) {
+        autoParkOfferedRef.current = false;
+        onAutoParkAvailableRef.current?.(false);
+      }
+      // Stationary wheels.
+      for (let i = 0; i < wheelRefs.current.length; i++) {
+        const wr = wheelRefs.current[i];
+        if (wr) wr.rotation.y = 0;
+        if (i < 2) {
+          const sr = steerRefs.current[i];
+          if (sr) sr.rotation.y = 0;
+        }
+      }
+      return;
+    }
+
     // --- Input (WASD + arrow keys) ---
     const accel = keys.current["KeyW"] || keys.current["ArrowUp"] ? 1 : 0;
     const brake = keys.current["KeyS"] || keys.current["ArrowDown"] ? 1 : 0;
