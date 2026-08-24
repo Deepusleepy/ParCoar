@@ -335,6 +335,52 @@ def handle_message(session: Session, message: dict) -> dict:
             continue
 
         if car["node"] == destination:
+            if (
+                not car["leaving"]
+                and destination in session.occupied
+                and car["status"] != "parked"
+            ):
+                # The slot is physically occupied by a pre-parked car (or
+                # another car that already parked). This can happen if the
+                # car was assigned the slot before the occupied_slots
+                # snapshot was reported (e.g. a race between the first
+                # state message and the pre-parked fill). Reassign to a
+                # free slot instead of parking on top of the occupant.
+                # Skip reassignment if the car was already parked (it owns
+                # the slot).
+                # The car is at a slot node, which has no outgoing edges
+                # in the directed graph. Find the junction that connects
+                # to this slot and use it as the starting point for both
+                # slot assignment and pathfinding. The frontend's
+                # resolvePath handles the slot-to-junction bezier.
+                start_node = car["node"]
+                if nodes[start_node]["type"] == "slot":
+                    for src, outs in edges.items():
+                        if any(e["to"] == start_node for e in outs):
+                            start_node = src
+                            break
+                # Temporarily set car["node"] to the junction so
+                # assign_slot's nearest_free_slot can find a path.
+                original_node = car["node"]
+                car["node"] = start_node
+                assign_slot(session, car)
+                car["node"] = original_node
+                if car["slot"] is None:
+                    car["status"] = "no_slot"
+                    instructions.append(_instruction(car, [car["node"]], 0.0, "no_slot"))
+                    continue
+                result = shortest_path(start_node, car["slot"])
+                if result is None:
+                    car["status"] = "no_path"
+                    instructions.append(_instruction(car, [car["node"]], 0.0, "no_path"))
+                    continue
+                path, distance = result
+                # Prepend the slot node so the frontend knows to back out
+                # first via resolvePath's slot bezier.
+                path = [car["node"]] + path
+                car["status"] = "routing"
+                instructions.append(_instruction(car, path, distance, "routing"))
+                continue
             status = "left" if car["leaving"] else "parked"
             car["status"] = status
             release_reservation(session, car_id)
