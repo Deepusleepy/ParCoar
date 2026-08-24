@@ -330,7 +330,6 @@ export function useSimulation(): SimulationState {
   const instructionsRef = useRef<Map<string, InstructionSign>>(new Map());
   const lastSpawnRef = useRef(0);
   const lastSignSignatureRef = useRef("");
-  const lastRouteSignatureRef = useRef("");
   /** Throttle: setNodeSigns/setCarRoutes fire at most 4Hz so the ~12.5/sec
    *  WebSocket reply rate doesn't re-render the App tree on every reply.
    *  A pending flag ensures the last signature change eventually flushes even
@@ -592,8 +591,11 @@ export function useSimulation(): SimulationState {
           car.vacating = null;
           schedulePlayerRespawn();
         } else {
+          const slotChanged = instruction.slot !== car.slot;
+          const statusChanged = instruction.status !== car.status;
           car.slot = instruction.slot ?? car.slot;
           car.status = instruction.status;
+          if (slotChanged || statusChanged) changed = true;
         }
         continue;
       }
@@ -683,11 +685,18 @@ export function useSimulation(): SimulationState {
       }
 
       const gone = new Set(departed);
-      setActiveCars((current) =>
-        current.some((car) => (car.parked && !car.player) || gone.has(car.id))
-          ? current.filter((car) => (!car.parked || car.player) && !gone.has(car.id))
-          : current,
-      );
+      setActiveCars((current) => {
+        const needsFilter = current.some(
+          (car) => (car.parked && !car.player) || gone.has(car.id),
+        );
+        if (needsFilter) {
+          return current.filter((car) => (!car.parked || car.player) && !gone.has(car.id));
+        }
+        // When `changed` is true but no cars need filtering (e.g. the player's
+        // slot/status were mutated in place), still produce a new array so React
+        // re-renders and DrivableCar receives the updated assignedSlot prop.
+        return changed ? [...current] : current;
+      });
     }
 
     const activeIds = new Set(cars.map((car) => car.id));
@@ -695,10 +704,10 @@ export function useSimulation(): SimulationState {
       if (!activeIds.has(id)) map.delete(id);
     }
 
-    // Flush any pending board/route updates that were deferred by the
-    // throttle on a previous reply. This runs on every reply (even when the
-    // rebuild below is skipped) so a throttled change eventually reaches React
-    // state without waiting for another structural change.
+    // Flush any pending board updates that were deferred by the throttle on a
+    // previous reply. This runs on every reply (even when the rebuild below is
+    // skipped) so a throttled change eventually reaches React state without
+    // waiting for another structural change.
     if (signPendingRef.current) {
       const now = Date.now();
       if (now - lastSignFlushRef.current >= SIGN_FLUSH_MS) {
@@ -707,7 +716,35 @@ export function useSimulation(): SimulationState {
         setNodeSigns(pendingSignsRef.current);
       }
     }
-    if (routePendingRef.current) {
+
+    // Routes are rebuilt on EVERY reply (not gated on instructionsChanged)
+    // because the route list carries route_distance, which changes every
+    // reply as cars move. The signature-based gate below would skip the
+    // rebuild between node crossings, freezing the distance readout shown in
+    // RoutePanel. The rebuild is cheap (one pass over active cars, no sorting
+    // or directionAt calls); the 4Hz throttle on setCarRoutes still caps the
+    // React re-render rate, so the heavy App tree only updates 4x/sec.
+    const routes: CarRoute[] = [];
+    for (const car of cars) {
+      if (car.parked) continue;
+      const instruction = map.get(car.id);
+      if (!instruction || instruction.path.length < 2) continue;
+      routes.push({
+        carId: car.id,
+        plate: instruction.plate,
+        color: instruction.color,
+        slot: instruction.slot,
+        path: instruction.path,
+        floor: lotData.nodes[instruction.node]?.floor ?? 0,
+        routeDistance: instruction.route_distance,
+        estimatedSeconds: instruction.estimated_seconds,
+        destinationType: instruction.destination_type,
+        nextDirection: instruction.next_direction,
+      });
+    }
+    pendingRoutesRef.current = routes;
+    routePendingRef.current = true;
+    {
       const now = Date.now();
       if (now - lastRouteFlushRef.current >= SIGN_FLUSH_MS) {
         lastRouteFlushRef.current = now;
@@ -716,11 +753,20 @@ export function useSimulation(): SimulationState {
       }
     }
 
-    // Skip the expensive queues/signList/routes rebuild when neither the
-    // instructions nor any car's lifecycle state changed structurally since
-    // the last reply. This drops the per-reply cost from ~15-25 object
-    // allocations + 2 long signature strings to near zero in steady state.
-    if (!changed && !instructionsChanged) return;
+    // Skip the expensive queues/signList rebuild when neither the instructions
+    // nor any car's lifecycle state changed structurally since the last reply,
+    // AND no sign flush is due. The sign boards carry per-car distance which
+    // changes every reply as cars move, so the rebuild must still run at the
+    // 4Hz flush rate to keep board distances live. Without this, a car just
+    // driving down an aisle (no structural change) would freeze the distance
+    // on every overhead board until the next turn/slot transition.
+    if (
+      !changed &&
+      !instructionsChanged &&
+      Date.now() - lastSignFlushRef.current < SIGN_FLUSH_MS
+    ) {
+      return;
+    }
 
     const queues = new Map<string, BoardCar[]>();
     for (const car of cars) {
@@ -781,7 +827,7 @@ export function useSimulation(): SimulationState {
     const signSignature = signList
       .map((sign) =>
         `${sign.nodeId}:${sign.cars
-          .map((car) => `${car.plate}|${car.direction}|${car.slot}`)
+          .map((car) => `${car.plate}|${car.direction}|${car.slot}|${Math.round(car.distance)}`)
           .join(",")}`,
       )
       .join("|");
@@ -799,46 +845,6 @@ export function useSimulation(): SimulationState {
         lastSignFlushRef.current = now;
         signPendingRef.current = false;
         setNodeSigns(pendingSignsRef.current);
-      }
-    }
-
-    const routes: CarRoute[] = [];
-    for (const car of cars) {
-      if (car.parked) continue;
-      const instruction = map.get(car.id);
-      if (!instruction || instruction.path.length < 2) continue;
-      routes.push({
-        carId: car.id,
-        plate: instruction.plate,
-        color: instruction.color,
-        slot: instruction.slot,
-        path: instruction.path,
-        floor: lotData.nodes[instruction.node]?.floor ?? 0,
-        routeDistance: instruction.route_distance,
-        estimatedSeconds: instruction.estimated_seconds,
-        destinationType: instruction.destination_type,
-        nextDirection: instruction.next_direction,
-      });
-    }
-    // Exclude routeDistance from the signature entirely so setCarRoutes fires
-    // only on structural changes (path/slot reassignment), not on every 80ms
-    // reply where AI cars move ~0.56u and the unrounded distance churns. Live
-    // distances are already pushed to the HUD via playerSpeedRef and Car's
-    // own useFrame; the route list does not need per-reply distance updates.
-    const routeSignature = routes
-      .map((route) => `${route.carId}:${route.slot ?? "-"}:${route.path.join(">")}`)
-      .join("|");
-    if (routeSignature !== lastRouteSignatureRef.current) {
-      lastRouteSignatureRef.current = routeSignature;
-      pendingRoutesRef.current = routes;
-      routePendingRef.current = true;
-    }
-    if (routePendingRef.current) {
-      const now = Date.now();
-      if (now - lastRouteFlushRef.current >= SIGN_FLUSH_MS) {
-        lastRouteFlushRef.current = now;
-        routePendingRef.current = false;
-        setCarRoutes(pendingRoutesRef.current);
       }
     }
   }, [schedulePlayerRespawn]);
