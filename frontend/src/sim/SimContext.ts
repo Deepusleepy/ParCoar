@@ -39,6 +39,9 @@ export interface SimRenderValue {
   /** Stable callback for DrivableCar to update autoParkAvailableRef.
    *  Wrapped in useCallback so memo(DrivableCar) doesn't re-render. */
   onAutoParkAvailable: (available: boolean) => void;
+  /** Stable callback for DrivableCar to show/clear the wrong-bay prompt.
+   *  Pass the slot id to show, or null to clear. */
+  onWrongBayPrompt: (slotId: string | null) => void;
 }
 
 export const SimRenderContext = createContext<SimRenderValue | null>(null);

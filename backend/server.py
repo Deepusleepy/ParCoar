@@ -334,6 +334,26 @@ def handle_message(session: Session, message: dict) -> dict:
             instructions.append(_instruction(car, [car["node"]], 0.0, "no_slot"))
             continue
 
+        # Wrong-bay acceptance: the player drove into a different slot than
+        # the one reserved. If that slot is free, adopt it as the new
+        # assignment and park there — this frees the old reservation so it
+        # doesn't go to waste. Only applies to non-leaving cars at a slot
+        # node that isn't their current destination.
+        if (
+            not car["leaving"]
+            and car["status"] != "parked"
+            and car["node"] != destination
+            and car["node"] in all_slots
+            and car["node"] not in unavailable_slots(session, exclude_car=car["id"])
+        ):
+            release_reservation(session, car_id)
+            session.reservations[car_id] = car["node"]
+            car["slot"] = car["node"]
+            car["status"] = "parked"
+            session.occupied.add(car["node"])
+            instructions.append(_instruction(car, [car["node"]], 0.0, "parked"))
+            continue
+
         if car["node"] == destination:
             if (
                 not car["leaving"]
