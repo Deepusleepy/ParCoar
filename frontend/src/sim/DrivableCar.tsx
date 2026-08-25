@@ -85,7 +85,7 @@ const ACCEL_RATE = 10; // units/sec^2 when pressing W (was 14 — too instant)
 const BRAKE_RATE = 22; // units/sec^2 when pressing S (was 28 — too abrupt)
 const MAX_SPEED = 9; // forward speed cap (parking-appropriate)
 const MAX_REVERSE = MAX_SPEED / 2; // reverse speed cap
-const TURN_RATE = 3.0; // rad/sec at full steering
+const TURN_RATE = 2.6; // rad/sec at full steering (was 3.0 twitchy, 2.2 sluggish)
 /** Speed above which full-lock steering starts to fade back off.
  *  Everything at or below this keeps IDENTICAL authority to before — parking
  *  manoeuvres must not get harder. */
@@ -94,7 +94,7 @@ const STEER_FADE_START = 3;
  *  from STEER_FADE_START up. A constant yaw rate at 9 u/s whips the
  *  car through hairpins a real car would sweep; trimming toward high speed
  *  keeps low speeds nimble and high speeds stable. */
-const STEER_HIGH_SPEED_FADE = 0.25;
+const STEER_HIGH_SPEED_FADE = 0.30;
 const FRICTION = 0.997; // velocity decay per frame when coasting (was 0.97 — felt like driving through sand)
 const DRAG = 0.006; // quadratic drag — creates natural acceleration curve
 /** Reverse throttle once S has braked all the way to zero. Deliberately much
@@ -105,9 +105,9 @@ const REVERSE_ACCEL = 10;
 /** Forward speed under which S stops braking and starts reversing. Only has
  *  to cover floating-point residue: the brake clamps to exactly zero. */
 const BRAKE_TO_REVERSE_EPSILON = 0.05;
-const STEER_SPEED = 6.0; // how fast steering angle ramps (rad/sec)
-const STEER_RETURN = 6.0; // how fast steering returns to center (rad/sec)
-const MAX_STEER_ANGLE = 0.7; // max steering angle (~40°)
+const STEER_SPEED = 5.2; // how fast steering angle ramps (was 6.0 snappy, 4.5 slow)
+const STEER_RETURN = 5.8; // how fast steering returns to center
+const MAX_STEER_ANGLE = 0.65; // max steering angle (~37°, was 0.7 twitchy, 0.6 sluggish)
 const GRIP = 0.86; // lateral grip: 1 = on rails, 0 = ice (0.85-0.92 sweet spot)
 const ROLLING_RESISTANCE = 0.15; // drag while throttling (prevents linear accel)
 
