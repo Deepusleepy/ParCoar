@@ -551,14 +551,14 @@ function WrongBayPrompt({
   lot,
 }: {
   slotRef: React.MutableRefObject<string | null>;
-  lot: LotData;
+  lot: LotData | null;
 }) {
   const [slotId, setSlotId] = useState<string | null>(null);
   useEffect(() => {
     const interval = setInterval(() => setSlotId(slotRef.current), 200);
     return () => clearInterval(interval);
   }, [slotRef]);
-  if (!slotId) return null;
+  if (!slotId || !lot) return null;
   const label = lot.nodes[slotId] ? bayLabel(slotId) : slotId;
   return (
     <div className="pointer-events-none rounded-md border border-amber-500/60 bg-black/80 px-3 py-1.5 text-[12px] font-semibold tracking-wide text-amber-400">
