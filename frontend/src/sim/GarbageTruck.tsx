@@ -109,9 +109,10 @@ export function GarbageTruck({ car, lot, onArrive, carGroupsRef }: GarbageTruckP
       // We must clone the geometry before translating, or we corrupt the
       // cached useGLTF scene — same pattern as Car.tsx line 661.
       if (
-        obj.name === "FrontWheel_R" ||
-        obj.name === "FrontWheel_L" ||
-        obj.name === "BackWheels"
+        obj instanceof THREE.Mesh &&
+        (obj.name === "FrontWheel_R" ||
+          obj.name === "FrontWheel_L" ||
+          obj.name === "BackWheels")
       ) {
         const recentered = obj.geometry.clone();
         recentered.computeBoundingBox();
