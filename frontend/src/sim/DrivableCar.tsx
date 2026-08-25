@@ -27,6 +27,9 @@ export interface PlayerSpeedRef {
   /** Live remaining route distance in metres, updated every frame.
    *  Falls back to -1 when no route is available. */
   routeDistance: number;
+  /** True when the car has driven past the destination slot. The HUD
+   *  shows "behind — turn around" instead of the ahead distance. */
+  overshot: boolean;
 }
 
 /** World-space position of a parked car, for collision checks. */
@@ -67,6 +70,10 @@ interface DrivableCarProps {
   /** Called when auto-park becomes available/unavailable (player near
    *  assigned slot). The HUD shows a "Press P to park" prompt. */
   onAutoParkAvailable?: (available: boolean) => void;
+  /** Called when the player settles in a non-assigned bay. The HUD shows
+   *  a "Press L to park here" prompt. Pass the slot id and whether the
+   *  prompt is active. */
+  onWrongBayPrompt?: (slotId: string | null) => void;
 }
 
 /* ------------------------------------------------------------------ *
@@ -111,6 +118,11 @@ const AUTO_PARK_OFFER_RADIUS = 12;
 const AUTO_PARK_DURATION = 2.5;
 /** Maximum heading difference (radians) for auto-park to be offered. */
 const AUTO_PARK_MAX_HEADING_DIFF = Math.PI * 0.75;
+/** Grace period (ms) before auto-accepting a wrong bay. The player gets
+ *  this long to drive away or press L to accept. */
+const WRONG_BAY_GRACE_MS = 10_000;
+/** Distance (units) within which a settled car is considered "in a bay". */
+const BAY_DETECT_RADIUS = 2.4;
 
 /* ------------------------------------------------------------------ *
  *  Collision tuning
@@ -1296,6 +1308,7 @@ export const DrivableCar = memo(function DrivableCar({
   onReportNode,
   onLeaveBay,
   onAutoParkAvailable,
+  onWrongBayPrompt,
 }: DrivableCarProps) {
   const groupRef = useRef<THREE.Group>(null);
   const shadowRef = useRef<THREE.Mesh>(null);
@@ -1343,6 +1356,15 @@ export const DrivableCar = memo(function DrivableCar({
   } | null>(null);
   const autoParkOfferedRef = useRef(false);
   const onAutoParkAvailableRef = useRef(onAutoParkAvailable);
+  // Wrong-bay detection: when the player settles in a non-assigned bay,
+  // show a prompt and allow L to accept it. After a grace period, auto-accept.
+  const wrongBayRef = useRef<{
+    slotId: string;
+    settledAt: number; // timestamp when first detected
+  } | null>(null);
+  const wrongBayPromptRef = useRef(false);
+  const onWrongBayPromptRef = useRef(onWrongBayPrompt);
+  onWrongBayPromptRef.current = onWrongBayPrompt;
   onAutoParkAvailableRef.current = onAutoParkAvailable;
 
   // Pre-compute ramp curves for height sampling.
@@ -1375,16 +1397,17 @@ export const DrivableCar = memo(function DrivableCar({
 
   // World-space XZ positions of all slot nodes, for the slot-area exception
   // in the road clamp (allows the car to drive off the road into parking bays).
+  // Also used for wrong-bay detection (checking all slots, not just assigned).
   // Bucketed by floor so the per-frame slot-exception check only iterates the
   // current floor's slots.
   const slotPositionsByFloor = useMemo(() => {
-    const m = new Map<number, { x: number; z: number; floor: number }[]>();
-    for (const node of Object.values(lot.nodes)) {
+    const m = new Map<number, { id: string; x: number; z: number; floor: number }[]>();
+    for (const [id, node] of Object.entries(lot.nodes)) {
       if (node.type !== "slot") continue;
       const [x, , z] = toWorld(node.x, node.y, node.floor);
       let b = m.get(node.floor);
       if (!b) { b = []; m.set(node.floor, b); }
-      b.push({ x, z, floor: node.floor });
+      b.push({ id, x, z, floor: node.floor });
     }
     return m;
   }, [lot]);
@@ -1521,19 +1544,25 @@ export const DrivableCar = memo(function DrivableCar({
   }, [runId]);
 
   // L vacates the current bay and asks the backend for exit guidance. Only
-  // meaningful once the backend agrees the car is parked.
+  // meaningful once the backend agrees the car is parked. Also accepts a
+  // wrong-bay parking prompt (press L to park in the current non-assigned bay).
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.code !== "KeyL") return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (playerStatus !== "parked") return;
       const active = document.activeElement;
       if (active instanceof HTMLInputElement || active instanceof HTMLSelectElement) return;
+      // If a wrong-bay prompt is active, L accepts parking in that bay.
+      if (wrongBayRef.current && playerStatus !== "parked") {
+        onReportNode(wrongBayRef.current.slotId);
+        return;
+      }
+      if (playerStatus !== "parked") return;
       onLeaveBay();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onLeaveBay, playerStatus]);
+  }, [onLeaveBay, onReportNode, playerStatus]);
 
   // Clean up the carGroups entry on unmount so the camera rig doesn't track
   // a stale group after the user exits POV mode.
@@ -1589,6 +1618,12 @@ export const DrivableCar = memo(function DrivableCar({
         autoParkOfferedRef.current = false;
         onAutoParkAvailableRef.current?.(false);
       }
+      // Clear wrong-bay prompt if it was active.
+      if (wrongBayPromptRef.current) {
+        wrongBayPromptRef.current = false;
+        onWrongBayPromptRef.current?.(null);
+      }
+      wrongBayRef.current = null;
       // Stationary wheels.
       for (let i = 0; i < wheelRefs.current.length; i++) {
         const wr = wheelRefs.current[i];
@@ -2318,6 +2353,23 @@ export const DrivableCar = memo(function DrivableCar({
       const fl = floorRef.current;
       let liveDist = -1;
       let bestPerp = Infinity;
+      // Track whether the car is past the last node (overshot the slot).
+      // If so, the distance is reported as negative so the HUD can show
+      // "behind" instead of "ahead".
+      const lastNode = rpNodes[rpNodes.length - 1];
+      const lastSegA = rpNodes[rpNodes.length - 2];
+      const lastSegB = lastNode;
+      // Direction of the last segment (toward the slot).
+      const lastDirX = lastSegB.x - lastSegA.x;
+      const lastDirZ = lastSegB.z - lastSegA.z;
+      const lastDirLen = Math.hypot(lastDirX, lastDirZ);
+      // How far past the last node the car is, projected along the last
+      // segment's direction. Positive = past the slot.
+      let overshoot = 0;
+      if (lastDirLen > 0 && (lastSegA.floor === fl || lastSegB.floor === fl)) {
+        overshoot =
+          ((px - lastNode.x) * lastDirX + (pz - lastNode.z) * lastDirZ) / lastDirLen;
+      }
       for (let i = 0; i < rpNodes.length - 1; i++) {
         const a = rpNodes[i];
         const b = rpNodes[i + 1];
@@ -2351,9 +2403,19 @@ export const DrivableCar = memo(function DrivableCar({
         const last = rpNodes[rpNodes.length - 1];
         liveDist = Math.hypot(px - last.x, pz - last.z);
       }
-      speedRef.current.routeDistance = liveDist;
+      // If the car has driven past the slot (overshoot > 0), report the
+      // distance as the overshoot amount and set the overshot flag so the
+      // HUD shows "behind — turn around" instead of "ahead".
+      if (overshoot > 0.5) {
+        speedRef.current.routeDistance = overshoot;
+        speedRef.current.overshot = true;
+      } else {
+        speedRef.current.routeDistance = liveDist;
+        speedRef.current.overshot = false;
+      }
     } else if (speedRef) {
       speedRef.current.routeDistance = -1;
+      speedRef.current.overshot = false;
     }
 
     // --- Guidance reporting: where is the car on the graph? ---
@@ -2383,17 +2445,68 @@ export const DrivableCar = memo(function DrivableCar({
       if (bestId && bestDist < 3.5) {
         toReport = bestId;
       }
-      // Parking detection: settled inside the assigned bay.
-      if (assignedSlotPos && !leaving) {
-        const nearBay =
-          assignedSlotPos.floor === floorRef.current &&
-          Math.hypot(g.position.x - assignedSlotPos.x, g.position.z - assignedSlotPos.z) < 2.4;
+      // Parking detection: settled inside a bay.
+      // Check the assigned slot first (600ms settle time). If not in the
+      // assigned slot, check all other slots on the floor for wrong-bay
+      // parking — show a prompt and allow L to accept, or auto-accept
+      // after a grace period.
+      if (!leaving && playerStatus !== "parked") {
         const settled = Math.abs(velocityRef.current) < 0.4;
-        if (nearBay && settled) {
-          if (slowSinceRef.current === null) slowSinceRef.current = now;
-          else if (now - slowSinceRef.current > 600) toReport = assignedSlot;
-        } else {
-          slowSinceRef.current = null;
+        // Assigned slot check (existing behavior — fast accept at 600ms).
+        if (assignedSlotPos && assignedSlotPos.floor === floorRef.current) {
+          const nearAssigned =
+            Math.hypot(g.position.x - assignedSlotPos.x, g.position.z - assignedSlotPos.z) < BAY_DETECT_RADIUS;
+          if (nearAssigned && settled) {
+            if (slowSinceRef.current === null) slowSinceRef.current = now;
+            else if (now - slowSinceRef.current > 600) toReport = assignedSlot;
+          } else {
+            slowSinceRef.current = null;
+          }
+        }
+        // Wrong-bay check: only if not in the assigned slot and not already
+        // settled there. Scan all slots on the current floor.
+        if (!toReport && settled) {
+          const floorSlots = slotPositionsByFloor.get(floorRef.current);
+          if (floorSlots) {
+            let wrongSlotId: string | null = null;
+            for (let si = 0; si < floorSlots.length; si++) {
+              const s = floorSlots[si];
+              if (s.id === assignedSlot) continue; // skip assigned (handled above)
+              if (Math.hypot(g.position.x - s.x, g.position.z - s.z) < BAY_DETECT_RADIUS) {
+                wrongSlotId = s.id;
+                break;
+              }
+            }
+            if (wrongSlotId) {
+              // Track the wrong bay — show prompt, start grace timer.
+              if (!wrongBayRef.current || wrongBayRef.current.slotId !== wrongSlotId) {
+                wrongBayRef.current = { slotId: wrongSlotId, settledAt: now };
+              }
+              // Show the prompt immediately.
+              if (!wrongBayPromptRef.current) {
+                wrongBayPromptRef.current = true;
+                onWrongBayPromptRef.current?.(wrongSlotId);
+              }
+              // Auto-accept after grace period.
+              if (now - wrongBayRef.current.settledAt > WRONG_BAY_GRACE_MS) {
+                toReport = wrongSlotId;
+              }
+            } else {
+              // Not in any wrong bay — clear the prompt and timer.
+              if (wrongBayPromptRef.current) {
+                wrongBayPromptRef.current = false;
+                onWrongBayPromptRef.current?.(null);
+              }
+              wrongBayRef.current = null;
+            }
+          }
+        } else if (!settled) {
+          // Moving — clear any wrong-bay prompt.
+          if (wrongBayPromptRef.current) {
+            wrongBayPromptRef.current = false;
+            onWrongBayPromptRef.current?.(null);
+          }
+          wrongBayRef.current = null;
         }
       }
       // Leaving: report the exit node when reached so the backend closes out

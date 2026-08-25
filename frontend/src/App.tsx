@@ -10,6 +10,7 @@ import { buildRoadSegments } from "./sim/roadSegments";
 import { AISLE_SPACING, bayLabel, CAR_Y_OFFSET, COLOR_HEX, toWorld } from "./sim/constants";
 import type { CameraMode } from "./sim/CameraRig";
 import type { RoutePanelCar } from "./ui/RoutePanel";
+import type { LotData } from "./types";
 import {
   ControlPanelTab,
   DEFAULT_OVERLAYS,
@@ -48,12 +49,18 @@ export function App() {
   }
   const [panelOpen, setPanelOpen] = useState(false);
   const [overlays, setOverlays] = useState<Overlays>(DEFAULT_OVERLAYS);
-  const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0, routeDistance: -1 });
+  const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0, routeDistance: -1, overshot: false });
   const autoParkAvailableRef = useRef(false);
   // Stable callback so memo(DrivableCar) doesn't re-render on every SimContents
   // render. The callback only mutates a ref — no state, no deps.
   const onAutoParkAvailable = useCallback((available: boolean) => {
     autoParkAvailableRef.current = available;
+  }, []);
+  // Wrong-bay prompt: DrivableCar calls this when the player settles in a
+  // non-assigned bay. The slot id is stored in a ref and polled by the HUD.
+  const wrongBaySlotRef = useRef<string | null>(null);
+  const onWrongBayPrompt = useCallback((slotId: string | null) => {
+    wrongBaySlotRef.current = slotId;
   }, []);
 
   const patchOverlays = (patch: Partial<Overlays>) =>
@@ -193,6 +200,7 @@ export function App() {
             playerLeaveBay: sim.playerLeaveBay,
             autoParkAvailableRef,
             onAutoParkAvailable,
+            onWrongBayPrompt,
           }
         : null,
     [
@@ -211,6 +219,7 @@ export function App() {
       sim.reportPlayerNode,
       sim.playerLeaveBay,
       onAutoParkAvailable,
+      onWrongBayPrompt,
     ],
   );
 
@@ -302,6 +311,7 @@ export function App() {
                 </div>
                 <SpeedHud speedRef={playerSpeedRef} />
                 <AutoParkPrompt availableRef={autoParkAvailableRef} />
+                <WrongBayPrompt slotRef={wrongBaySlotRef} lot={lot} />
               </div>
             ) : (
               <div
@@ -404,6 +414,7 @@ const SimContents = memo(function SimContents() {
     reportPlayerNode,
     playerLeaveBay,
     onAutoParkAvailable,
+    onWrongBayPrompt,
   } = ctx;
   return (
     <Suspense fallback={<SceneLoadingFallback />}>
@@ -436,6 +447,7 @@ const SimContents = memo(function SimContents() {
           onReportNode={reportPlayerNode}
           onLeaveBay={playerLeaveBay}
           onAutoParkAvailable={onAutoParkAvailable}
+          onWrongBayPrompt={onWrongBayPrompt}
         />
       )}
     </Suspense>
@@ -534,6 +546,28 @@ function AutoParkPrompt({ availableRef }: { availableRef: React.MutableRefObject
   );
 }
 
+function WrongBayPrompt({
+  slotRef,
+  lot,
+}: {
+  slotRef: React.MutableRefObject<string | null>;
+  lot: LotData;
+}) {
+  const [slotId, setSlotId] = useState<string | null>(null);
+  useEffect(() => {
+    const interval = setInterval(() => setSlotId(slotRef.current), 200);
+    return () => clearInterval(interval);
+  }, [slotRef]);
+  if (!slotId) return null;
+  const label = lot.nodes[slotId] ? bayLabel(slotId) : slotId;
+  return (
+    <div className="pointer-events-none rounded-md border border-amber-500/60 bg-black/80 px-3 py-1.5 text-[12px] font-semibold tracking-wide text-amber-400">
+      Wrong bay: <span className="text-white">{label}</span> — press{" "}
+      <span className="text-white">L</span> to park here, or drive away
+    </div>
+  );
+}
+
 const DIRECTION_WORD: Record<string, string> = {
   left: "LEFT",
   right: "RIGHT",
@@ -564,16 +598,22 @@ function PlayerGuidance({
   speedRef: React.RefObject<PlayerSpeedRef>;
 }) {
   // Poll the live route distance from the DrivableCar (updated every frame)
-  // so the strip doesn't lag behind by a node gap.
+  // so the strip doesn't lag behind by a node gap. The overshot flag is set
+  // when the car has driven past the slot — the HUD shows "behind" then.
   const [liveDistance, setLiveDistance] = useState(distance);
+  const [overshot, setOvershot] = useState(false);
   useEffect(() => {
     const interval = setInterval(() => {
-      const live = speedRef.current?.routeDistance;
-      if (live !== undefined && live >= 0) setLiveDistance(live);
+      const ref = speedRef.current;
+      if (ref) {
+        setLiveDistance(ref.routeDistance);
+        setOvershot(ref.overshot);
+      }
     }, 100);
     return () => clearInterval(interval);
   }, [speedRef]);
   useEffect(() => {
+    // When the live distance goes stale (-1), fall back to the server value.
     if (speedRef.current?.routeDistance === undefined || speedRef.current.routeDistance < 0) {
       setLiveDistance(distance);
     }
@@ -587,6 +627,8 @@ function PlayerGuidance({
     line = "NO FREE BAY";
   } else if (destinationType === "exit" && leaving) {
     line = `${Math.round(shownDistance)} m · ${DIRECTION_WORD[nextDirection ?? ""] ?? ""} → EXIT`;
+  } else if (overshot && slot) {
+    line = `BAY ${bayLabel(slot)} · ${Math.round(shownDistance)} m BEHIND — TURN AROUND`;
   } else if (slot) {
     line = `BAY ${bayLabel(slot)} · ${Math.round(shownDistance)} m · ${
       DIRECTION_WORD[nextDirection ?? ""] ?? ""
