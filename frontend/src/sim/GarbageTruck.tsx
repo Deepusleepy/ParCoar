@@ -111,18 +111,26 @@ export function GarbageTruck({ car, lot, onArrive, carGroupsRef }: GarbageTruckP
   }, [car.id, carGroupsRef]);
 
   // --- Audio: loop a music file while the truck is active ---
-  const audioRef = useRef<THREE.PositionalAudio | null>(null);
+  // Uses a plain HTML5 Audio element (not Three.js positional audio) for
+  // simplicity and type compatibility. The song plays on loop while the
+  // truck is in the scene.
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => {
+    const el = new Audio("/audio/garbage-truck.mp3");
+    el.loop = true;
+    el.volume = 0.4;
+    el.play().catch(() => {
+      // File not found or autoplay blocked — silent truck.
+    });
+    audioRef.current = el;
     return () => {
-      if (audioRef.current) {
-        audioRef.current.stop();
-        audioRef.current.disconnect();
-        audioRef.current = null;
-      }
+      el.pause();
+      el.src = "";
+      audioRef.current = null;
     };
   }, []);
 
-  useFrame((state, dt) => {
+  useFrame((_, dt) => {
     const group = groupRef.current;
     if (!group) return;
     const rt = routeState.current;
@@ -234,27 +242,6 @@ export function GarbageTruck({ car, lot, onArrive, carGroupsRef }: GarbageTruckP
     for (const wd of wheelData.current) {
       wd.spinQuat.setFromAxisAngle(spinAxis, rt.wheelSpin);
       wd.obj.quaternion.copy(wd.origQuat).multiply(wd.spinQuat);
-    }
-
-    // --- Spatial audio: start playing if not yet started ---
-    if (!audioRef.current) {
-      const listener = state.audioListener;
-      if (listener) {
-        const audio = new THREE.PositionalAudio(listener);
-        audio.setLoop(true);
-        audio.setVolume(0.5);
-        audio.setRefDistance(8);
-        audio.setRolloffFactor(1.5);
-        const el = new Audio("/audio/garbage-truck.mp3");
-        el.loop = true;
-        el.crossOrigin = "anonymous";
-        audio.setMediaElementSource(el);
-        el.play().catch(() => {
-          // File not found or autoplay blocked — silent truck.
-        });
-        group.add(audio);
-        audioRef.current = audio;
-      }
     }
   });
 
