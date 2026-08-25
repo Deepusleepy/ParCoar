@@ -136,6 +136,10 @@ export interface ActiveCar {
   /** The player-drivable car. It reports nodes from physical position and
    *  never follows waypoints; the sim must not move it or evict it. */
   player?: boolean;
+  /** The garbage truck: a fun roaming vehicle that plays music. Spawned
+   *  by a button, drives from entry to exit, despawns on arrival. Rendered
+   *  with its own GLTF model instead of the instanced AI car meshes. */
+  truck?: boolean;
 }
 
 export interface CarRoute {

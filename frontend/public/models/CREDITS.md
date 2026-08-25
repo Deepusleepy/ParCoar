@@ -9,6 +9,15 @@ rights, so credit is not required. Credited here anyway.
 
 Also mirrored at [Poly Pizza](https://poly.pizza/bundle/Cars-Bundle-FE5IWe6OMk).
 
+## Truck model
+
+`truck_quaternius.glb`
+
+Low-poly truck model by **[Quaternius](https://quaternius.com/)**,
+from [Poly Pizza](https://poly.pizza/m/cXw6oiFtZ8),
+released under [CC0](https://creativecommons.org/publicdomain/zero/1.0/).
+No attribution required, credited here anyway.
+
 ## How this was identified
 
 The files were converted to glTF with `obj2gltf`, which dropped the source

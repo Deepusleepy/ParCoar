@@ -1020,8 +1020,10 @@ function PovCockpit({ steerRef }: PovCockpitProps) {
 function SteeringWheel({ wheelRef }: { wheelRef: React.RefObject<THREE.Group | null> }) {
   return (
     /* Positioned so only the rim's top arc rises into the bottom-right of
-       the POV frame (eye 1.38, wheel top ≈ 1.14 at 0.5 ahead ≈ 26° down). */
-    <group position={[0.8, 0.94, -0.52]} rotation={[0, Math.PI / 2, 0]}>
+       the POV frame: rim top ≈ 1.10 vs the 1.38 eye at ~0.5 ahead puts the
+       arc ~28° below the horizon, and z sits right of the eye (the car
+       projects -z to the left, so RHD means z closer to 0). */
+    <group position={[0.82, 0.9, -0.28]} rotation={[0, Math.PI / 2, 0]}>
       {/* Column and cowling stay outside the animated group; wheel rotation remains isolated. */}
       <mesh position={[0, -0.015, 0.13]} rotation={[Math.PI / 2, 0, 0]} geometry={INTERIOR_GEO.cylinder} scale={[0.035, 0.16, 0.035]}>
         <primitive object={MAT.dashTrim} attach="material" />
@@ -1044,10 +1046,6 @@ function SteeringWheel({ wheelRef }: { wheelRef: React.RefObject<THREE.Group | n
         </mesh>
         <mesh rotation={[Math.PI / 2, 0, 0]} geometry={INTERIOR_GEO.cylinder} scale={[0.075, 0.04, 0.075]}>
           <primitive object={MAT.leather} attach="material" />
-        </mesh>
-        {/* Red VRS badge is on the driver-facing side of the hub. */}
-        <mesh position={[0.015, -0.012, -0.048]} geometry={INTERIOR_GEO.box} scale={[0.065, 0.025, 0.012]}>
-          <primitive object={MAT.vrsRed} attach="material" />
         </mesh>
       </group>
     </group>

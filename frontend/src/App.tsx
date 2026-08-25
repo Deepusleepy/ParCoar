@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { useSimulation } from "./hooks/useSimulation";
 import { Scene, SceneLoadingFallback, type OrbitControlsHandle } from "./sim/Scene";
 import { ActiveCarField, ParkedCarField, type ParkedCarInstance } from "./sim/Car";
+import { GarbageTruck } from "./sim/GarbageTruck";
 import type { ParkedCarPos, PlayerSpeedRef } from "./sim/DrivableCar";
 import { SimRenderContext, NodeSignsContext, type SimRenderValue } from "./sim/SimContext";
 import { SlotHighlight } from "./sim/SlotHighlight";
@@ -72,7 +73,7 @@ export function App() {
     // car parks or leaves, it drops out of this list and we auto-switch to
     // the next available car.
     const ids = sim.activeCars
-      .filter((car) => !car.player && !car.parked && !car.leaving)
+      .filter((car) => !car.player && !car.parked && (!car.leaving || !!car.truck))
       .map((car) => car.id);
     if (followCarId && !ids.includes(followCarId)) setFollowCarId(null);
     if (!followCarId && ids.length > 0) setFollowCarId(ids[0]);
@@ -377,6 +378,7 @@ export function App() {
             overlays={overlays}
             onOverlays={patchOverlays}
             onSpawn={sim.spawnNow}
+            onSpawnTruck={sim.spawnTruckNow}
             onClearRoad={sim.clearRoad}
             onReset={sim.resetGarage}
             activeCount={activeCount}
@@ -427,6 +429,7 @@ const SimContents = memo(function SimContents() {
     onAutoParkAvailable,
     onWrongBayPrompt,
   } = ctx;
+  const truckCar = activeCars.find((car) => car.truck) ?? null;
   return (
     <Suspense fallback={<SceneLoadingFallback />}>
       <ParkedCarField cars={parkedCars} />
@@ -437,11 +440,12 @@ const SimContents = memo(function SimContents() {
         visible={!!playerCar && playerCar.status !== "parked" && !playerCar.leaving}
       />
       <ActiveCarField
-        cars={activeCars.filter((car) => !car.player)}
+        cars={activeCars.filter((car) => !car.player && !car.truck)}
         lot={lot}
         onArrive={onArrive}
         carGroupsRef={carGroupsRef}
       />
+      {truckCar && <GarbageTruck car={truckCar} lot={lot} onArrive={onArrive} carGroupsRef={carGroupsRef} />}
       {(cameraMode === "pov" || cameraMode === "drive") && (
         <LazyDrivableCar
           lot={lot}
@@ -483,11 +487,13 @@ interface FollowableCar {
  * Lets a memoized <CameraControls> skip re-rendering on traffic events that
  * don't alter the followable set.
  */
-function useStableFollowable(activeCars: { id: string; player?: boolean; parked?: boolean; leaving?: boolean }[]): FollowableCar[] {
+function useStableFollowable(activeCars: { id: string; player?: boolean; parked?: boolean; leaving?: boolean; truck?: boolean }[]): FollowableCar[] {
   const ref = useRef<{ sig: string; list: FollowableCar[] }>({ sig: "", list: [] });
   return useMemo(() => {
+    // Include trucks even though they're "leaving" — the user can follow
+    // the garbage truck with the chase cam.
     const list = activeCars.filter(
-      (car) => !car.player && !car.parked && !car.leaving,
+      (car) => !car.player && !car.parked && (!car.leaving || !!car.truck),
     ) as FollowableCar[];
     const sig = list.map((car) => car.id).join(",");
     if (sig === ref.current.sig) return ref.current.list;
@@ -580,8 +586,10 @@ function PovCluster({
           speedEl.current.textContent = String(Math.round(Math.abs(s.speed) * 3.6));
         }
         if (tickEl.current) {
+          // steer is +1 = left, -1 = right (matches the car's convention);
+          // the tick mirrors it so pressing A moves the tick left.
           const steer = Math.max(-1, Math.min(1, s.steer));
-          tickEl.current.style.left = `${50 + steer * 38}%`;
+          tickEl.current.style.left = `${50 - steer * 38}%`;
         }
       }
       raf = requestAnimationFrame(loop);

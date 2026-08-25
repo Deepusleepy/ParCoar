@@ -1116,6 +1116,7 @@ export const ActiveCarField = memo(function ActiveCarField({
     const bySize: Record<CarSize, ActiveCar[]> = { small: [], medium: [], large: [] };
     for (const car of cars) {
       if (car.player) continue;
+      if (car.truck) continue; // truck has its own component
       seen.add(car.id);
       bySize[car.size].push(car);
     }
