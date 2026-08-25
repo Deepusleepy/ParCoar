@@ -32,6 +32,7 @@ export const ControlPanel = memo(function ControlPanel({
   overlays,
   onOverlays,
   onSpawn,
+  onSpawnTruck,
   onClearRoad,
   onReset,
   activeCount,
@@ -44,6 +45,7 @@ export const ControlPanel = memo(function ControlPanel({
   overlays: Overlays;
   onOverlays: (patch: Partial<Overlays>) => void;
   onSpawn: () => void;
+  onSpawnTruck: () => void;
   onClearRoad: () => void;
   onReset: () => void;
   activeCount: number;
@@ -111,6 +113,9 @@ export const ControlPanel = memo(function ControlPanel({
           <div className="flex gap-2 pt-1">
             <Action onClick={onSpawn}>Add a car</Action>
             <Action onClick={onClearRoad}>Clear the road</Action>
+          </div>
+          <div className="flex gap-2 pt-1">
+            <Action onClick={onSpawnTruck}>Spawn garbage truck</Action>
           </div>
           <Readout>
             {activeCount} moving · {parkedCount} parked

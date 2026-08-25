@@ -296,6 +296,8 @@ export interface SimulationState {
   settings: SimSettings;
   updateSettings: (patch: Partial<SimSettings>) => void;
   spawnNow: () => void;
+  /** Spawn the garbage truck (fun roaming vehicle with music). */
+  spawnTruckNow: () => void;
   clearRoad: () => void;
   resetGarage: () => void;
   enterCar: () => void;
@@ -1206,6 +1208,33 @@ export function useSimulation(): SimulationState {
     lastSpawnRef.current = Date.now();
   }, []);
 
+  // Spawn the garbage truck: a fun roaming vehicle that drives from entry
+  // to exit playing music. Only one truck at a time. It uses leaving:true
+  // so the backend routes it straight to the exit node.
+  const spawnTruckNow = useCallback(() => {
+    setActiveCars((current) => {
+      if (current.some((car) => car.truck)) return current;
+      return [
+        ...current,
+        {
+          id: "TRUCK",
+          color: "white",
+          plate: "GARBAGE",
+          size: "large",
+          fromNode: ENTRY_NODE,
+          toNode: ENTRY_NODE,
+          progress: 0,
+          slot: null,
+          status: "routing",
+          parked: false,
+          leaving: true,
+          vacating: null,
+          truck: true,
+        },
+      ];
+    });
+  }, []);
+
   const enterCar = useCallback(() => {
     setActiveCars((current) => {
       if (current.some((car) => car.player)) return current;
@@ -1306,6 +1335,7 @@ export function useSimulation(): SimulationState {
     settings,
     updateSettings,
     spawnNow,
+    spawnTruckNow,
     clearRoad,
     resetGarage,
     enterCar,

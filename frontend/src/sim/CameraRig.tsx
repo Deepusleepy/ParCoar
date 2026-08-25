@@ -237,14 +237,6 @@ export function CameraRig({
   /** Smoothed look target for the follow chase cam (same jitter fix as
    *  driveLookRef: AI heading steps arrive smoothed, not 1:1). */
   const followLookRef = useRef(new THREE.Vector3());
-  /** Smoothed position + look target for the POV cockpit cam. Without
-   *  smoothing, every micro-variation in the car's heading hits the camera
-   *  1:1, amplified by the look-ahead distance — the "entire car shakes"
-   *  effect. The drive/follow modes already smooth; POV was the only one
-   *  that didn't. */
-  const povPosRef = useRef(new THREE.Vector3());
-  const povLookRef = useRef(new THREE.Vector3());
-  const povHasInitRef = useRef(false);
   /** Current camera FOV, eased toward the mode's target each frame. */
   const fovRef = useRef(SPECTATOR_FOV);
 
@@ -510,7 +502,6 @@ export function CameraRig({
     povPitchOffsetRef.current = 0;
     hasPrevPlayerPosRef.current = false;
     povLookLockRef.current = false;
-    povHasInitRef.current = false;
   }, [mode]);
 
   // --- Per-frame camera driving. ---
@@ -605,33 +596,21 @@ export function CameraRig({
         camera.lookAt(driveLookRef.current);
       } else {
         // POV: driver's-eye position inside the cabin (right-hand drive).
-        // The eye sits at driver head height, forward near the windshield
-        // base, on the right-hand side (-0.42 = driver). The headliner mesh
-        // is hidden in POV mode (see CarInterior) so the only upper
-        // occlusion is the thin windshield header. The dash crest is well
-        // below the eye, keeping the lower view open.
-        const EYE_FWD = 0.15;
+        // The eye is RIGID in car space — copied, never lerped. Smoothing a
+        // car-attached point in world space makes the camera cut across the
+        // body during turns and end up outside the car (the #20 regression);
+        // a rigid copy physically cannot leave the cabin. Micro-jitter from
+        // the physics step reads as road texture at these magnitudes.
+        // The eye sits above the wheel rim looking level, so the wheel and
+        // dash form a low cowl across the bottom of the frame and the road
+        // fills the view (the wheel arc peeks in at the bottom right).
+        const EYE_FWD = 0.3;
         const EYE_RIGHT = 0.42;
-        const EYE_UP = 1.22;
-        // Eye POSITION: the head rides in the cabin, so it tilts 1:1 with
-        // the car (full yaw + ramp pitch). The look direction below levels
-        // itself partially — see POV_PITCH_FOLLOW.
+        const EYE_UP = 1.38;
         tmpEuler.current.set(0, yaw, pitch, "XYZ");
         tmpQuat.current.setFromEuler(tmpEuler.current);
         tmpFwd2.current.set(EYE_FWD, EYE_UP, -EYE_RIGHT).applyQuaternion(tmpQuat.current).add(carPos);
-
-        // Smooth the camera position. The raw eye position jumps every frame
-        // from heading/position micro-changes; without smoothing the entire
-        // view shakes. Drive and follow modes already smooth; POV was the
-        // only mode that did a raw copy. A high lerp factor (0.92) keeps the
-        // camera responsive while killing the jitter.
-        const povFirstFrame = !povHasInitRef.current;
-        if (povFirstFrame) {
-          povPosRef.current.copy(tmpFwd2.current);
-        } else {
-          povPosRef.current.lerp(tmpFwd2.current, lerpK(0.92, dt));
-        }
-        camera.position.copy(povPosRef.current);
+        camera.position.copy(tmpFwd2.current);
 
         // Re-centre the view while the car moves; measure speed from the
         // group itself so no external wiring is needed.
@@ -667,22 +646,14 @@ export function CameraRig({
         );
         tmpQuat.current.setFromEuler(tmpEuler.current);
         tmpQuatLook.current.premultiply(tmpQuat.current);
-        // Reduced look-ahead from 14 to 8: the old 14-unit offset amplified
-        // heading changes (0.035 rad/frame at full lock → 0.49 unit swing in
-        // the look target). 8 keeps the forward view without the swing.
+        // Look target sits just below eye height at 8 units out: near-level
+        // gaze keeps the road filling the frame while the slight downtilt
+        // keeps the lane markings ahead of the car readable.
         tmpLook.current
-          .set(EYE_FWD + 8, EYE_UP - 0.4, -EYE_RIGHT)
+          .set(EYE_FWD + 8, EYE_UP - 0.12, -EYE_RIGHT)
           .applyQuaternion(tmpQuatLook.current)
           .add(carPos);
-        // Smooth the look target too — same reason as the position. Without
-        // this, lookAt() gets a fresh jittery target every frame.
-        if (povFirstFrame) {
-          povLookRef.current.copy(tmpLook.current);
-        } else {
-          povLookRef.current.lerp(tmpLook.current, lerpK(0.95, dt));
-        }
-        povHasInitRef.current = true;
-        camera.lookAt(povLookRef.current);
+        camera.lookAt(tmpLook.current);
       }
       return;
     }
