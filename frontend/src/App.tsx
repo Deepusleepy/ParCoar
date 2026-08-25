@@ -49,7 +49,7 @@ export function App() {
   }
   const [panelOpen, setPanelOpen] = useState(false);
   const [overlays, setOverlays] = useState<Overlays>(DEFAULT_OVERLAYS);
-  const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0, routeDistance: -1, overshot: false });
+  const playerSpeedRef = useRef<PlayerSpeedRef>({ speed: 0, steer: 0, routeDistance: -1, overshot: false });
   const autoParkAvailableRef = useRef(false);
   // Stable callback so memo(DrivableCar) doesn't re-render on every SimContents
   // render. The callback only mutates a ref — no state, no deps.
@@ -262,7 +262,7 @@ export function App() {
       </NodeSignsContext.Provider>
 
       <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-4">
-        {(cameraMode === "pov" || cameraMode === "drive") && (
+        {cameraMode === "drive" && (
           <PlayerGuidance
             status={playerCar?.status ?? "routing"}
             leaving={playerCar?.leaving ?? false}
@@ -271,6 +271,17 @@ export function App() {
             distance={playerRoute?.routeDistance ?? 0}
             nextDirection={playerRoute?.nextDirection ?? null}
             speedRef={playerSpeedRef}
+          />
+        )}
+        {cameraMode === "pov" && (
+          <PovCluster
+            speedRef={playerSpeedRef}
+            status={playerCar?.status ?? "routing"}
+            leaving={playerCar?.leaving ?? false}
+            slot={playerRoute?.slot ?? null}
+            destinationType={playerRoute?.destinationType ?? null}
+            distance={playerRoute?.routeDistance ?? 0}
+            nextDirection={playerRoute?.nextDirection ?? null}
           />
         )}
         <div className="flex items-start justify-between">
@@ -309,7 +320,7 @@ export function App() {
                   <span className="mx-1.5 text-neutral-600">|</span>
                   <span className="text-white">P</span> Auto-park
                 </div>
-                <SpeedHud speedRef={playerSpeedRef} />
+                {cameraMode === "drive" && <SpeedHud speedRef={playerSpeedRef} />}
                 <AutoParkPrompt availableRef={autoParkAvailableRef} />
                 <WrongBayPrompt slotRef={wrongBaySlotRef} lot={lot} />
               </div>
@@ -532,6 +543,110 @@ function SpeedHud({ speedRef }: { speedRef: React.RefObject<PlayerSpeedRef> }) {
   );
 }
 
+/**
+ * The digital dashboard overlay for POV: big speed in km/h, drive state, the
+ * same guidance line the boards carry, and a steering-position tick. Live
+ * values (speed, steering) are written straight to the DOM from a rAF loop —
+ * no per-frame React renders. Sits above the camera pill bar, over the dash
+ * cowl.
+ */
+function PovCluster({
+  speedRef,
+  status,
+  leaving,
+  slot,
+  destinationType,
+  distance,
+  nextDirection,
+}: {
+  speedRef: React.RefObject<PlayerSpeedRef>;
+  status: string;
+  leaving: boolean;
+  slot: string | null;
+  destinationType: "bay" | "exit" | null;
+  distance: number;
+  nextDirection: string | null;
+}) {
+  const speedEl = useRef<HTMLSpanElement>(null);
+  const tickEl = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let raf = 0;
+    const loop = () => {
+      const s = speedRef.current;
+      if (s) {
+        // 1 unit = 1 metre; m/s -> km/h.
+        if (speedEl.current) {
+          speedEl.current.textContent = String(Math.round(Math.abs(s.speed) * 3.6));
+        }
+        if (tickEl.current) {
+          const steer = Math.max(-1, Math.min(1, s.steer));
+          tickEl.current.style.left = `${50 + steer * 38}%`;
+        }
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [speedRef]);
+
+  const { liveDistance, overshot } = useLiveRoute(speedRef, distance);
+  const line = guidanceLine({
+    status,
+    leaving,
+    slot,
+    destinationType,
+    nextDirection,
+    distance: liveDistance,
+    overshot,
+  });
+
+  let state = "DRIVING";
+  let stateTone = "text-emerald-400";
+  if (status === "parked") {
+    state = "PARKED";
+    stateTone = "text-neutral-300";
+  } else if (status === "no_slot") {
+    state = "NO FREE BAY";
+    stateTone = "text-amber-400";
+  } else if (leaving) {
+    state = "TO EXIT";
+    stateTone = "text-sky-300";
+  }
+
+  return (
+    <div className="absolute bottom-28 left-1/2 -translate-x-1/2">
+      <div className="flex items-center gap-6 rounded-2xl border border-white/10 bg-black/75 px-7 py-3.5 backdrop-blur-md">
+        <div className="flex items-baseline gap-2">
+          <span
+            ref={speedEl}
+            className="text-[40px] font-bold leading-none tracking-tight text-white tabular-nums"
+          >
+            0
+          </span>
+          <span className="text-[12px] font-medium text-white/45">km/h</span>
+        </div>
+        <div className="h-10 w-px bg-white/10" />
+        <div className="flex flex-col gap-1.5">
+          <div className={"text-[11px] font-semibold tracking-[0.16em] " + stateTone}>{state}</div>
+          <div className="text-[13px] font-medium text-white/85">{line}</div>
+        </div>
+        <div className="h-10 w-px bg-white/10" />
+        <div className="flex flex-col gap-1.5">
+          <div className="relative h-[3px] w-[110px] rounded bg-white/15">
+            <div
+              ref={tickEl}
+              className="absolute top-[-4px] h-[11px] w-[3px] rounded-sm bg-white"
+              style={{ left: "50%" }}
+            />
+          </div>
+          <div className="text-[9px] tracking-[0.18em] text-white/35">STEERING</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AutoParkPrompt({ availableRef }: { availableRef: React.MutableRefObject<boolean> }) {
   const [available, setAvailable] = useState(false);
   useEffect(() => {
@@ -576,30 +691,42 @@ const DIRECTION_WORD: Record<string, string> = {
   down: "DOWN",
 };
 
-/**
- * The guidance strip shown while driving: where you are going and what to do
- * next, from the same instruction the overhead boards carry.
- */
-function PlayerGuidance({
-  status,
-  leaving,
-  slot,
-  destinationType,
-  distance,
-  nextDirection,
-  speedRef,
-}: {
+/** The one-line guidance instruction, shared by the drive-mode strip and the
+ *  POV cluster so both HUDs always say the same thing. */
+function guidanceLine(input: {
   status: string;
   leaving: boolean;
   slot: string | null;
   destinationType: "bay" | "exit" | null;
-  distance: number;
   nextDirection: string | null;
-  speedRef: React.RefObject<PlayerSpeedRef>;
-}) {
-  // Poll the live route distance from the DrivableCar (updated every frame)
-  // so the strip doesn't lag behind by a node gap. The overshot flag is set
-  // when the car has driven past the slot — the HUD shows "behind" then.
+  distance: number;
+  overshot: boolean;
+}): string {
+  const { status, leaving, slot, destinationType, nextDirection, distance, overshot } = input;
+  if (status === "parked") {
+    return `PARKED ${slot ? bayLabel(slot) : ""} — L TO LEAVE`;
+  }
+  if (status === "no_slot") {
+    return "NO FREE BAY";
+  }
+  if (destinationType === "exit" && leaving) {
+    return `${Math.round(distance)} m · ${DIRECTION_WORD[nextDirection ?? ""] ?? ""} → EXIT`;
+  }
+  if (overshot && slot) {
+    return `BAY ${bayLabel(slot)} · ${Math.round(distance)} m BEHIND — TURN AROUND`;
+  }
+  if (slot) {
+    return `BAY ${bayLabel(slot)} · ${Math.round(distance)} m · ${
+      DIRECTION_WORD[nextDirection ?? ""] ?? ""
+    }`;
+  }
+  return "WAITING FOR GUIDANCE";
+}
+
+/** Poll the live route distance from the DrivableCar (updated every frame)
+ *  so guidance doesn't lag behind by a node gap. The overshot flag is set
+ *  when the car has driven past the slot — the HUD shows "behind" then. */
+function useLiveRoute(speedRef: React.RefObject<PlayerSpeedRef>, distance: number) {
   const [liveDistance, setLiveDistance] = useState(distance);
   const [overshot, setOvershot] = useState(false);
   useEffect(() => {
@@ -618,24 +745,41 @@ function PlayerGuidance({
       setLiveDistance(distance);
     }
   }, [distance, speedRef]);
+  return { liveDistance, overshot };
+}
 
-  const shownDistance = liveDistance;
-  let line: string;
-  if (status === "parked") {
-    line = `PARKED ${slot ? bayLabel(slot) : ""} — L TO LEAVE`;
-  } else if (status === "no_slot") {
-    line = "NO FREE BAY";
-  } else if (destinationType === "exit" && leaving) {
-    line = `${Math.round(shownDistance)} m · ${DIRECTION_WORD[nextDirection ?? ""] ?? ""} → EXIT`;
-  } else if (overshot && slot) {
-    line = `BAY ${bayLabel(slot)} · ${Math.round(shownDistance)} m BEHIND — TURN AROUND`;
-  } else if (slot) {
-    line = `BAY ${bayLabel(slot)} · ${Math.round(shownDistance)} m · ${
-      DIRECTION_WORD[nextDirection ?? ""] ?? ""
-    }`;
-  } else {
-    line = "WAITING FOR GUIDANCE";
-  }
+/**
+ * The guidance strip shown while driving (chase cam): where you are going and
+ * what to do next, from the same instruction the overhead boards carry. POV
+ * shows the same line inside the PovCluster instead.
+ */
+function PlayerGuidance({
+  status,
+  leaving,
+  slot,
+  destinationType,
+  distance,
+  nextDirection,
+  speedRef,
+}: {
+  status: string;
+  leaving: boolean;
+  slot: string | null;
+  destinationType: "bay" | "exit" | null;
+  distance: number;
+  nextDirection: string | null;
+  speedRef: React.RefObject<PlayerSpeedRef>;
+}) {
+  const { liveDistance: shownDistance, overshot } = useLiveRoute(speedRef, distance);
+  const line = guidanceLine({
+    status,
+    leaving,
+    slot,
+    destinationType,
+    nextDirection,
+    distance: shownDistance,
+    overshot,
+  });
   return (
     <div className="absolute left-1/2 top-4 -translate-x-1/2">
       <div className="rounded-md border border-sky-500/40 bg-black/70 px-3 py-1 text-[12px] font-semibold tracking-wide text-sky-300">

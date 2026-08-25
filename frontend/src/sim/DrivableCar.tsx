@@ -1,6 +1,6 @@
 import { Suspense, memo, useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Text, useGLTF } from "@react-three/drei";
+import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import type { CarStatus, LotData, LotEdge } from "../types";
 import { useKeyboard } from "../hooks/useKeyboard";
@@ -24,6 +24,8 @@ export const PLAYER_CAR_KEY = "player";
 /** Shared ref shape for communicating live speed to the HUD. */
 export interface PlayerSpeedRef {
   speed: number;
+  /** Live steering input in [-1, 1] (left..right), for the POV cluster. */
+  steer: number;
   /** Live remaining route distance in metres, updated every frame.
    *  Falls back to -1 when no route is available. */
   routeDistance: number;
@@ -50,7 +52,7 @@ interface DrivableCarProps {
   /** Road centerline segments for road-edge clamping (guardrails/dividers). */
   roadSegments: RoadSegment[];
   /** When true the camera is inside the car (POV mode); the procedural
-   *  CarInterior provides the visible dashboard/seats/wheel. */
+   *  PovCockpit provides the visible dash cowl and steering wheel. */
   pov?: boolean;
   /** The bay the backend has reserved for the player, if any. */
   assignedSlot: string | null;
@@ -734,18 +736,6 @@ const DASH_COWL_GEO = makeTube(
   ],
   0.03,
 );
-const DASH_STITCH_GEO = makeTube(
-  [
-    new THREE.Vector3(0.889, 0.84, 0.78),
-    new THREE.Vector3(0.895, 0.86, 0.28),
-    new THREE.Vector3(0.884, 0.89, -0.12),
-    new THREE.Vector3(0.865, 0.92, -0.47),
-    new THREE.Vector3(0.892, 0.87, -0.78),
-  ],
-  0.006,
-  false,
-  56,
-);
 const STEERING_RIM_GEO = makeTube(
   [
     new THREE.Vector3(-0.13, -0.17, 0),
@@ -765,12 +755,6 @@ const STEERING_RIM_GEO = makeTube(
   64,
 );
 
-const STEERING_BUTTONS: readonly [number, number][] = [
-  [-0.11, 0.055],
-  [-0.075, 0.085],
-  [0.075, 0.085],
-  [0.11, 0.055],
-];
 
 /* ------------------------------------------------------------------ *
  *  Player car GLTF model config
@@ -838,7 +822,7 @@ function CarExteriorInner({ wheelRefs, steerRefs, pov = false }: CarExteriorProp
     // purpose: in POV the camera sits INSIDE this shell, and DoubleSide made
     // the opaque body panels wall off the cabin. With front-side culling the
     // body renders solidly from outside and vanishes from inside, where the
-    // procedural CarInterior supplies every surface the driver sees.
+    // procedural PovCockpit supplies every surface the driver sees.
     const body = new THREE.MeshPhysicalMaterial({
       color: new THREE.Color("#e0141b"),
       metalness: 0.45,
@@ -909,7 +893,7 @@ function CarExteriorInner({ wheelRefs, steerRefs, pov = false }: CarExteriorProp
     <group>
       {/* GLTF body — rotated to face +X, scaled to 4.5 length.
           Hidden in POV mode so its opaque panels don't block the cockpit
-          view; the procedural CarInterior provides the visible dashboard. */}
+          view; the procedural PovCockpit provides the visible dashboard. */}
       <primitive object={cloned} rotation={[0, PLAYER_FORWARD_ROT, 0]} scale={PLAYER_MODEL_SCALE} visible={!pov} />
 
       {/* Procedural wheels with spin + steer refs (animated in DrivableCar
@@ -957,288 +941,57 @@ function CarExterior(props: CarExteriorProps) {
 
 
 /* ------------------------------------------------------------------ *
- *  CarInterior — hand-built Octavia VRS-inspired cockpit
+ *  PovCockpit — the minimal cockpit framed for the rigid POV eye
  *
- *  Local space: +X = forward, +Y = up, -Z = driver side. The composition is
- *  framed for the fixed driver's eye at (-0.10, 1.42, -0.42) looking down
- *  +X — headrest height, above the wheel rim and dash crest so the road and
- *  a wide slice of exterior stay visible (CameraRig matches this eye).
+ *  Local space: +X = forward, +Y = up, -Z = driver side (RHD). The camera
+ *  sits rigidly at (0.30, 1.38, -0.42) looking down +X (CameraRig owns the
+ *  exact placement). Everything here is composed so the road stays clear:
+ *  the dash reads as a low dark cowl along the bottom of the frame and only
+ *  the steering wheel rim's top arc enters at the bottom right. The full
+ *  seats/doors/console interior was removed — it never read as premium at
+ *  this art scale, and every surface in view competes with the road.
+ *  Speed, guidance and steering live in the HTML PovCluster overlay.
  * ------------------------------------------------------------------ */
-interface InteriorInstrumentProps {
-  speedoRef: React.MutableRefObject<THREE.Mesh | null>;
-}
-
-function InstrumentCluster({ speedoRef }: InteriorInstrumentProps) {
-  return (
-    <group position={[0.885, 0.82, -0.42]} rotation={[0, -Math.PI / 2, 0]}>
-      {/* Thin floating display strip — modern EV-style. Sits just above the
-          dash crest at 0.85, barely visible in the lower periphery. */}
-      <mesh geometry={INTERIOR_GEO.box} scale={[0.32, 0.025, 0.008]}>
-        <primitive object={MAT.glossBlack} attach="material" />
-      </mesh>
-      <Text
-        ref={speedoRef}
-        position={[0, 0, 0.006]}
-        fontSize={0.022}
-        color="#e7f4ff"
-        anchorX="center"
-        anchorY="middle"
-      >
-        0
-      </Text>
-    </group>
-  );
-}
-
-function CenterStack() {
-  return (
-    <group position={[0.925, 0.82, 0.08]} rotation={[0, -Math.PI / 2 - 0.12, 0]}>
-      {/* Minimal gloss-black strip — no climate controls, no vents, no knobs. */}
-      <mesh geometry={INTERIOR_GEO.box} scale={[0.34, 0.025, 0.008]}>
-        <primitive object={MAT.glossBlack} attach="material" />
-      </mesh>
-    </group>
-  );
-}
-
-function SteeringWheel({ wheelRef }: { wheelRef: React.RefObject<THREE.Group | null> }) {
-  return (
-    <group position={[0.655, 1.0, -0.42]} rotation={[0, Math.PI / 2, 0]}>
-      {/* Column and cowling stay outside the animated group; wheel rotation remains isolated. */}
-      <mesh position={[0, -0.015, 0.13]} rotation={[Math.PI / 2, 0, 0]} geometry={INTERIOR_GEO.cylinder} scale={[0.035, 0.16, 0.035]}>
-        <primitive object={MAT.dashTrim} attach="material" />
-      </mesh>
-      <mesh position={[0, -0.055, 0.19]} geometry={INTERIOR_GEO.box} scale={[0.2, 0.13, 0.16]}>
-        <primitive object={MAT.dashTrim} attach="material" />
-      </mesh>
-
-      <group ref={wheelRef} rotation={[-0.16, 0, 0]}>
-        <mesh geometry={STEERING_RIM_GEO}>
-          <primitive object={MAT.leather} attach="material" />
-        </mesh>
-        {/* Three structural spokes meet a compact round hub. */}
-        <mesh position={[-0.105, 0.03, 0]} rotation={[0, 0, -0.28]} geometry={INTERIOR_GEO.box} scale={[0.16, 0.045, 0.035]}>
-          <primitive object={MAT.chrome} attach="material" />
-        </mesh>
-        <mesh position={[0.105, 0.03, 0]} rotation={[0, 0, 0.28]} geometry={INTERIOR_GEO.box} scale={[0.16, 0.045, 0.035]}>
-          <primitive object={MAT.chrome} attach="material" />
-        </mesh>
-        <mesh position={[0, -0.09, 0]} geometry={INTERIOR_GEO.box} scale={[0.05, 0.15, 0.035]}>
-          <primitive object={MAT.chrome} attach="material" />
-        </mesh>
-        <mesh rotation={[Math.PI / 2, 0, 0]} geometry={INTERIOR_GEO.cylinder} scale={[0.075, 0.04, 0.075]}>
-          <primitive object={MAT.leather} attach="material" />
-        </mesh>
-        {/* Red VRS badge is on the driver-facing side of the hub. */}
-        <mesh position={[0.015, -0.012, -0.048]} geometry={INTERIOR_GEO.box} scale={[0.065, 0.025, 0.012]}>
-          <primitive object={MAT.vrsRed} attach="material" />
-        </mesh>
-        {STEERING_BUTTONS.map(([x, y]) => (
-          <mesh key={`${x}:${y}`} position={[x, y, -0.025]} geometry={INTERIOR_GEO.sphere} scale={[0.014, 0.014, 0.009]}>
-            <primitive object={MAT.button} attach="material" />
-          </mesh>
-        ))}
-        <mesh position={[0, 0.214, 0]} geometry={INTERIOR_GEO.box} scale={[0.018, 0.025, 0.032]}>
-          <primitive object={MAT.vrsRed} attach="material" />
-        </mesh>
-      </group>
-    </group>
-  );
-}
-
-/** Sculpted sport seat with separate cushion/back bolsters and fine red seams. */
-function Seat({ position }: { position: [number, number, number] }) {
-  return (
-    <group position={position}>
-      <mesh position={[0, 0.47, 0]} rotation={[0, 0, -0.025]} geometry={INTERIOR_GEO.box} scale={[0.68, 0.14, 0.48]} castShadow>
-        <primitive object={MAT.alcantara} attach="material" />
-      </mesh>
-      {[-0.235, 0.235].map((z) => (
-        <mesh key={z} position={[0, 0.55, z]} rotation={[0, 0, Math.PI / 2]} geometry={INTERIOR_GEO.seatBolster}>
-          <primitive object={MAT.leather} attach="material" />
-        </mesh>
-      ))}
-      <mesh position={[0.035, 0.545, 0]} geometry={INTERIOR_GEO.box} scale={[0.42, 0.012, 0.29]}>
-        <primitive object={MAT.fabric} attach="material" />
-      </mesh>
-
-      <group position={[-0.43, 0.88, 0]} rotation={[0, 0, 0.13]}>
-        <mesh geometry={INTERIOR_GEO.box} scale={[0.13, 0.6, 0.47]} castShadow>
-          <primitive object={MAT.alcantara} attach="material" />
-        </mesh>
-        <mesh position={[0.073, 0, 0]} geometry={INTERIOR_GEO.box} scale={[0.018, 0.42, 0.25]}>
-          <primitive object={MAT.fabric} attach="material" />
-        </mesh>
-        {[-0.225, 0.225].map((z) => (
-          <mesh key={z} position={[0.02, 0, z]} geometry={INTERIOR_GEO.seatBolster}>
-            <primitive object={MAT.leather} attach="material" />
-          </mesh>
-        ))}
-        {[-0.095, 0.095].map((z) => (
-          <mesh key={z} position={[0.085, 0, z]} geometry={INTERIOR_GEO.box} scale={[0.008, 0.4, 0.009]}>
-            <primitive object={MAT.vrsRed} attach="material" />
-          </mesh>
-        ))}
-        <mesh position={[0.087, 0.13, 0]} geometry={INTERIOR_GEO.box} scale={[0.01, 0.055, 0.09]}>
-          <primitive object={MAT.vrsRed} attach="material" />
-        </mesh>
-      </group>
-
-      <mesh position={[-0.505, 1.23, 0]} rotation={[0, 0, 0.08]} geometry={INTERIOR_GEO.box} scale={[0.14, 0.18, 0.3]} castShadow>
-        <primitive object={MAT.leather} attach="material" />
-      </mesh>
-      <mesh position={[-0.43, 1.23, 0]} rotation={[0, 0, 0.08]} geometry={INTERIOR_GEO.box} scale={[0.012, 0.11, 0.19]}>
-        <primitive object={MAT.alcantara} attach="material" />
-      </mesh>
-    </group>
-  );
-}
-
-/** Door card mirrored toward the cabin, with a real pull, speaker, and switch bank. */
-function DoorPanel({ side }: { side: 1 | -1 }) {
-  return (
-    <group position={[0, 0.67, 0.94 * side]} scale={[1, 1, -side]}>
-      <mesh geometry={INTERIOR_GEO.box} scale={[2.15, 0.58, 0.055]}>
-        <primitive object={MAT.dash} attach="material" />
-      </mesh>
-      <mesh position={[0.08, 0.06, 0.038]} rotation={[0, 0, -0.055]} geometry={INTERIOR_GEO.box} scale={[1.28, 0.25, 0.03]}>
-        <primitive object={MAT.alcantara} attach="material" />
-      </mesh>
-      <mesh position={[0.05, 0.205, 0.075]} geometry={INTERIOR_GEO.box} scale={[1.7, 0.055, 0.09]}>
-        <primitive object={MAT.leather} attach="material" />
-      </mesh>
-      <mesh position={[0.16, 0.07, 0.095]} rotation={[0, 0, -0.08]} geometry={INTERIOR_GEO.box} scale={[0.34, 0.045, 0.045]}>
-        <primitive object={MAT.chrome} attach="material" />
-      </mesh>
-      <mesh position={[0.02, 0.155, 0.102]} geometry={INTERIOR_GEO.box} scale={[1.5, 0.009, 0.014]}>
-        <primitive object={MAT.redAccent} attach="material" />
-      </mesh>
-
-      <group position={[-0.66, -0.12, 0.09]}>
-        <mesh rotation={[Math.PI / 2, 0, 0]} geometry={INTERIOR_GEO.speakerDisc} scale={[0.14, 1, 0.14]}>
-          <primitive object={MAT.vent} attach="material" />
-        </mesh>
-        {[0.075, 0.12].map((radius) => (
-          <mesh key={radius} geometry={INTERIOR_GEO.speakerRing} scale={radius}>
-            <primitive object={MAT.chrome} attach="material" />
-          </mesh>
-        ))}
-      </group>
-
-      <mesh position={[0.53, 0.13, 0.105]} geometry={INTERIOR_GEO.box} scale={[0.2, 0.04, 0.1]}>
-        <primitive object={MAT.dashTrim} attach="material" />
-      </mesh>
-      {[-0.045, 0.045].map((x) => (
-        <mesh key={x} position={[0.53 + x, 0.151, 0.11]} geometry={INTERIOR_GEO.box} scale={[0.055, 0.014, 0.05]}>
-          <primitive object={MAT.button} attach="material" />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-function CarInterior({
-  steerRef,
-  speedRef,
-}: {
+interface PovCockpitProps {
+  /** Live steering input in [-1, 1]; drives the wheel rim animation. */
   steerRef: React.MutableRefObject<number>;
-  /** Ref holding the live forward speed (units/sec) for the speedometer. */
-  speedRef: React.MutableRefObject<number>;
-}) {
+}
+
+function PovCockpit({ steerRef }: PovCockpitProps) {
   const wheelRef = useRef<THREE.Group>(null);
-  const speedoRef = useRef<THREE.Mesh>(null);
   const smoothSteer = useRef(0);
-  const displayedSpeed = useRef(0);
 
   useFrame((_, delta) => {
     const dt = Math.min(delta, 1 / 30);
     const target = steerRef.current * 2.2;
     smoothSteer.current += (target - smoothSteer.current) * Math.min(1, dt * 12);
     if (wheelRef.current) wheelRef.current.rotation.z = -smoothSteer.current;
-
-    // Troika text only resyncs when the rounded value changes, not every frame.
-    const nextSpeed = Math.round(Math.abs(speedRef.current) * 10);
-    if (speedoRef.current && nextSpeed !== displayedSpeed.current) {
-      const textMesh = speedoRef.current as unknown as { text: string; sync?: () => void };
-      textMesh.text = String(nextSpeed);
-      textMesh.sync?.();
-      displayedSpeed.current = nextSpeed;
-    }
   });
 
   return (
     <group>
-      {/* Short-range fill light reveals dark trim without lighting the garage. */}
-      <pointLight position={[0.25, 1.27, 0.15]} intensity={5} distance={3.5} decay={2} color="#dce7f5" />
-
-      <mesh position={[0.05, 0.27, 0]} geometry={INTERIOR_GEO.box} scale={[2.75, 0.04, 1.68]}>
-        <primitive object={MAT.carpet} attach="material" />
-      </mesh>
-      <mesh position={[0.02, 0.39, 0]} geometry={INTERIOR_GEO.box} scale={[1.45, 0.2, 0.24]}>
-        <primitive object={MAT.carpet} attach="material" />
-      </mesh>
-
-      {/* One extruded shell supplies the rolled fascia and windscreen-facing upper curve. */}
+      {/* One extruded shell supplies the rolled fascia and windscreen-facing
+          upper curve. Crest at Y=0.85 stays well below the 1.38 eye. */}
       <mesh geometry={DASH_SHELL_GEO}>
         <primitive object={MAT.dash} attach="material" />
       </mesh>
       <mesh geometry={DASH_COWL_GEO}>
         <primitive object={MAT.dashTrim} attach="material" />
       </mesh>
-      <mesh geometry={DASH_STITCH_GEO}>
-        <primitive object={MAT.vrsRed} attach="material" />
-      </mesh>
+      {/* Vertical fascia under the dash crest closes the silhouette. */}
       <mesh position={[0.895, 0.835, 0]} rotation={[0, 0, -0.08]} geometry={INTERIOR_GEO.box} scale={[0.035, 0.18, 1.62]}>
         <primitive object={MAT.dashTrim} attach="material" />
       </mesh>
-      <mesh position={[0.874, 0.895, 0.43]} geometry={INTERIOR_GEO.box} scale={[0.018, 0.17, 0.52]}>
-        <primitive object={MAT.alcantara} attach="material" />
-      </mesh>
 
-      <InstrumentCluster speedoRef={speedoRef} />
-      <CenterStack />
       <SteeringWheel wheelRef={wheelRef} />
 
-      {/* Centre tunnel, selector, electronic brake, and twin cup holders. */}
-      <mesh position={[0.08, 0.5, 0]} geometry={INTERIOR_GEO.box} scale={[1.15, 0.28, 0.3]}>
+      {/* Hood: a dark surface extending forward from the dashboard top.
+          Grounds the bottom of the view in the car's physical extent. */}
+      <mesh position={[2.0, 0.78, 0]} rotation={[0, 0, -0.06]} geometry={INTERIOR_GEO.box} scale={[1.2, 0.04, 1.7]}>
         <primitive object={MAT.dash} attach="material" />
       </mesh>
-      <mesh position={[0.12, 0.65, 0]} rotation={[0, 0, -0.03]} geometry={INTERIOR_GEO.box} scale={[0.98, 0.055, 0.27]}>
-        <primitive object={MAT.glossBlack} attach="material" />
-      </mesh>
-      <mesh position={[0.11, 0.682, -0.135]} geometry={INTERIOR_GEO.box} scale={[0.82, 0.008, 0.01]}>
-        <primitive object={MAT.redAccent} attach="material" />
-      </mesh>
-      <mesh position={[0.38, 0.7, 0]} geometry={INTERIOR_GEO.box} scale={[0.14, 0.08, 0.12]}>
-        <primitive object={MAT.leather} attach="material" />
-      </mesh>
-      <mesh position={[0.39, 0.77, 0]} geometry={INTERIOR_GEO.cylinder} scale={[0.018, 0.09, 0.018]}>
-        <primitive object={MAT.chrome} attach="material" />
-      </mesh>
-      <mesh position={[0.385, 0.84, 0]} rotation={[0, 0, -0.18]} geometry={INTERIOR_GEO.sphere} scale={[0.065, 0.09, 0.055]}>
-        <primitive object={MAT.leather} attach="material" />
-      </mesh>
-      <mesh position={[0.35, 0.844, -0.05]} geometry={INTERIOR_GEO.box} scale={[0.035, 0.018, 0.01]}>
-        <primitive object={MAT.vrsRed} attach="material" />
-      </mesh>
-      <mesh position={[-0.31, 0.72, -0.08]} rotation={[0, 0, -0.12]} geometry={INTERIOR_GEO.box} scale={[0.28, 0.06, 0.065]}>
-        <primitive object={MAT.leather} attach="material" />
-      </mesh>
-      <mesh position={[-0.2, 0.735, -0.08]} geometry={INTERIOR_GEO.box} scale={[0.045, 0.02, 0.07]}>
-        <primitive object={MAT.button} attach="material" />
-      </mesh>
-      {[-0.08, -0.27].map((x) => (
-        <mesh key={x} position={[x, 0.687, 0.055]} rotation={[Math.PI / 2, 0, 0]} geometry={INTERIOR_GEO.cupRing} scale={0.07}>
-          <primitive object={MAT.chrome} attach="material" />
-        </mesh>
-      ))}
 
-      <Seat position={[-0.18, 0, -0.44]} />
-      <Seat position={[-0.18, 0, 0.44]} />
-      <DoorPanel side={-1} />
-      <DoorPanel side={1} />
-
-      {/* Glazing and ultra-thin pillars. */}
+      {/* Glazing and ultra-thin pillars: enclosure at the frame edges. */}
       {[-0.87, 0.87].map((z) => (
         <mesh key={z} position={[1.32, 1.28, z]} rotation={[0, 0, 0.94]} geometry={INTERIOR_GEO.box} scale={[0.02, 0.7, 0.02]}>
           <primitive object={MAT.liner} attach="material" />
@@ -1260,25 +1013,43 @@ function CarInterior({
           <primitive object={MAT.glass} attach="material" />
         </mesh>
       ))}
-      <mesh position={[-1.05, 1.12, 0]} rotation={[0, Math.PI / 2, 0]} geometry={INTERIOR_GEO.plane} scale={[1.65, 0.34, 1]}>
-        <primitive object={MAT.glass} attach="material" />
+    </group>
+  );
+}
+
+function SteeringWheel({ wheelRef }: { wheelRef: React.RefObject<THREE.Group | null> }) {
+  return (
+    /* Positioned so only the rim's top arc rises into the bottom-right of
+       the POV frame (eye 1.38, wheel top ≈ 1.14 at 0.5 ahead ≈ 26° down). */
+    <group position={[0.8, 0.94, -0.52]} rotation={[0, Math.PI / 2, 0]}>
+      {/* Column and cowling stay outside the animated group; wheel rotation remains isolated. */}
+      <mesh position={[0, -0.015, 0.13]} rotation={[Math.PI / 2, 0, 0]} geometry={INTERIOR_GEO.cylinder} scale={[0.035, 0.16, 0.035]}>
+        <primitive object={MAT.dashTrim} attach="material" />
+      </mesh>
+      <mesh position={[0, -0.055, 0.19]} geometry={INTERIOR_GEO.box} scale={[0.2, 0.13, 0.16]}>
+        <primitive object={MAT.dashTrim} attach="material" />
       </mesh>
 
-      {/* Headliner: a thin dark roof strip above and behind the driver so
-          the cabin feels enclosed without cropping the forward view.
-          Positioned above the eye line (1.22) at 1.65 and shifted back
-          so it only appears in the upper periphery, not dead-center. */}
-      <mesh position={[-0.3, 1.65, 0]} geometry={INTERIOR_GEO.box} scale={[1.8, 0.03, 1.7]}>
-        <primitive object={MAT.liner} attach="material" />
-      </mesh>
-
-      {/* Hood: a dark surface extending forward from the dashboard top,
-          visible at the bottom of the POV view. Gives a sense of the
-          car's physical extent. Positioned forward of the windshield
-          and slightly lower so it's visible below the dash crest. */}
-      <mesh position={[2.0, 0.78, 0]} rotation={[0, 0, -0.06]} geometry={INTERIOR_GEO.box} scale={[1.2, 0.04, 1.7]}>
-        <primitive object={MAT.dash} attach="material" />
-      </mesh>
+      <group ref={wheelRef} rotation={[-0.16, 0, 0]}>
+        <mesh geometry={STEERING_RIM_GEO}>
+          <primitive object={MAT.leather} attach="material" />
+        </mesh>
+        {/* Two slim spokes meet a compact round hub; only the rim and spoke
+            tops are ever visible from the eye. */}
+        <mesh position={[-0.105, 0.03, 0]} rotation={[0, 0, -0.28]} geometry={INTERIOR_GEO.box} scale={[0.16, 0.045, 0.035]}>
+          <primitive object={MAT.dashTrim} attach="material" />
+        </mesh>
+        <mesh position={[0.105, 0.03, 0]} rotation={[0, 0, 0.28]} geometry={INTERIOR_GEO.box} scale={[0.16, 0.045, 0.035]}>
+          <primitive object={MAT.dashTrim} attach="material" />
+        </mesh>
+        <mesh rotation={[Math.PI / 2, 0, 0]} geometry={INTERIOR_GEO.cylinder} scale={[0.075, 0.04, 0.075]}>
+          <primitive object={MAT.leather} attach="material" />
+        </mesh>
+        {/* Red VRS badge is on the driver-facing side of the hub. */}
+        <mesh position={[0.015, -0.012, -0.048]} geometry={INTERIOR_GEO.box} scale={[0.065, 0.025, 0.012]}>
+          <primitive object={MAT.vrsRed} attach="material" />
+        </mesh>
+      </group>
     </group>
   );
 }
@@ -1291,7 +1062,7 @@ function CarInterior({
  * Spawns at the entry node E0 on the right-hand lane, follows ramp height
  * when driving over a spiral ramp, and is clamped to the lot footprint for
  * basic collision. Renders a simple box exterior (visible from outside) and
- * a detailed 3D interior (visible from the POV camera).
+ * a minimal dash cowl + steering wheel (visible from the POV camera).
  */
 export const DrivableCar = memo(function DrivableCar({
   lot,
@@ -1329,7 +1100,7 @@ export const DrivableCar = memo(function DrivableCar({
   const steerInputRef = useRef(0); // live steering input for the wheel visual
   const steerAngleRef = useRef(0); // smoothed steering angle (radians)
   const floorRef = useRef(0); // current floor (for flat-ground height)
-  const liveSpeedRef = useRef(0); // numeric speed feed for the interior speedometer
+  const liveSpeedRef = useRef(0); // numeric speed feed for the HUD
   const wheelRefs = useRef<(THREE.Group | null)[]>([null, null, null, null]);
   const steerRefs = useRef<(THREE.Group | null)[]>([null, null, null, null]);
   // Node bookkeeping: which node was last reported to the sim, when the area
@@ -2320,10 +2091,11 @@ export const DrivableCar = memo(function DrivableCar({
     // as the nearest centreline segment flipped frame-to-frame).
     g.position.y += (targetGroundY + CAR_Y_OFFSET - g.position.y) * heightLerp;
 
-    // Publish speed for the HUD and the interior speedometer.
+    // Publish speed + steering for the HUD and the POV cluster.
     liveSpeedRef.current = velocityRef.current;
     if (speedRef) {
       speedRef.current.speed = velocityRef.current;
+      speedRef.current.steer = steerInputRef.current;
     }
 
     // Publish physical position so AI cars can avoid the player even when
@@ -2555,7 +2327,7 @@ export const DrivableCar = memo(function DrivableCar({
             is mounted only in POV mode. The steering-wheel animation and the
             speedometer live inside it and are only visible in POV, so they
             unmount safely with it. */}
-        {pov && <CarInterior steerRef={steerInputRef} speedRef={liveSpeedRef} />}
+        {pov && <PovCockpit steerRef={steerInputRef} />}
       </group>
       {/* Blob shadow under the player car (kept flat via shadowRef in useFrame) */}
       <mesh ref={shadowRef} rotation={[-Math.PI / 2, 0, 0]} position={spawn.pos}>
