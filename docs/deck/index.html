@@ -1,0 +1,1528 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ParCoar</title>
+<style>
+  :root {
+    --bg: #000000;
+    --panel: #0a0c10;
+    --road: #14171f;
+    --text: #eaecef;
+    --muted: #8a8f98;
+    --dim: #5a5f68;
+    --accent: #4d8dff;
+    --green: #7cb342;
+    --red: #e53935;
+    --amber: #ffb000;
+    --kw: #79c0ff;
+    --str: #a5d6ff;
+    --com: #6e7681;
+    --num: #f0883e;
+    --name: #d2a8ff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .deck { position: fixed; inset: 0; }
+
+  /* every slide: same padding, same structure */
+  .slide {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    padding: 8vh 7vw 8vh;
+    opacity: 0;
+    transform: translateX(30px);
+    transition: opacity .4s ease, transform .4s ease;
+    pointer-events: none;
+  }
+  .slide.active { opacity: 1; transform: none; pointer-events: auto; }
+
+  /* title: same size on every slide */
+  h2.slide-title {
+    font-size: clamp(26px, 3.8vw, 48px);
+    line-height: 1.1; letter-spacing: -.02em;
+    font-weight: 600; margin-bottom: 5vh;
+    flex-shrink: 0;
+  }
+
+  /* content area fills remaining space, centers vertically */
+  .content {
+    flex: 1; min-height: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .two-col {
+    display: flex; gap: 5vw; width: 100%;
+    align-items: center;
+  }
+  .two-col > .text { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 3vh; }
+  .two-col > .visual { flex: 1.1; }
+  .visual { display: flex; align-items: center; justify-content: center; min-height: 0; }
+  .visual svg, .visual img { width: 100%; height: auto; max-height: 60vh; display: block; }
+
+  /* stat row */
+  .stats { display: flex; gap: 3vw; margin-top: 1vh; }
+  .stat { display: flex; flex-direction: column; gap: 0.3vh; }
+  .stat .stat-n { font-size: clamp(22px, 2.6vw, 34px); font-weight: 600; color: var(--text); letter-spacing: -.02em; line-height: 1; }
+  .stat .stat-l { font-size: clamp(11px, 1.1vw, 14px); color: var(--muted); line-height: 1.3; }
+
+  /* titled bullet points */
+  .points { display: flex; flex-direction: column; gap: 3.5vh; }
+  .point { display: flex; flex-direction: column; gap: 0.6vh; }
+  .point .pt-title {
+    color: var(--text); font-weight: 500;
+    font-size: clamp(17px, 1.9vw, 24px);
+    line-height: 1.2;
+  }
+  .point .pt-desc {
+    color: var(--muted);
+    font-size: clamp(14px, 1.4vw, 18px);
+    line-height: 1.4; max-width: 42ch;
+  }
+
+  /* code blocks */
+  pre.code {
+    background: var(--panel);
+    border-left: 2px solid var(--accent);
+    padding: 14px 16px; border-radius: 4px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: clamp(10px, 1.05vw, 12.5px); line-height: 1.5;
+    color: #c9d1d9; overflow: auto; white-space: pre;
+    max-height: 38vh;
+  }
+  pre.code .k { color: var(--kw); }
+  pre.code .s { color: var(--str); }
+  pre.code .c { color: var(--com); font-style: italic; }
+  pre.code .n { color: var(--num); }
+  pre.code .f { color: var(--name); }
+  pre.code .d { color: var(--dim); }
+
+  /* comparison table slide */
+  .compare-table { width: 100%; border-collapse: collapse; }
+  .compare-table th, .compare-table td {
+    text-align: left; padding: 1.6vh 1.2vw; vertical-align: top;
+  }
+  .compare-table th {
+    font-size: clamp(11px, 1.1vw, 14px); font-weight: 500;
+    color: var(--muted); text-transform: uppercase; letter-spacing: .08em;
+    border-bottom: 1px solid var(--stroke); padding-bottom: 1.2vh;
+  }
+  .compare-table td { border-bottom: 1px solid var(--stroke); }
+  .compare-table tr:last-child td { border-bottom: none; }
+  .compare-table .algo-name {
+    font-size: clamp(15px, 1.6vw, 21px); font-weight: 600; color: var(--text);
+  }
+  .compare-table .algo-desc {
+    font-size: clamp(12px, 1.2vw, 16px); color: var(--muted); line-height: 1.4;
+    margin-top: 0.3vh;
+  }
+  .compare-table .verdict { font-size: clamp(13px, 1.3vw, 17px); line-height: 1.4; }
+  .compare-table .verdict.yes { color: var(--green); }
+  .compare-table .verdict.no { color: var(--dim); }
+  .compare-table .verdict.pick { color: var(--accent); font-weight: 500; }
+  .compare-table .pick-row .algo-name { color: var(--accent); }
+  .compare-table .pick-row { background: rgba(77, 141, 255, 0.04); }
+  .compare-table .tag {
+    display: inline-block; font-size: clamp(10px, 1vw, 13px); font-weight: 600;
+    padding: 0.2vh 0.6vw; border-radius: 3px; letter-spacing: .04em;
+  }
+  .compare-table .tag.yes { background: rgba(124, 179, 66, 0.12); color: var(--green); }
+  .compare-table .tag.no { background: rgba(90, 95, 104, 0.15); color: var(--dim); }
+  .compare-table .tag.pick { background: rgba(77, 141, 255, 0.12); color: var(--accent); }
+
+  /* lifecycle slide */
+  .lifecycle-slide .two-col > .visual { flex: 1.3; }
+  .lifecycle-slide .two-col > .text { flex: 1; }
+  .lifecycle-steps { display: flex; flex-direction: column; gap: 2.2vh; }
+  .lifecycle-step {
+    display: flex; align-items: flex-start; gap: 1.2vw;
+    opacity: 0.3; transition: opacity .4s ease;
+  }
+  .lifecycle-step.active { opacity: 1; }
+  .lifecycle-step .ls-num {
+    flex-shrink: 0; width: clamp(28px, 3vw, 38px); height: clamp(28px, 3vw, 38px);
+    border-radius: 50%; border: 2px solid var(--dim);
+    display: flex; align-items: center; justify-content: center;
+    font-size: clamp(13px, 1.4vw, 17px); font-weight: 600; color: var(--dim);
+    transition: all .4s ease;
+  }
+  .lifecycle-step.active .ls-num { border-color: var(--accent); color: var(--accent); }
+  .lifecycle-step .ls-text { display: flex; flex-direction: column; gap: 0.3vh; }
+  .lifecycle-step .ls-title {
+    font-size: clamp(15px, 1.6vw, 21px); font-weight: 500; color: var(--text);
+    line-height: 1.2;
+  }
+  .lifecycle-step:not(.active) .ls-title { color: var(--muted); }
+  .lifecycle-step .ls-desc {
+    font-size: clamp(12px, 1.2vw, 16px); color: var(--muted); line-height: 1.4;
+  }
+
+  /* code slide layout */
+  .code-slide .two-col > .visual { flex: 1; }
+  .code-slide .two-col > .text { flex: 1; }
+  .code-slide .points { gap: 2.5vh; }
+  .code-slide .point .pt-title { font-size: clamp(14px, 1.5vw, 19px); }
+  .code-slide .point .pt-desc { font-size: clamp(12px, 1.2vw, 16px); }
+  .code-slide .text { display: flex; flex-direction: column; gap: 3vh; justify-content: center; }
+  .code-title {
+    color: var(--accent); font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: clamp(11px, 1.1vw, 14px); letter-spacing: .08em;
+    text-transform: uppercase; font-weight: 500; margin-bottom: 1vh;
+  }
+
+  /* title slide */
+  .title-slide { justify-content: center; }
+  .title-slide .title-row { display: flex; align-items: center; gap: 6vw; width: 100%; }
+  .title-slide .title-text { flex: 1; }
+  .title-slide .title-visual { flex: 1.2; }
+  .title-slide .title-visual img { width: 100%; height: auto; max-height: 65vh; border-radius: 8px; opacity: 0.9; }
+  .title-slide .eyebrow {
+    font-size: clamp(12px, 1.3vw, 15px);
+    letter-spacing: .25em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 2vh;
+  }
+  .title-slide h1 {
+    font-size: clamp(52px, 10vw, 140px);
+    line-height: .9; letter-spacing: -.04em; font-weight: 600;
+  }
+  .title-slide .subtitle {
+    font-size: clamp(18px, 2.2vw, 30px);
+    color: var(--text); max-width: 28ch; line-height: 1.3;
+    margin-top: 3vh; font-weight: 400;
+  }
+
+  /* close slide */
+  .close-slide { justify-content: center; }
+  .close-slide .close-row { display: flex; align-items: center; gap: 6vw; width: 100%; }
+  .close-slide .close-text { flex: 1; }
+  .close-slide .close-visual { flex: 1; }
+  .close-slide .close-visual svg { width: 100%; height: auto; max-height: 55vh; }
+  .close-slide h2 { margin-bottom: 5vh; }
+  .close-slide .recap { display: flex; flex-direction: column; gap: 3vh; max-width: 46ch; }
+  .close-slide .recap div { color: var(--muted); font-size: clamp(16px, 1.8vw, 23px); line-height: 1.4; }
+  .close-slide .recap div b { color: var(--text); font-weight: 500; }
+  .close-slide .signoff { margin-top: 6vh; color: var(--muted); font-size: 14px; letter-spacing: .2em; text-transform: uppercase; }
+
+  /* nav */
+  .progress {
+    position: fixed; left: 0; bottom: 0; height: 2px;
+    background: var(--accent); width: 0; transition: width .4s ease; z-index: 20;
+  }
+  .counter {
+    position: fixed; right: 2.4vw; bottom: 2.4vh;
+    font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums;
+    z-index: 20; letter-spacing: .04em;
+  }
+  .counter b { color: var(--text); font-weight: 500; }
+  .hint {
+    position: fixed; left: 2.4vw; bottom: 2.4vh;
+    font-size: 12px; color: var(--dim); z-index: 20; letter-spacing: .04em;
+  }
+  .replay {
+    position: absolute; top: 8vh; right: 7vw;
+    font: inherit; font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--muted); background: transparent; border: 1px solid var(--dim);
+    padding: 7px 14px; border-radius: 3px; cursor: pointer; z-index: 5;
+  }
+  .replay:hover { color: var(--text); border-color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+
+  <!-- 1. Title -->
+  <section class="slide title-slide">
+    <div class="title-row">
+      <div class="title-text">
+        <div class="eyebrow">Class project</div>
+        <h1>ParCoar</h1>
+        <div class="subtitle">An AI-assisted car parking system.</div>
+      </div>
+      <div class="title-visual">
+        <img id="title-img" alt="ParCoar simulator" />
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. What is ParCoar? -->
+  <section class="slide">
+    <h2 class="slide-title">What is ParCoar?</h2>
+    <div class="content">
+      <div class="two-col">
+        <div class="text">
+          <div class="points">
+            <div class="point">
+              <div class="pt-title">A parking garage simulator</div>
+              <div class="pt-desc">A 3D garage on screen. Cars drive in, park, drive out.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">A server that assigns spots</div>
+              <div class="pt-desc">When a car arrives, the server picks which spot it gets.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">Signs that guide each car</div>
+              <div class="pt-desc">Overhead boards at every turn show the way. The car follows them.</div>
+            </div>
+          </div>
+        </div>
+        <div class="visual">
+          <svg viewBox="0 0 500 360" id="fig-what"></svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. The garage -->
+  <section class="slide">
+    <h2 class="slide-title">The garage</h2>
+    <div class="content">
+      <div class="two-col">
+        <div class="visual" style="flex:1.3">
+          <svg viewBox="0 0 560 400" id="fig-garage"></svg>
+        </div>
+        <div class="text">
+          <div class="points">
+            <div class="point">
+              <div class="pt-title">Three floors</div>
+              <div class="pt-desc">Stacked on top of each other. Ramps connect them.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">480 parking spots</div>
+              <div class="pt-desc">Laid out in rows on each floor. Each spot is one painted rectangle.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">Lanes and junctions</div>
+              <div class="pt-desc">Cars drive down lanes, turn at junctions, take ramps between floors.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. The problem -->
+  <section class="slide">
+    <h2 class="slide-title">The problem</h2>
+    <div class="content">
+      <div class="two-col">
+        <div class="text">
+          <div class="points">
+            <div class="point">
+              <div class="pt-title">You can't see which spots are free</div>
+              <div class="pt-desc">From the entrance, just rows of cars. No way to tell what's open.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">So you circle</div>
+              <div class="pt-desc">One row, nothing. Next row, nothing. Half the garage later, you find one.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">A spot was empty one floor away</div>
+              <div class="pt-desc">You just couldn't see it.</div>
+            </div>
+          </div>
+        </div>
+        <div class="visual">
+          <svg viewBox="0 0 500 360" id="fig-problem"></svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. The idea -->
+  <section class="slide">
+    <h2 class="slide-title">The idea</h2>
+    <div class="content">
+      <div class="two-col">
+        <div class="text">
+          <div class="points">
+            <div class="point">
+              <div class="pt-title">The garage knows which spots are free</div>
+              <div class="pt-desc">It tracks every spot in real time.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">It picks the closest one for you</div>
+              <div class="pt-desc">Not the closest in a straight line. The closest to actually drive to.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">It guides you there turn by turn</div>
+              <div class="pt-desc">Signs at every junction show the way. You just follow them.</div>
+            </div>
+          </div>
+        </div>
+        <div class="visual">
+          <svg viewBox="0 0 460 320" id="fig-sign"></svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. The simulator -->
+  <section class="slide">
+    <h2 class="slide-title">The simulator</h2>
+    <div class="content">
+      <div class="two-col">
+        <div class="visual" style="flex:2.2">
+          <img id="garage-img" alt="ParCoar simulator screenshot" />
+        </div>
+        <div class="text">
+          <div class="points">
+            <div class="point">
+              <div class="pt-title">Cars drive in and get guided to a spot</div>
+              <div class="pt-desc">The server picks the spot. Signs guide the car there turn by turn.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">Signs update live</div>
+              <div class="pt-desc">Every junction shows which way to turn, as the car moves.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">Built with React, Three.js, Python, WebSocket</div>
+              <div class="pt-desc">Frontend renders the 3D garage. Backend decides where each car goes.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7. How it works -->
+  <section class="slide">
+    <h2 class="slide-title">How it works</h2>
+    <div class="content">
+      <div class="two-col">
+        <div class="visual" style="flex:1.5">
+          <svg viewBox="0 0 700 300" id="fig-how"></svg>
+        </div>
+        <div class="text">
+          <div class="points">
+            <div class="point">
+              <div class="pt-title">Frontend renders, backend decides</div>
+              <div class="pt-desc">React + Three.js render the 3D garage, move cars, show signs. Python picks spots, calculates routes, keeps reservations.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">WebSocket connects them</div>
+              <div class="pt-desc">Browser sends car positions every 80ms. Server replies with directions. About 12 messages per second each way.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">One lot.json, shared by both</div>
+              <div class="pt-desc">Generated once from a few parameters. Frontend uses it for geometry, backend uses it for routing.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8. The garage as a graph -->
+  <section class="slide">
+    <h2 class="slide-title">The garage as a graph</h2>
+    <div class="content">
+      <div class="two-col">
+        <div class="visual" style="flex:1.2">
+          <svg viewBox="0 0 580 360" id="fig-graph"></svg>
+        </div>
+        <div class="text">
+          <div class="points">
+            <div class="point">
+              <div class="pt-title">Everything becomes a node</div>
+              <div class="pt-desc">Lanes, junctions, ramps, spots. Each is a point on a map.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">Every connection has a distance</div>
+              <div class="pt-desc">The metres a car drives. A turn costs more than a straight lane.</div>
+            </div>
+          </div>
+          <div class="stats">
+            <div class="stat"><div class="stat-n">480</div><div class="stat-l">parking bays</div></div>
+            <div class="stat"><div class="stat-n">737</div><div class="stat-l">graph nodes</div></div>
+            <div class="stat"><div class="stat-n">1472</div><div class="stat-l">road connections</div></div>
+            <div class="stat"><div class="stat-n">1</div><div class="stat-l">lot.json file</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9. Driving distance -->
+  <section class="slide">
+    <h2 class="slide-title">Driving distance, not straight line</h2>
+    <div class="content">
+      <div class="two-col">
+        <div class="text">
+          <div class="points">
+            <div class="point">
+              <div class="pt-title">Straight line is misleading</div>
+              <div class="pt-desc">The closest spot as the crow flies can be far to drive to.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">You can't cut through cars</div>
+              <div class="pt-desc">Reaching the next row means going around a turn.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">So we measure driving distance</div>
+              <div class="pt-desc">That's why we need pathfinding, not just nearest neighbour.</div>
+            </div>
+          </div>
+        </div>
+        <div class="visual" style="flex:1.2">
+          <svg viewBox="0 0 540 360" id="fig-distance"></svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10. Why Dijkstra -->
+  <section class="slide">
+    <h2 class="slide-title">Why Dijkstra</h2>
+    <div class="content" style="display:flex; flex-direction:column; justify-content:center; gap:4vh;">
+      <div style="font-size:clamp(15px,1.6vw,21px); color:var(--muted); max-width:80ch; line-height:1.4;">
+        The graph is weighted — a ramp is much longer than an aisle step. That rules out anything that counts hops. We need shortest path by real driving distance.
+      </div>
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th>Algorithm</th>
+            <th>Shortest path?</th>
+            <th>Handles weights?</th>
+            <th>Why for ParCoar</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><div class="algo-name">DFS</div><div class="algo-desc">Depth-first search</div></td>
+            <td><span class="tag no">No</span></td>
+            <td><span class="tag no">No</span></td>
+            <td><div class="verdict no">Finds <em>a</em> path, not the shortest. Could send a car on a lap of the whole garage.</div></td>
+          </tr>
+          <tr>
+            <td><div class="algo-name">BFS</div><div class="algo-desc">Breadth-first search</div></td>
+            <td><span class="tag yes">Yes</span></td>
+            <td><span class="tag no">No</span></td>
+            <td><div class="verdict no">Shortest by hop count. A ramp and an aisle step count the same. Wrong for driving distance.</div></td>
+          </tr>
+          <tr class="pick-row">
+            <td><div class="algo-name">Dijkstra</div><div class="algo-desc">Weighted shortest path</div></td>
+            <td><span class="tag pick">Yes</span></td>
+            <td><span class="tag pick">Yes</span></td>
+            <td><div class="verdict pick">Shortest by real edge cost. Simple, fast on 737 nodes. No heuristic needed.</div></td>
+          </tr>
+          <tr>
+            <td><div class="algo-name">A*</div><div class="algo-desc">Heuristic-guided search</div></td>
+            <td><span class="tag yes">Yes</span></td>
+            <td><span class="tag yes">Yes</span></td>
+            <td><div class="verdict no">Same answer as Dijkstra but needs a straight-line heuristic. In a garage you can't drive through floors, so the heuristic is weak. More complexity, no benefit.</div></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 11. Dijkstra's algorithm -->
+  <section class="slide">
+    <h2 class="slide-title">Dijkstra's algorithm</h2>
+    <div class="content">
+      <div class="two-col">
+        <div class="text">
+          <div class="points">
+            <div class="point">
+              <div class="pt-title">A shortest-path algorithm from 1959</div>
+              <div class="pt-desc">The same idea your maps app uses to find a route.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">It spreads outward from the start</div>
+              <div class="pt-desc">Visits the nearest unvisited node first. Expands in every direction at once.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">Stops when it reaches the goal</div>
+              <div class="pt-desc">The first time it arrives, it has found the shortest path. Guaranteed.</div>
+            </div>
+          </div>
+        </div>
+        <div class="visual">
+          <svg viewBox="0 0 440 360" id="fig-dijkstra"></svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 12. A car's life -->
+  <section class="slide lifecycle-slide" data-anim="animLifecycle">
+    <h2 class="slide-title">A car's life</h2>
+    <button class="replay" data-replay="animLifecycle">Replay</button>
+    <div class="content">
+      <div class="two-col">
+        <div class="visual">
+          <svg viewBox="0 0 600 420" id="fig-lifecycle"></svg>
+        </div>
+        <div class="text">
+          <div class="lifecycle-steps" id="lifecycle-steps">
+            <div class="lifecycle-step" data-step="0">
+              <div class="ls-num">1</div>
+              <div class="ls-text">
+                <div class="ls-title">Car enters the garage</div>
+                <div class="ls-desc">Frontend spawns it at the entry node. Sends its position to the server.</div>
+              </div>
+            </div>
+            <div class="lifecycle-step" data-step="1">
+              <div class="ls-num">2</div>
+              <div class="ls-text">
+                <div class="ls-title">Server picks a spot</div>
+                <div class="ls-desc">Dijkstra finds the closest free bay. Reserves it so no other car gets sent there.</div>
+              </div>
+            </div>
+            <div class="lifecycle-step" data-step="2">
+              <div class="ls-num">3</div>
+              <div class="ls-text">
+                <div class="ls-title">Route calculated</div>
+                <div class="ls-desc">Second Dijkstra finds the path. Each hop becomes a turn direction: left, right, straight.</div>
+              </div>
+            </div>
+            <div class="lifecycle-step" data-step="3">
+              <div class="ls-num">4</div>
+              <div class="ls-text">
+                <div class="ls-title">Car drives, signs update</div>
+                <div class="ls-desc">Frontend moves the car along the path. Signs at every junction show the next turn.</div>
+              </div>
+            </div>
+            <div class="lifecycle-step" data-step="4">
+              <div class="ls-num">5</div>
+              <div class="ls-text">
+                <div class="ls-title">Car parks, reservation released</div>
+                <div class="ls-desc">Car reaches the spot. Server marks it occupied, releases the reservation.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 13. Picking a spot -->
+  <section class="slide" data-anim="anim1">
+    <h2 class="slide-title">Picking a spot</h2>
+    <button class="replay" data-replay="anim1">Replay</button>
+    <div class="content">
+      <div class="two-col">
+        <div class="visual" style="flex:1.6">
+          <svg viewBox="0 0 820 460" id="anim1"></svg>
+        </div>
+        <div class="text">
+          <div class="points">
+            <div class="point">
+              <div class="pt-title">First free spot wins</div>
+              <div class="pt-desc">Dijkstra spreads outward from the car. The first free spot it reaches is the closest one to drive to.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">Taken spots are skipped</div>
+              <div class="pt-desc">Occupied and reserved spots are blocked before the search starts. Two cars never get sent to the same spot.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">No need to search the whole graph</div>
+              <div class="pt-desc">Dijkstra visits nodes in order of distance. The moment it touches a free slot, that's the answer. Everything further away is ignored.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">The spot gets reserved instantly</div>
+              <div class="pt-desc">Before the car even starts moving, the slot is marked reserved. No other car can claim it while this one is en route.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 14. Planning the route -->
+  <section class="slide" data-anim="anim2">
+    <h2 class="slide-title">Planning the route</h2>
+    <button class="replay" data-replay="anim2">Replay</button>
+    <div class="content">
+      <div class="two-col">
+        <div class="visual" style="flex:1.6">
+          <svg viewBox="0 0 820 460" id="anim2"></svg>
+        </div>
+        <div class="text">
+          <div class="points">
+            <div class="point">
+              <div class="pt-title">Same Dijkstra, but with a destination</div>
+              <div class="pt-desc">Now we know which spot the car is going to. The search stops the moment it reaches that specific spot.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">The path becomes the signs</div>
+              <div class="pt-desc">The output is a list of nodes to drive through. Each junction on that list gets a sign pointing left, right, or straight.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">Spots are never shortcuts</div>
+              <div class="pt-desc">A parking spot is a dead end. The search can end in one, but it never passes through one to reach somewhere else.</div>
+            </div>
+            <div class="point">
+              <div class="pt-title">Route recalculated every 80ms</div>
+              <div class="pt-desc">As the car moves, the frontend sends its new position. The server reruns Dijkstra from there, so the route always starts from where the car actually is.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 15. Close -->
+  <section class="slide close-slide">
+    <h2 class="slide-title">ParCoar</h2>
+    <div class="close-row">
+      <div class="close-text">
+        <div class="recap">
+          <div><b>One map</b> drives both the routing and the 3D scene.</div>
+          <div><b>Dijkstra on real driving distance</b> picks the closest free spot and the route to it.</div>
+          <div><b>The server decides, the browser drives.</b> They talk twelve times a second.</div>
+        </div>
+        <div class="signoff">Thank you</div>
+      </div>
+      <div class="close-visual">
+        <svg viewBox="0 0 460 360" id="fig-recap"></svg>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<div class="progress" id="progress"></div>
+<div class="counter"><b id="cur">01</b> / <span id="tot">15</span></div>
+<div class="hint">&#8592; &#8594; navigate</div>
+
+<script>
+"use strict";
+
+/* ---------- slide navigation ---------- */
+const slides = Array.from(document.querySelectorAll(".slide"));
+const total = slides.length;
+let idx = 0;
+const progress = document.getElementById("progress");
+const curEl = document.getElementById("cur");
+document.getElementById("tot").textContent = String(total).padStart(2, "0");
+
+const animFor = { anim1: null, anim2: null, animLifecycle: null };
+
+function go(n) {
+  n = Math.max(0, Math.min(total - 1, n));
+  if (n === idx && slides[idx].classList.contains("active")) return;
+  const leaving = slides[idx];
+  const la = leaving.getAttribute("data-anim");
+  if (la && animFor[la]) animFor[la].stop();
+  slides.forEach(s => s.classList.remove("active"));
+  slides[n].classList.add("active");
+  idx = n;
+  progress.style.width = ((n) / (total - 1)) * 100 + "%";
+  curEl.textContent = String(n + 1).padStart(2, "0");
+  const na = slides[n].getAttribute("data-anim");
+  if (na && animFor[na]) animFor[na].start();
+}
+
+document.addEventListener("keydown", e => {
+  if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === " " || e.key === "PageDown") { e.preventDefault(); go(idx + 1); }
+  else if (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp") { e.preventDefault(); go(idx - 1); }
+  else if (e.key === "Home") go(0);
+  else if (e.key === "End") go(total - 1);
+  else if (e.key === "f" || e.key === "F") {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  }
+});
+document.addEventListener("click", e => {
+  if (e.target.closest("button")) return;
+  const w = window.innerWidth;
+  go(e.clientX < w * 0.35 ? idx - 1 : idx + 1);
+});
+document.querySelectorAll("[data-replay]").forEach(b =>
+  b.addEventListener("click", e => { e.stopPropagation(); const a = b.getAttribute("data-replay"); if (animFor[a]) { animFor[a].stop(); animFor[a].start(); } })
+);
+
+/* ---------- svg helpers ---------- */
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+/* ---------- shared dijkstra ---------- */
+function dijkstra(graph, start, goal, opts) {
+  opts = opts || {};
+  const blocked = opts.blocked || new Set();
+  const nodes = graph.nodes, edges = graph.edges;
+  const dist = {}, prev = {}, order = [];
+  dist[start] = 0;
+  const queue = [[0, start]];
+  const finalize = (d, cur) => { order.push(cur); };
+  while (queue.length) {
+    queue.sort((a, b) => a[0] - b[0]);
+    const [d, cur] = queue.shift();
+    if (d !== dist[cur]) continue;
+    finalize(d, cur);
+    if (goal && cur === goal) return { dist, prev, order, found: cur, d };
+    if (!goal && opts.findFreeSlot && nodes[cur].type === "slot" && !blocked.has(cur)) {
+      return { dist, prev, order, found: cur, d };
+    }
+    for (const e of (edges[cur] || [])) {
+      const nb = e.to;
+      if (nodes[nb].type === "slot" && blocked.has(nb) && nb !== goal) continue;
+      if (opts.noSlotShortcut && nodes[nb].type === "slot" && nb !== goal) continue;
+      const nd = d + e.cost;
+      if (nd < (dist[nb] === undefined ? Infinity : dist[nb])) {
+        dist[nb] = nd; prev[nb] = cur;
+        queue.push([nd, nb]);
+      }
+    }
+  }
+  return { dist, prev, order, found: null, d: Infinity };
+}
+function buildPath(prev, start, goal) {
+  const p = [goal];
+  let c = goal;
+  while (c !== start) { c = prev[c]; if (c === undefined) return null; p.push(c); }
+  return p.reverse();
+}
+
+/* ---------- animation framework ---------- */
+function makeAnim(svgId, build) {
+  const svg = document.getElementById(svgId);
+  let raf = null, stopped = true, t0 = 0;
+  const api = {
+    start() {
+      if (!svg) return;
+      this.stop();
+      stopped = false; t0 = 0;
+      clear(svg);
+      const ctx = { svg, el, clear, api };
+      const step = build(ctx);
+      const loop = (ts) => {
+        if (stopped) return;
+        if (!t0) t0 = ts;
+        const t = (ts - t0) / 1000;
+        const more = step(t);
+        if (more) raf = requestAnimationFrame(loop);
+        else stopped = true;
+      };
+      raf = requestAnimationFrame(loop);
+    },
+    stop() { stopped = true; if (raf) cancelAnimationFrame(raf); raf = null; }
+  };
+  return api;
+}
+
+/* ============================================================
+   ANIM 1 — nearest_free_slot on Floor 1
+   ============================================================ */
+(function buildAnim1() {
+  const Y0 = 150, Y1 = 320;
+  const SX = 130, GAP = 80;
+  const nodes = {};
+  const add = (id, x, y, type, floor) => nodes[id] = { x, y, type, floor };
+  add("E", 60, Y0, "entry", 0);
+  const a0 = [];
+  for (let i = 0; i < 5; i++) { const id = "A0_" + i; add(id, SX + i * GAP, Y0, "junction", 0); a0.push(id); }
+  add("T0", SX + 5 * GAP, Y0, "turn", 0);
+  const a1 = [];
+  for (let i = 0; i < 5; i++) { const id = "A1_" + i; add(id, SX + (4 - i) * GAP, Y1, "junction", 0); a1.push(id); }
+  add("X", 60, Y1, "exit", 0);
+  const bays = [];
+  const bay = (aisle, j, side, y) => {
+    const id = "S" + aisle + "_" + j + (side ? "b" : "a");
+    const jid = (aisle === 0 ? a0 : a1)[j];
+    add(id, nodes[jid].x, y, "slot", 0);
+    bays.push(id);
+  };
+  for (let j = 0; j < 5; j++) { bay(0, j, 0, Y0 - 34); bay(0, j, 1, Y0 + 34); }
+  for (let j = 0; j < 5; j++) { bay(1, j, 0, Y1 - 34); bay(1, j, 1, Y1 + 34); }
+
+  const edges = {};
+  const link = (a, b, cost) => { (edges[a] = edges[a] || []).push({ to: b, cost }); (edges[b] = edges[b] || []).push({ to: a, cost }); };
+  link("E", a0[0], 70);
+  for (let i = 0; i < 4; i++) link(a0[i], a0[i + 1], GAP);
+  link(a0[4], "T0", 40);
+  link("T0", a1[0], 150);
+  for (let i = 0; i < 4; i++) link(a1[i], a1[i + 1], GAP);
+  link(a1[4], "X", 70);
+  for (let j = 0; j < 5; j++) {
+    link(a0[j], "S0_" + j + "a", 34); link(a0[j], "S0_" + j + "b", 34);
+    link(a1[j], "S1_" + j + "a", 34); link(a1[j], "S1_" + j + "b", 34);
+  }
+  const graph = { nodes, edges };
+
+  const occupied = new Set(["S0_0a", "S0_0b", "S0_1a", "S0_1b", "S0_2a", "S1_0a", "S1_0b"]);
+  const res = dijkstra(graph, "E", null, { blocked: occupied, findFreeSlot: true });
+  const assigned = res.found;
+  const path = buildPath(res.prev, "E", assigned);
+
+  animFor.anim1 = makeAnim("anim1", (ctx) => {
+    const { svg } = ctx;
+    const W = 820, H = 460;
+    el("text", { x: 24, y: 36, fill: "#8a8f98", "font-size": 13, "letter-spacing": 3 }, svg).textContent = "FLOOR 1";
+    const roadG = el("g", { stroke: "#14171f", "stroke-width": 16, "stroke-linecap": "round" }, svg);
+    const drawn = new Set();
+    const roadEdge = (a, b) => {
+      const k = [a, b].sort().join("|");
+      if (drawn.has(k)) return; drawn.add(k);
+      const A = nodes[a], B = nodes[b];
+      el("line", { x1: A.x, y1: A.y, x2: B.x, y2: B.y }, roadG);
+    };
+    for (const s in edges) for (const e of edges[s]) if (nodes[s].type !== "slot" && nodes[e.to].type !== "slot") roadEdge(s, e.to);
+
+    const bayG = el("g", {}, svg);
+    const bayRects = {};
+    for (const id of bays) {
+      const n = nodes[id];
+      const g = el("g", {}, bayG);
+      const fill = occupied.has(id) ? "#3a2222" : "#0c1408";
+      const stroke = occupied.has(id) ? "#e53935" : "#2f3a26";
+      bayRects[id] = el("rect", { x: n.x - 9, y: n.y - 6, width: 18, height: 12, rx: 2, fill, stroke, "stroke-width": 1.4 }, g);
+    }
+
+    const nodeG = el("g", {}, svg);
+    const nodeDots = {};
+    for (const id in nodes) {
+      if (nodes[id].type === "slot") continue;
+      const n = nodes[id];
+      const c = el("circle", { cx: n.x, cy: n.y, r: 4.5, fill: "#1b2029", stroke: "#3a4150", "stroke-width": 1.2 }, nodeG);
+      nodeDots[id] = c;
+    }
+
+    const carG = el("g", {}, svg);
+    const carRect = el("rect", { x: -10, y: -6, width: 20, height: 12, rx: 3, fill: "#4d8dff" }, carG);
+    carRect.setAttribute("transform", `translate(${nodes.E.x},${nodes.E.y})`);
+
+    const pathLine = el("polyline", { fill: "none", stroke: "#ffb000", "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round", opacity: 0 }, svg);
+    const pts = path.map(id => nodes[id]);
+    pathLine.setAttribute("points", pts.map(p => `${p.x},${p.y}`).join(" "));
+
+    const lg = el("g", { "font-size": 12, fill: "#8a8f98" }, svg);
+    const lgItem = (x, txt, col) => { el("rect", { x, y: H - 26, width: 11, height: 11, rx: 2, fill: col }, lg); el("text", { x: x + 18, y: H - 16 }, lg).textContent = txt; };
+    lgItem(24, "occupied", "#e53935");
+    lgItem(120, "free", "#2f3a26");
+    lgItem(190, "wavefront", "#4d8dff");
+    lgItem(290, "assigned", "#7cb342");
+    lgItem(380, "route", "#ffb000");
+
+    const roadOrder = res.order.filter(id => nodes[id].type !== "slot");
+    const roadTimes = roadOrder.map((id, i) => 0.25 + i * 0.22);
+    const nodeLight = {};
+    roadOrder.forEach(id => nodeLight[id] = roadTimes[roadOrder.indexOf(id)]);
+
+    const assignTime = roadTimes[roadTimes.length - 1] + 0.35;
+    const pathRevealStart = assignTime + 0.5;
+    const pathRevealDur = 0.9;
+    const carStart = pathRevealStart + pathRevealDur + 0.2;
+    const carDur = Math.max(1.4, path.length * 0.18);
+
+    return (t) => {
+      for (const id of roadOrder) {
+        if (t >= nodeLight[id] && nodeDots[id] && nodeDots[id].getAttribute("data-lit") !== "1") {
+          nodeDots[id].setAttribute("data-lit", "1");
+          nodeDots[id].setAttribute("fill", "#4d8dff");
+          nodeDots[id].setAttribute("stroke", "#4d8dff");
+        }
+      }
+      if (t >= assignTime && bayRects[assigned] && bayRects[assigned].getAttribute("data-lit") !== "1") {
+        bayRects[assigned].setAttribute("data-lit", "1");
+        bayRects[assigned].setAttribute("fill", "#7cb342");
+        bayRects[assigned].setAttribute("stroke", "#7cb342");
+      }
+      if (t >= assignTime) {
+        const p = Math.min(1, (t - assignTime) / 0.6);
+        const s = 1 + 0.18 * Math.sin(p * Math.PI);
+        const n = nodes[assigned];
+        bayRects[assigned].setAttribute("transform", `translate(${n.x},${n.y}) scale(${s}) translate(${-n.x},${-n.y})`);
+      }
+      if (t >= pathRevealStart) {
+        const p = Math.min(1, (t - pathRevealStart) / pathRevealDur);
+        pathLine.setAttribute("opacity", p);
+      }
+      if (t >= carStart) {
+        const p = Math.min(1, (t - carStart) / carDur);
+        const seg = p * (path.length - 1);
+        const i = Math.min(path.length - 2, Math.floor(seg));
+        const f = seg - i;
+        const A = nodes[path[i]], B = nodes[path[i + 1]];
+        const x = A.x + (B.x - A.x) * f;
+        const y = A.y + (B.y - A.y) * f;
+        carRect.setAttribute("transform", `translate(${x},${y})`);
+      }
+      return t < carStart + carDur + 1.2;
+    };
+  });
+})();
+
+/* ============================================================
+   ANIM 2 — shortest_path to a bay on Floor 2 (via ramp)
+   ============================================================ */
+(function buildAnim2() {
+  const FY0 = 110, FY1 = 330;
+  const SX = 120, GAP = 80;
+  const nodes = {};
+  const add = (id, x, y, type, floor) => nodes[id] = { x, y, type, floor };
+  add("E", 50, FY0, "entry", 1);
+  const f1 = [];
+  for (let i = 0; i < 4; i++) { const id = "F1_" + i; add(id, SX + i * GAP, FY0, "junction", 1); f1.push(id); }
+  add("RUP", SX + 4 * GAP, FY0, "ramp_up", 1);
+  add("RIN", SX + 4 * GAP, FY1, "ramp_in", 2);
+  const f2 = [];
+  for (let i = 0; i < 4; i++) { const id = "F2_" + i; add(id, SX + (3 - i) * GAP, FY1, "junction", 2); f2.push(id); }
+  add("X2", 50, FY1, "exit", 2);
+  const bays = [];
+  for (let j = 0; j < 4; j++) {
+    const a = "S2_" + j + "a", b = "S2_" + j + "b";
+    add(a, nodes[f2[j]].x, FY1 - 32, "slot", 2);
+    add(b, nodes[f2[j]].x, FY1 + 32, "slot", 2);
+    bays.push(a, b);
+  }
+  const edges = {};
+  const link = (a, b, cost) => { (edges[a] = edges[a] || []).push({ to: b, cost }); (edges[b] = edges[b] || []).push({ to: a, cost }); };
+  link("E", f1[0], 70);
+  for (let i = 0; i < 3; i++) link(f1[i], f1[i + 1], GAP);
+  link(f1[3], "RUP", 40);
+  link("RUP", "RIN", 230);
+  link("RIN", f2[0], 70);
+  for (let i = 0; i < 3; i++) link(f2[i], f2[i + 1], GAP);
+  link(f2[3], "X2", 70);
+  for (let j = 0; j < 4; j++) { link(f2[j], "S2_" + j + "a", 32); link(f2[j], "S2_" + j + "b", 32); }
+  const graph = { nodes, edges };
+
+  const goal = "S2_2b";
+  const res = dijkstra(graph, "E", goal, { noSlotShortcut: true });
+  const path = buildPath(res.prev, "E", goal);
+
+  animFor.anim2 = makeAnim("anim2", (ctx) => {
+    const { svg } = ctx;
+    const H = 460;
+    el("text", { x: 24, y: FY0 - 28, fill: "#8a8f98", "font-size": 13, "letter-spacing": 3 }, svg).textContent = "FLOOR 1";
+    el("text", { x: 24, y: FY1 - 28, fill: "#8a8f98", "font-size": 13, "letter-spacing": 3 }, svg).textContent = "FLOOR 2";
+
+    el("rect", { x: 30, y: FY0 - 18, width: 460, height: 36, fill: "none", stroke: "#1c2028", rx: 4 }, svg);
+    el("rect", { x: 30, y: FY1 - 18, width: 460, height: 36, fill: "none", stroke: "#1c2028", rx: 4 }, svg);
+
+    const roadG = el("g", { stroke: "#14171f", "stroke-width": 14, "stroke-linecap": "round" }, svg);
+    const drawn = new Set();
+    const roadEdge = (a, b) => {
+      const k = [a, b].sort().join("|");
+      if (drawn.has(k)) return; drawn.add(k);
+      const A = nodes[a], B = nodes[b];
+      el("line", { x1: A.x, y1: A.y, x2: B.x, y2: B.y }, roadG);
+    };
+    for (const s in edges) for (const e of edges[s]) if (nodes[s].type !== "slot" && nodes[e.to].type !== "slot") roadEdge(s, e.to);
+
+    const A = nodes.RUP, B = nodes.RIN;
+    el("line", { x1: A.x, y1: A.y, x2: B.x, y2: B.y, stroke: "#2a3040", "stroke-width": 14, "stroke-linecap": "round" }, svg);
+    el("line", { x1: A.x, y1: A.y, x2: B.x, y2: B.y, stroke: "#4d8dff", "stroke-width": 1.5, "stroke-dasharray": "4 5", opacity: 0.5 }, svg);
+    el("text", { x: A.x + 14, y: (A.y + B.y) / 2, fill: "#4d8dff", "font-size": 11, "letter-spacing": 2 }, svg).textContent = "RAMP";
+
+    const bayG = el("g", {}, svg);
+    const bayRects = {};
+    for (const id of bays) {
+      const n = nodes[id];
+      const isGoal = id === goal;
+      bayRects[id] = el("rect", { x: n.x - 9, y: n.y - 6, width: 18, height: 12, rx: 2,
+        fill: isGoal ? "#0c1408" : "#0a0c10", stroke: isGoal ? "#7cb342" : "#262b33", "stroke-width": isGoal ? 1.6 : 1.2 }, bayG);
+    }
+
+    const nodeG = el("g", {}, svg);
+    const nodeDots = {};
+    for (const id in nodes) {
+      if (nodes[id].type === "slot") continue;
+      const n = nodes[id];
+      nodeDots[id] = el("circle", { cx: n.x, cy: n.y, r: 4.5, fill: "#1b2029", stroke: "#3a4150", "stroke-width": 1.2 }, nodeG);
+    }
+
+    const pathLine = el("polyline", { fill: "none", stroke: "#ffb000", "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round", opacity: 0 }, svg);
+    pathLine.setAttribute("points", path.map(id => `${nodes[id].x},${nodes[id].y}`).join(" "));
+
+    const carRect = el("rect", { x: -10, y: -6, width: 20, height: 12, rx: 3, fill: "#4d8dff" }, svg);
+    carRect.setAttribute("transform", `translate(${nodes.E.x},${nodes.E.y})`);
+
+    const lg = el("g", { "font-size": 12, fill: "#8a8f98" }, svg);
+    const lgItem = (x, txt, col) => { el("rect", { x, y: H - 26, width: 11, height: 11, rx: 2, fill: col }, lg); el("text", { x: x + 18, y: H - 16 }, lg).textContent = txt; };
+    lgItem(24, "searched", "#4d8dff");
+    lgItem(110, "target bay", "#7cb342");
+    lgItem(210, "route", "#ffb000");
+    lgItem(290, "ramp", "#4d8dff");
+
+    const searchOrder = res.order.filter(id => nodes[id].type !== "slot" && id !== goal);
+    const searchDur = 1.4;
+    const pathStart = searchDur + 0.4;
+    const pathDur = 1.0;
+    const carStart = pathStart + pathDur + 0.2;
+    const carDur = Math.max(1.6, path.length * 0.22);
+
+    return (t) => {
+      const sp = Math.min(1, t / searchDur);
+      const upto = Math.floor(sp * searchOrder.length);
+      for (let i = 0; i < upto && i < searchOrder.length; i++) {
+        const d = nodeDots[searchOrder[i]];
+        if (d && d.getAttribute("data-lit") !== "1") { d.setAttribute("data-lit", "1"); d.setAttribute("fill", "#4d8dff"); d.setAttribute("stroke", "#4d8dff"); }
+      }
+      if (t >= searchDur && bayRects[goal].getAttribute("data-lit") !== "1") {
+        bayRects[goal].setAttribute("data-lit", "1");
+      }
+      if (t >= searchDur) {
+        const p = Math.min(1, (t - searchDur) / 0.6);
+        const s = 1 + 0.18 * Math.sin(p * Math.PI);
+        const n = nodes[goal];
+        bayRects[goal].setAttribute("transform", `translate(${n.x},${n.y}) scale(${s}) translate(${-n.x},${-n.y})`);
+      }
+      if (t >= pathStart) pathLine.setAttribute("opacity", Math.min(1, (t - pathStart) / pathDur));
+      if (t >= carStart) {
+        const p = Math.min(1, (t - carStart) / carDur);
+        const seg = p * (path.length - 1);
+        const i = Math.min(path.length - 2, Math.floor(seg));
+        const f = seg - i;
+        const A = nodes[path[i]], B = nodes[path[i + 1]];
+        carRect.setAttribute("transform", `translate(${A.x + (B.x - A.x) * f},${A.y + (B.y - A.y) * f})`);
+      }
+      return t < carStart + carDur + 1.4;
+    };
+  });
+})();
+
+/* ============================================================
+   ANIM LIFECYCLE — a car's journey through the system
+   ============================================================ */
+(function buildLifecycle() {
+  // Simple garage layout: entry → lane → junction → spot
+  const nodes = {
+    E:   { x: 50,  y: 210, type: "entry" },
+    J1:  { x: 180, y: 210, type: "junction" },
+    J2:  { x: 320, y: 210, type: "junction" },
+    J3:  { x: 460, y: 210, type: "junction" },
+    S1:  { x: 180, y: 110, type: "slot" },
+    S2:  { x: 320, y: 310, type: "slot" },
+    S3:  { x: 460, y: 110, type: "slot" },
+  };
+  const path = ["E", "J1", "J2", "S2"]; // car drives to S2
+
+  animFor.animLifecycle = makeAnim("fig-lifecycle", (ctx) => {
+    const { svg } = ctx;
+    const W = 600, H = 420;
+    const C = { bg: "#06080b", stroke: "#1c2028", text: "#eaecef", muted: "#8a8f98", dim: "#5a5f68", accent: "#4d8dff", green: "#7cb342", red: "#e53935", amber: "#ffb000" };
+
+    // Draw roads
+    const roadG = el("g", { stroke: "#14171f", "stroke-width": 14, "stroke-linecap": "round" }, svg);
+    const roads = [["E","J1"],["J1","J2"],["J2","J3"],["J1","S1"],["J2","S2"],["J3","S3"]];
+    roads.forEach(([a,b]) => {
+      const A = nodes[a], B = nodes[b];
+      el("line", { x1: A.x, y1: A.y, x2: B.x, y2: B.y }, roadG);
+    });
+
+    // Draw spots (bays)
+    const spotRects = {};
+    [["S1",true],["S2",false],["S3",true]].forEach(([id, occupied]) => {
+      const n = nodes[id];
+      spotRects[id] = el("rect", {
+        x: n.x - 12, y: n.y - 8, width: 24, height: 16, rx: 2,
+        fill: occupied ? "#2a1c1c" : "#0c1408",
+        stroke: occupied ? C.red : C.green, "stroke-width": 1.5
+      }, svg);
+    });
+
+    // Draw junction dots
+    const nodeDots = {};
+    Object.entries(nodes).forEach(([id, n]) => {
+      if (n.type === "slot") return;
+      nodeDots[id] = el("circle", { cx: n.x, cy: n.y, r: 5, fill: "#1b2029", stroke: "#3a4150", "stroke-width": 1.2 }, svg);
+    });
+
+    // Labels
+    el("text", { x: nodes.E.x, y: nodes.E.y + 28, fill: C.muted, "font-size": 11, "text-anchor": "middle" }, svg).textContent = "entry";
+    el("text", { x: nodes.S1.x, y: nodes.S1.y - 18, fill: C.red, "font-size": 10, "text-anchor": "middle" }, svg).textContent = "taken";
+    el("text", { x: nodes.S2.x, y: nodes.S2.y + 28, fill: C.green, "font-size": 10, "text-anchor": "middle" }, svg).textContent = "free";
+    el("text", { x: nodes.S3.x, y: nodes.S3.y - 18, fill: C.red, "font-size": 10, "text-anchor": "middle" }, svg).textContent = "taken";
+
+    // Route line (hidden initially)
+    const routeLine = el("polyline", {
+      fill: "none", stroke: C.amber, "stroke-width": 3,
+      "stroke-linecap": "round", "stroke-linejoin": "round", opacity: 0
+    }, svg);
+    routeLine.setAttribute("points", path.map(id => `${nodes[id].x},${nodes[id].y}`).join(" "));
+
+    // Sign at J1 (hidden initially)
+    const signJ1 = el("g", { opacity: 0 }, svg);
+    el("rect", { x: nodes.J1.x - 22, y: nodes.J1.y - 45, width: 44, height: 24, rx: 3, fill: C.bg, stroke: C.amber, "stroke-width": 1.5 }, signJ1);
+    el("text", { x: nodes.J1.x, y: nodes.J1.y - 28, fill: C.amber, "font-size": 12, "text-anchor": "middle", "font-weight": 600 }, signJ1).textContent = "→";
+
+    // Sign at J2 (hidden initially)
+    const signJ2 = el("g", { opacity: 0 }, svg);
+    el("rect", { x: nodes.J2.x - 22, y: nodes.J2.y - 45, width: 44, height: 24, rx: 3, fill: C.bg, stroke: C.amber, "stroke-width": 1.5 }, signJ2);
+    el("text", { x: nodes.J2.x, y: nodes.J2.y - 28, fill: C.amber, "font-size": 12, "text-anchor": "middle", "font-weight": 600 }, signJ2).textContent = "↓";
+
+    // Car
+    const carRect = el("rect", { x: -10, y: -6, width: 20, height: 12, rx: 3, fill: C.accent }, svg);
+    carRect.setAttribute("transform", `translate(${nodes.E.x},${nodes.E.y})`);
+
+    // Status text above the diagram
+    const statusText = el("text", { x: W/2, y: 30, fill: C.text, "font-size": 14, "text-anchor": "middle", "font-weight": 500 }, svg);
+    statusText.textContent = "";
+
+    // Steps timing — each step gets ~2s
+    const stepTimes = [0.3, 2.3, 4.3, 6.5, 9.5];
+    const stepLabels = [
+      "Car enters the garage",
+      "Server picks the closest free spot",
+      "Route calculated",
+      "Car drives, signs guide",
+      "Car parks, reservation released",
+    ];
+
+    // Step text highlight on the right side
+    const stepEls = document.querySelectorAll("#lifecycle-steps .lifecycle-step");
+
+    // Car drive timing (during step 4)
+    const carDriveStart = 7.0;
+    const carDriveDur = 2.0;
+
+    function setStep(s) {
+      stepEls.forEach((e, i) => e.classList.toggle("active", i === s));
+      statusText.textContent = stepLabels[s] || "";
+    }
+
+    return (t) => {
+      // Determine current step
+      let curStep = -1;
+      for (let i = stepTimes.length - 1; i >= 0; i--) {
+        if (t >= stepTimes[i]) { curStep = i; break; }
+      }
+      if (curStep >= 0 && curStep !== parseInt(svg.getAttribute("data-step") || "-1")) {
+        svg.setAttribute("data-step", curStep);
+        setStep(curStep);
+      }
+
+      // Step 2: highlight S2 as assigned (turn it amber/green brighter)
+      if (t >= stepTimes[1] && t < stepTimes[4]) {
+        if (spotRects.S2.getAttribute("data-assigned") !== "1") {
+          spotRects.S2.setAttribute("data-assigned", "1");
+          spotRects.S2.setAttribute("stroke", C.amber);
+          spotRects.S2.setAttribute("stroke-width", 2.5);
+        }
+      }
+
+      // Step 3: show route line
+      if (t >= stepTimes[2]) {
+        routeLine.setAttribute("opacity", Math.min(1, (t - stepTimes[2]) / 0.5));
+      }
+
+      // Step 4: show signs, drive car
+      if (t >= stepTimes[3]) {
+        signJ1.setAttribute("opacity", Math.min(1, (t - stepTimes[3]) / 0.3));
+        signJ2.setAttribute("opacity", Math.min(1, (t - stepTimes[3] - 0.5) / 0.3));
+      }
+
+      // Car drives along path
+      if (t >= carDriveStart) {
+        const p = Math.min(1, (t - carDriveStart) / carDriveDur);
+        const seg = p * (path.length - 1);
+        const i = Math.min(path.length - 2, Math.floor(seg));
+        const f = seg - i;
+        const A = nodes[path[i]], B = nodes[path[i + 1]];
+        const x = A.x + (B.x - A.x) * f;
+        const y = A.y + (B.y - A.y) * f;
+        carRect.setAttribute("transform", `translate(${x},${y})`);
+      }
+
+      // Step 5: car parked, spot turns green, reservation released
+      if (t >= stepTimes[4]) {
+        if (spotRects.S2.getAttribute("data-parked") !== "1") {
+          spotRects.S2.setAttribute("data-parked", "1");
+          spotRects.S2.setAttribute("fill", "#0c1408");
+          spotRects.S2.setAttribute("stroke", C.green);
+          spotRects.S2.setAttribute("stroke-width", 2.5);
+        }
+        // car disappears into spot
+        const fadeP = Math.min(1, (t - stepTimes[4]) / 0.5);
+        carRect.setAttribute("opacity", 1 - fadeP);
+      }
+
+      return t < stepTimes[4] + 3.0;
+    };
+  });
+})();
+
+/* ============================================================
+   Static SVG figures
+   ============================================================ */
+(function figures() {
+  const C = {
+    bg: "#06080b", stroke: "#1c2028", road: "#14171f",
+    text: "#eaecef", muted: "#8a8f98", dim: "#5a5f68",
+    accent: "#4d8dff", green: "#7cb342", red: "#e53935", amber: "#ffb000",
+  };
+
+  // slide 2: What is ParCoar — three icons
+  const fw = document.getElementById("fig-what");
+  if (fw) {
+    const items = [
+      { y: 60, icon: "garage", label: "3D garage", col: C.accent },
+      { y: 180, icon: "server", label: "Server", col: C.green },
+      { y: 300, icon: "sign", label: "Signs", col: C.amber },
+    ];
+    items.forEach((it, i) => {
+      // connector line
+      if (i < 2) {
+        const ln = el("line", { x1: 80, y1: it.y + 30, x2: 80, y2: items[i+1].y - 30, stroke: "#2a3040", "stroke-width": 1.5, "stroke-dasharray": "4 4" }, fw);
+        el("animate", { attributeName: "stroke-dashoffset", values: "0;-8", dur: "0.8s", repeatCount: "indefinite" }, ln);
+      }
+      // circle
+      el("circle", { cx: 80, cy: it.y, r: 24, fill: C.bg, stroke: it.col, "stroke-width": 2 }, fw);
+      // icon inside
+      if (it.icon === "garage") {
+        el("rect", { x: 70, y: it.y - 8, width: 20, height: 14, rx: 2, fill: "none", stroke: it.col, "stroke-width": 1.5 }, fw);
+        el("line", { x1: 70, y1: it.y - 2, x2: 90, y2: it.y - 2, stroke: it.col, "stroke-width": 1 }, fw);
+      } else if (it.icon === "server") {
+        el("rect", { x: 71, y: it.y - 9, width: 18, height: 6, rx: 1, fill: "none", stroke: it.col, "stroke-width": 1.5 }, fw);
+        el("rect", { x: 71, y: it.y + 1, width: 18, height: 6, rx: 1, fill: "none", stroke: it.col, "stroke-width": 1.5 }, fw);
+        el("circle", { cx: 75, cy: it.y - 6, r: 1.5, fill: it.col }, fw);
+        el("circle", { cx: 75, cy: it.y + 4, r: 1.5, fill: it.col }, fw);
+      } else {
+        el("rect", { x: 70, y: it.y - 7, width: 20, height: 14, rx: 2, fill: "none", stroke: it.col, "stroke-width": 1.5 }, fw);
+        el("line", { x1: 74, y1: it.y, x2: 84, y2: it.y, stroke: it.col, "stroke-width": 2, "stroke-linecap": "round" }, fw);
+        el("polyline", { points: `${82},${it.y-3} ${88},${it.y} ${82},${it.y+3}`, fill: "none", stroke: it.col, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }, fw);
+      }
+      el("text", { x: 120, y: it.y + 5, fill: C.text, "font-size": 16, "font-weight": 500 }, fw).textContent = it.label;
+    });
+  }
+
+  // slide 3: The garage — 3-floor structure
+  const fg = document.getElementById("fig-garage");
+  if (fg) {
+    const floors = [
+      { y: 320, label: "Floor 1" },
+      { y: 210, label: "Floor 2" },
+      { y: 100, label: "Floor 3" },
+    ];
+    floors.forEach((f, fi) => {
+      const px = 80, pw = 400, ph = 50;
+      // floor slab
+      el("rect", { x: px, y: f.y, width: pw, height: ph, rx: 4, fill: "none", stroke: "#2a3040", "stroke-width": 1.5 }, fg);
+      // label OUTSIDE the slab, to the left
+      el("text", { x: px - 12, y: f.y + ph / 2 + 5, fill: C.muted, "font-size": 14, "letter-spacing": 1, "font-weight": 500, "text-anchor": "end" }, fg).textContent = f.label;
+      // spots inside the slab
+      for (let i = 0; i < 10; i++) {
+        const sx = px + 10 + i * 38;
+        const occ = (fi + i) % 3 !== 0;
+        el("rect", { x: sx, y: f.y + 12, width: 28, height: 26, rx: 2, fill: occ ? "#2a1c1c" : "#0c1408", stroke: occ ? C.red : C.green, "stroke-width": 1 }, fg);
+      }
+    });
+    // ramp connecting floors (right side)
+    const r1x = 480, r1y = 320, r2x = 480, r2y = 210, r3x = 480, r3y = 100;
+    [ [r1x, r1y, r2x, r2y], [r2x, r2y, r3x, r3y] ].forEach(([x1, y1, x2, y2]) => {
+      const rl = el("line", { x1, y1, x2, y2, stroke: C.accent, "stroke-width": 2.5, "stroke-dasharray": "6 4", opacity: 0.7 }, fg);
+      el("animate", { attributeName: "stroke-dashoffset", values: "0;-10", dur: "0.8s", repeatCount: "indefinite" }, rl);
+    });
+    el("text", { x: 495, y: (r1y + r3y) / 2, fill: C.accent, "font-size": 13, "letter-spacing": 2, "font-weight": 500 }, fg).textContent = "RAMP";
+    // entry arrow - below the floor plates, pointing up
+    el("text", { x: 80, y: 392, fill: C.accent, "font-size": 14, "font-weight": 500 }, fg).textContent = "entry";
+    const ea = el("line", { x1: 80, y1: 380, x2: 80, y2: 370, stroke: C.accent, "stroke-width": 2, "stroke-dasharray": "5 3" }, fg);
+    el("animate", { attributeName: "stroke-dashoffset", values: "0;-8", dur: "0.6s", repeatCount: "indefinite" }, ea);
+  }
+
+  // slide 4: The problem — floors with scanning beam
+  const fp = document.getElementById("fig-problem");
+  if (fp) {
+    const floors = [60, 160, 260];
+    floors.forEach((y, fi) => {
+      el("rect", { x: 40, y, width: 420, height: 70, fill: "none", stroke: C.stroke, rx: 4 }, fp);
+      el("text", { x: 14, y: y + 40, fill: C.dim, "font-size": 11, "letter-spacing": 2 }, fp).textContent = "F" + (fi + 1);
+      for (let i = 0; i < 11; i++) {
+        const occ = !(fi === 0 && i > 8);
+        el("rect", { x: 60 + i * 36, y: y + 14, width: 28, height: 14, rx: 2, fill: occ ? "#2a1c1c" : "#0c1408", stroke: occ ? C.red : C.green, "stroke-width": 1 }, fp);
+      }
+    });
+    // confused car
+    el("rect", { x: 18, y: 64, width: 18, height: 11, rx: 2, fill: C.accent }, fp);
+    const q = el("text", { x: 27, y: 56, fill: C.accent, "font-size": 20, "text-anchor": "middle" }, fp);
+    q.textContent = "?";
+    el("animate", { attributeName: "opacity", values: "1;0.3;1", dur: "1.8s", repeatCount: "indefinite" }, q);
+    // scanning beam
+    const beam = el("rect", { x: 40, y: 60, width: 6, height: 270, fill: C.accent, opacity: 0, rx: 3 }, fp);
+    el("animate", { attributeName: "x", values: "40;454;40", dur: "4s", repeatCount: "indefinite" }, beam);
+    el("animate", { attributeName: "opacity", values: "0;0.12;0.12;0", dur: "4s", repeatCount: "indefinite" }, beam);
+  }
+
+  // slide 5: The idea — overhead sign with animated arrow
+  const fs = document.getElementById("fig-sign");
+  if (fs) {
+    el("rect", { x: 60, y: 80, width: 340, height: 140, rx: 8, fill: C.bg, stroke: C.stroke }, fs);
+    el("rect", { x: 60, y: 80, width: 340, height: 4, fill: C.accent, rx: 2 }, fs);
+    el("text", { x: 230, y: 120, fill: C.muted, "font-size": 13, "text-anchor": "middle", "letter-spacing": 2 }, fs).textContent = "FLOOR 2, ROW C, SPACE 47";
+    const al = el("line", { x1: 110, y1: 170, x2: 320, y2: 170, stroke: C.accent, "stroke-width": 4, "stroke-linecap": "round", "stroke-dasharray": "8 6" }, fs);
+    el("animate", { attributeName: "stroke-dashoffset", values: "0;-14", dur: "0.6s", repeatCount: "indefinite" }, al);
+    el("polyline", { points: "310,160 330,170 310,180", fill: "none", stroke: C.accent, "stroke-width": 4, "stroke-linecap": "round", "stroke-linejoin": "round" }, fs);
+    el("text", { x: 230, y: 200, fill: C.text, "font-size": 15, "text-anchor": "middle" }, fs).textContent = "turn left, straight, then right";
+  }
+
+  // slide 7: How it works — architecture diagram
+  const fh = document.getElementById("fig-how");
+  if (fh) {
+    el("defs", {}, fh).innerHTML = '<marker id="harr" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3a4150"/></marker>';
+    const box = (x, y, w, h, title, items, col) => {
+      el("rect", { x, y, width: w, height: h, rx: 8, fill: C.bg, stroke: C.stroke, "stroke-width": 1.5 }, fh);
+      el("rect", { x, y, width: w, height: 5, fill: col, rx: 2 }, fh);
+      el("text", { x: x + 24, y: y + 48, fill: C.text, "font-size": 19, "font-weight": 600 }, fh).textContent = title;
+      items.forEach((it, i) => el("text", { x: x + 24, y: y + 82 + i * 30, fill: C.muted, "font-size": 14 }, fh).textContent = it);
+    };
+    // Layout: Browser | gap | WebSocket | gap | Python server
+    // Gaps are 100px wide to fit arrow labels cleanly
+    box(10, 60, 200, 240, "Frontend", ["renders the 3D garage", "moves cars visually", "shows signs", "reports positions"], C.accent);
+    box(490, 60, 200, 240, "Python server", ["chooses the bay", "keeps reservations", "calculates routes", "sends directions"], C.green);
+    // WebSocket box in the middle, smaller, vertically centered
+    el("rect", { x: 310, y: 110, width: 80, height: 140, rx: 8, fill: C.bg, stroke: C.stroke, "stroke-width": 1.5 }, fh);
+    el("text", { x: 350, y: 175, fill: C.text, "font-size": 14, "text-anchor": "middle", "font-weight": 600 }, fh).textContent = "WebSocket";
+    el("text", { x: 350, y: 197, fill: C.muted, "font-size": 12, "text-anchor": "middle" }, fh).textContent = "~12 msg/sec";
+    // arrows in the gaps, labels above arrows in the gap space
+    const arrow = (x1, y1, x2, y2, col) => {
+      el("line", { x1, y1, x2, y2, stroke: "#3a4150", "stroke-width": 2, "marker-end": "url(#harr)" }, fh);
+      const dot = el("circle", { cx: x1, cy: y1, r: 4, fill: col, opacity: 0 }, fh);
+      el("animate", { attributeName: "cx", values: x1 + ";" + x2, dur: "1.5s", repeatCount: "indefinite" }, dot);
+      el("animate", { attributeName: "opacity", values: "0;0.9;0.9;0", dur: "1.5s", repeatCount: "indefinite" }, dot);
+    };
+    // arrows at y=180 (middle of side boxes), labels at y=168 (above arrow, in gap)
+    arrow(210, 180, 310, 180, C.accent);
+    arrow(390, 180, 490, 180, C.green);
+    el("text", { x: 260, y: 168, fill: C.text, "font-size": 13, "text-anchor": "middle", "font-weight": 500 }, fh).textContent = "positions";
+    el("text", { x: 440, y: 168, fill: C.text, "font-size": 13, "text-anchor": "middle", "font-weight": 500 }, fh).textContent = "directions";
+  }
+
+  // slide 8: The garage as a graph
+  const fgr = document.getElementById("fig-graph");
+  if (fgr) {
+    const N = (x, y, r, fill, stroke, label, pulse) => {
+      const c = el("circle", { cx: x, cy: y, r, fill, stroke, "stroke-width": 1.6 }, fgr);
+      if (pulse) el("animate", { attributeName: "r", values: r + ";" + (r + 3) + ";" + r, dur: "2s", repeatCount: "indefinite" }, c);
+      if (label) el("text", { x, y: y + r + 18, fill: C.muted, "font-size": 12, "text-anchor": "middle" }, fgr).textContent = label;
+    };
+    const L = (a, b) => {
+      const ln = el("line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], stroke: "#2a3040", "stroke-width": 2, "stroke-dasharray": "6 4" }, fgr);
+      el("animate", { attributeName: "stroke-dashoffset", values: "0;-10", dur: "1.2s", repeatCount: "indefinite" }, ln);
+    };
+    const entry = [60, 180], j1 = [180, 180], j2 = [300, 180], turn = [420, 180], j3 = [420, 280], exit = [60, 280];
+    const s1 = [180, 100], s2 = [180, 260], s3 = [300, 100];
+    L(entry, j1); L(j1, j2); L(j2, turn); L(turn, j3); L(j3, exit);
+    L(j1, s1); L(j1, s2); L(j2, s3);
+    N(entry[0], entry[1], 6, "#0a0c10", C.accent, "entry", true);
+    N(j1[0], j1[1], 5, "#0a0c10", "#3a4150", "junction");
+    N(j2[0], j2[1], 5, "#0a0c10", "#3a4150");
+    N(turn[0], turn[1], 5, "#0a0c10", C.amber, "turn");
+    N(j3[0], j3[1], 5, "#0a0c10", "#3a4150");
+    N(exit[0], exit[1], 6, "#0a0c10", C.red, "exit");
+    N(s1[0], s1[1], 5, "#0c1408", C.green, "spot");
+    N(s2[0], s2[1], 5, "#0c1408", C.green);
+    N(s3[0], s3[1], 5, "#0c1408", C.green);
+  }
+
+  // slide 9: Driving distance vs straight line
+  const fd = document.getElementById("fig-distance");
+  if (fd) {
+    const E = [60, 220];
+    const bayClose = [180, 80];
+    const bayFar = [460, 280];
+    el("circle", { cx: E[0], cy: E[1], r: 6, fill: C.accent }, fd);
+    el("text", { x: E[0], y: E[1] + 24, fill: C.muted, "font-size": 11, "text-anchor": "middle" }, fd).textContent = "entry";
+    const sl = el("line", { x1: E[0], y1: E[1], x2: bayClose[0], y2: bayClose[1], stroke: C.dim, "stroke-width": 1.4, "stroke-dasharray": "4 5" }, fd);
+    el("animate", { attributeName: "stroke-dashoffset", values: "0;-9", dur: "1s", repeatCount: "indefinite" }, sl);
+    el("text", { x: 130, y: 130, fill: C.dim, "font-size": 11 }, fd).textContent = "straight line";
+    el("polyline", { points: `${E[0]},${E[1]} 60,80 110,60 ${bayClose[0]},${bayClose[1]}`, fill: "none", stroke: C.red, "stroke-width": 2.5 }, fd);
+    el("rect", { x: bayClose[0] - 9, y: bayClose[1] - 6, width: 18, height: 12, rx: 2, fill: "#2a1c1c", stroke: C.red }, fd);
+    el("text", { x: bayClose[0] + 16, y: bayClose[1] + 4, fill: C.red, "font-size": 11 }, fd).textContent = "far to drive";
+    const gl = el("line", { x1: E[0], y1: E[1], x2: bayFar[0], y2: bayFar[1], stroke: C.green, "stroke-width": 2.5, "stroke-dasharray": "10 6" }, fd);
+    el("animate", { attributeName: "stroke-dashoffset", values: "0;-16", dur: "0.8s", repeatCount: "indefinite" }, gl);
+    el("rect", { x: bayFar[0] - 9, y: bayFar[1] - 6, width: 18, height: 12, rx: 2, fill: "#0c1408", stroke: C.green }, fd);
+    el("text", { x: bayFar[0] - 12, y: bayFar[1] + 4, fill: C.green, "font-size": 11, "text-anchor": "end" }, fd).textContent = "quick to reach";
+  }
+
+  // slide 10: Dijkstra wavefront — expanding rings + nodes lighting up in sequence
+  const fdij = document.getElementById("fig-dijkstra");
+  if (fdij) {
+    const nodes = [
+      [80, 200], [180, 120], [180, 280], [280, 80], [280, 200], [280, 320], [380, 160], [380, 280],
+    ];
+    const edges = [[0,1],[0,2],[1,3],[1,4],[2,4],[2,5],[3,6],[4,6],[4,7],[5,7]];
+    // draw edges
+    edges.forEach(([a,b]) => el("line", { x1: nodes[a][0], y1: nodes[a][1], x2: nodes[b][0], y2: nodes[b][1], stroke: "#2a3040", "stroke-width": 1.5 }, fdij));
+    // draw nodes (dim initially)
+    const nodeEls = nodes.map((n, i) => {
+      const isStart = i === 0;
+      return el("circle", { cx: n[0], cy: n[1], r: isStart ? 8 : 6, fill: isStart ? C.accent : "#1b2029", stroke: isStart ? C.accent : "#3a4150", "stroke-width": 1.5 }, fdij);
+    });
+    // expanding wavefront rings — 3 staggered, thicker and brighter
+    [0, 1, 2].forEach(i => {
+      const ring = el("circle", { cx: nodes[0][0], cy: nodes[0][1], r: 10, fill: "none", stroke: C.accent, "stroke-width": 2.5, opacity: 0 }, fdij);
+      el("animate", { attributeName: "r", values: "10;90", dur: "2.4s", begin: (i * 0.8) + "s", repeatCount: "indefinite" }, ring);
+      el("animate", { attributeName: "opacity", values: "0.7;0", dur: "2.4s", begin: (i * 0.8) + "s", repeatCount: "indefinite" }, ring);
+    });
+    // nodes light up in sequence (visited order)
+    const visitOrder = [0, 1, 2, 3, 4, 5, 6, 7];
+    visitOrder.forEach((ni, i) => {
+      const delay = 0.3 + i * 0.25;
+      const node = nodeEls[ni];
+      if (ni === 0) return; // start stays blue
+      el("animate", { attributeName: "fill", values: "#1b2029;#1b2029;" + C.accent + ";" + C.accent, dur: "3s", begin: delay + "s", repeatCount: "indefinite" }, node);
+      el("animate", { attributeName: "stroke", values: "#3a4150;#3a4150;" + C.accent + ";" + C.accent, dur: "3s", begin: delay + "s", repeatCount: "indefinite" }, node);
+    });
+    el("text", { x: nodes[0][0], y: nodes[0][1] + 30, fill: C.accent, "font-size": 12, "text-anchor": "middle", "font-weight": 500 }, fdij).textContent = "start";
+  }
+
+  // slide 13: Recap diagram — the three pillars
+  const fr = document.getElementById("fig-recap");
+  if (fr) {
+    const items = [
+      { y: 70, icon: "map", label: "One map", sub: "graph + 3D scene", col: C.accent },
+      { y: 180, icon: "dijkstra", label: "Dijkstra", sub: "closest spot + route", col: C.green },
+      { y: 290, icon: "arch", label: "Server + Browser", sub: "12 msg/sec", col: C.amber },
+    ];
+    items.forEach((it, i) => {
+      if (i < 2) {
+        const ln = el("line", { x1: 60, y1: it.y + 30, x2: 60, y2: items[i+1].y - 30, stroke: "#2a3040", "stroke-width": 1.5, "stroke-dasharray": "4 4" }, fr);
+        el("animate", { attributeName: "stroke-dashoffset", values: "0;-8", dur: "0.8s", repeatCount: "indefinite" }, ln);
+      }
+      el("circle", { cx: 60, cy: it.y, r: 26, fill: C.bg, stroke: it.col, "stroke-width": 2 }, fr);
+      if (it.icon === "map") {
+        // map icon: connected dots
+        [[50, it.y-8], [70, it.y-8], [70, it.y+8], [50, it.y+8]].forEach(([x,y]) => {
+          el("circle", { cx: x, cy: y, r: 3, fill: it.col }, fr);
+        });
+        el("line", { x1: 50, y1: it.y-8, x2: 70, y2: it.y-8, stroke: it.col, "stroke-width": 1.5 }, fr);
+        el("line", { x1: 70, y1: it.y-8, x2: 70, y2: it.y+8, stroke: it.col, "stroke-width": 1.5 }, fr);
+        el("line", { x1: 50, y1: it.y+8, x2: 70, y2: it.y+8, stroke: it.col, "stroke-width": 1.5 }, fr);
+      } else if (it.icon === "dijkstra") {
+        // dijkstra icon: expanding rings
+        [0, 1].forEach(j => {
+          const ring = el("circle", { cx: 60, cy: it.y, r: 8, fill: "none", stroke: it.col, "stroke-width": 1.5, opacity: 0 }, fr);
+          el("animate", { attributeName: "r", values: "8;18", dur: "2s", begin: (j * 0.7) + "s", repeatCount: "indefinite" }, ring);
+          el("animate", { attributeName: "opacity", values: "0.6;0", dur: "2s", begin: (j * 0.7) + "s", repeatCount: "indefinite" }, ring);
+        });
+        el("circle", { cx: 60, cy: it.y, r: 5, fill: it.col }, fr);
+      } else {
+        // arch icon: two small boxes connected
+        el("rect", { x: 48, y: it.y - 8, width: 10, height: 16, rx: 1, fill: "none", stroke: it.col, "stroke-width": 1.5 }, fr);
+        el("rect", { x: 62, y: it.y - 8, width: 10, height: 16, rx: 1, fill: "none", stroke: it.col, "stroke-width": 1.5 }, fr);
+        el("line", { x1: 58, y1: it.y, x2: 62, y2: it.y, stroke: it.col, "stroke-width": 1.5, "stroke-dasharray": "2 2" }, fr);
+      }
+      el("text", { x: 105, y: it.y - 2, fill: C.text, "font-size": 18, "font-weight": 600 }, fr).textContent = it.label;
+      el("text", { x: 105, y: it.y + 18, fill: C.muted, "font-size": 14 }, fr).textContent = it.sub;
+    });
+  }
+})();
+
+/* ---------- load garage screenshot ---------- */
+(function loadScreenshot() {
+  const img = document.getElementById("garage-img");
+  if (img) img.src = "garage.png";
+  const titleImg = document.getElementById("title-img");
+  if (titleImg) titleImg.src = "garage.png";
+})();
+
+go(0);
+</script>
+</body>
+</html>
