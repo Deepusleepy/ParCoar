@@ -3,6 +3,7 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { useDayNightState } from "./DayNight";
+import type { Box2 } from "./car/physics";
 import {
   TOWN_NS_ROADS,
   TOWN_EW_ROADS,
@@ -14,14 +15,29 @@ import {
  * Town — the quiet Japanese town north of the river (Z < -20).
  *
  * The opposite of the city: horizontal, low, warm, residential. 2-3 story
- * houses with pitched (gable/hip) tile roofs, side yards between buildings,
- * a vermilion shrine, rice paddies framing Mt. Fuji, and a small JR-style
- * train station with a level crossing.
+ * houses with pitched (gable/hip) tile roofs or flat-roofed corner shops,
+ * side yards between buildings, a vermilion shrine with paper lanterns,
+ * rice paddies framing Mt. Fuji, and a small JR-style train station.
  *
- * Everything static is baked into a handful of merged BufferGeometries so
- * the whole town renders in ~6 draw calls. Only the streetlight lamps and
- * window glow use emissive materials that animate with the day/night cycle.
+ * Everything static is baked into a handful of merged BufferGeometries.
+ * House walls share one subtle plaster/siding canvas texture, UV-scaled
+ * per house; roofs pick from a weighted tile-shade palette. At night only
+ * a handful of warm windows per house light up (HDR values so bloom
+ * catches them), plus occasional porch lights, stone lanterns, and a
+ * string of paper lanterns at the shrine.
  */
+
+/**
+ * Ground-level house footprints for the car's collision world. Cleared and
+ * refilled at the start of every generation pass (idempotent under
+ * StrictMode double-invoke), mirroring CityDistrict's cityCollisionBoxes.
+ */
+export const townCollisionBoxes: Box2[] = [];
+
+// WorldCar reads town boxes through this global pointer so the reference
+// survives HMR module swaps.
+(globalThis as { __townCollisionBoxes?: Box2[] }).__townCollisionBoxes =
+  townCollisionBoxes;
 
 /* ------------------------------------------------------------------ *
  *  Colors
@@ -30,9 +46,9 @@ import {
 const C_CREAM = new THREE.Color(TOWN_PALETTE.wallCream);
 const C_SAGE = new THREE.Color(TOWN_PALETTE.wallSage);
 const C_TERRA = new THREE.Color(TOWN_PALETTE.wallTerracotta);
-const C_VERMILION = new THREE.Color("#c04020");
+const C_VERMILION = new THREE.Color("#ff2a1a");
 const C_STONE = new THREE.Color("#9a958c");
-const C_STONE_DARK = new THREE.Color("#6a6560");
+const C_STONE_DARK = new THREE.Color("#5d584f");
 const C_TRUNK = new THREE.Color(NATURE_PALETTE.earth);
 const C_FOLIAGE = new THREE.Color("#2a4a2a");
 const C_AWNING = new THREE.Color("#8a4a3a");
@@ -46,16 +62,40 @@ const C_PADDY_GREEN = new THREE.Color(NATURE_PALETTE.ricePaddy);
 const C_PADDY_GOLD = new THREE.Color("#b8a85a");
 const C_EARTH = new THREE.Color(NATURE_PALETTE.earth);
 
+/** Pastel wall choices for houses. */
 const WALL_COLORS = [C_CREAM, C_SAGE, C_TERRA];
 
-/** Per-building roof tints — varied so roofs aren't all one blue-grey. */
-const ROOF_TINTS = [
-  new THREE.Color("#3a4252"), // dark blue-grey (original tile)
-  new THREE.Color("#8a8e94"), // light grey
-  new THREE.Color("#9a4a32"), // terracotta
-  new THREE.Color("#4a5a4a"), // weathered green
-  new THREE.Color("#4a3a2a"), // dark brown
-];
+/**
+ * Roof tile shades — dark grey-blue is the base family (most houses);
+ * weathered grey, terracotta, and moss green appear occasionally.
+ */
+const ROOF_BLUE_A = new THREE.Color("#39414f");
+const ROOF_BLUE_B = new THREE.Color("#2f3743");
+const ROOF_WEATHERED = new THREE.Color("#7f848b");
+const ROOF_TERRACOTTA = new THREE.Color("#9a4a32");
+const ROOF_MOSS = new THREE.Color("#4c5c48");
+
+/** Weighted roof tint pick: mostly the grey-blue tile family. */
+function pickRoofTint(r: number): THREE.Color {
+  if (r < 0.36) return ROOF_BLUE_A;
+  if (r < 0.62) return ROOF_BLUE_B;
+  if (r < 0.76) return ROOF_WEATHERED;
+  if (r < 0.88) return ROOF_TERRACOTTA;
+  return ROOF_MOSS;
+}
+
+const C_GRAVEL = new THREE.Color("#767268"); // flat shop roof slabs
+const C_UTILITY = new THREE.Color("#aab0b4"); // wall-side utility boxes
+const C_UTILITY_DOOR = new THREE.Color("#7d8488");
+const C_POT = new THREE.Color("#8a4a30"); // plant pots
+const C_POT_PLANT = new THREE.Color("#3f6a38");
+const C_CANOPY_GREEN = new THREE.Color("#2e5c4d"); // station platform canopy
+const C_WOOD_BENCH = new THREE.Color("#7a5636");
+const C_VENDING = new THREE.Color("#c81f36");
+const C_VENDING_FACE = new THREE.Color("#1d232b");
+const C_TACTILE = new THREE.Color("#d8b93a"); // platform edge strip
+const C_PAPER = new THREE.Color("#f2e3cc"); // paper lanterns
+const C_ROPE = new THREE.Color("#4a3f32");
 
 /** Fence post + garden/driveway colors. */
 const C_FENCE = new THREE.Color("#6a5a4a");
@@ -63,7 +103,6 @@ const C_FENCE_DARK = new THREE.Color("#3a3530");
 const C_GARDEN_GREEN = new THREE.Color("#3a5a32");
 const C_GARDEN_BROWN = new THREE.Color("#5a4a32");
 const C_DRIVEWAY = new THREE.Color("#2a2a2a");
-const C_TORII_BLACK = new THREE.Color("#1a1a1a");
 
 /* ------------------------------------------------------------------ *
  *  Town window glow shader
@@ -103,11 +142,101 @@ const TOWN_WINDOW_FRAG = /* glsl */ `
     float nightLit = mix(0.0, vBrightness, on);
     vec3 col = mix(dayGlass, nightCol, nightLit);
     float dayBright = 0.35 + vBrightness * 0.2;
-    float nightBright = 0.05 + nightLit;
+    // HDR at night (up to ~2.4x) so the bloom pass catches lit windows.
+    float nightBright = 0.03 + nightLit * 2.4;
     float brightness = mix(dayBright, nightBright, on);
     gl_FragColor = vec4(col * brightness, 1.0);
   }
 `;
+
+/* ------------------------------------------------------------------ *
+ *  Shared procedural textures
+ * ------------------------------------------------------------------ */
+
+/**
+ * Subtle plaster/stucco wall texture: near-white base (so vertex tints
+ * show through), fine speckle grain, and faint horizontal siding lines.
+ * One shared texture; per-house tiling is baked into each box's UVs.
+ */
+function makeStuccoTexture(): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#fdfcfa";
+  ctx.fillRect(0, 0, size, size);
+  // Plaster grain: low-alpha speckle.
+  const img = ctx.getImageData(0, 0, size, size);
+  const data = img.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 14;
+    data[i] = Math.max(0, Math.min(255, data[i] + n));
+    data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + n));
+    data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + n * 0.8));
+  }
+  ctx.putImageData(img, 0, 0);
+  // Faint horizontal siding lines.
+  ctx.strokeStyle = "rgba(70, 64, 54, 0.10)";
+  ctx.lineWidth = 1;
+  for (let y = 8; y < size; y += 16) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(size, y);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** Radial warm glow blob for porch-light ground pools (additive blending). */
+function makeGlowTexture(): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const grad = ctx.createRadialGradient(
+    size / 2, size / 2, 2, size / 2, size / 2, size / 2,
+  );
+  grad.addColorStop(0, "rgba(255, 214, 160, 0.85)");
+  grad.addColorStop(0.45, "rgba(255, 190, 120, 0.35)");
+  grad.addColorStop(1, "rgba(255, 180, 100, 0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** JR-style station name board: kanji + romaji on deep green. */
+function makeStationSignTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 144;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#0d5a40";
+  ctx.fillRect(0, 0, 512, 144);
+  ctx.strokeStyle = "#e8efe8";
+  ctx.lineWidth = 5;
+  ctx.strokeRect(7, 7, 498, 130);
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#f5f7f2";
+  ctx.font = "700 60px 'Hiragino Sans', 'Yu Gothic', sans-serif";
+  ctx.fillText("鳥居町駅", 26, 74);
+  ctx.font = "600 26px 'Helvetica Neue', Arial, sans-serif";
+  ctx.fillStyle = "#cfe0d4";
+  ctx.fillText("TORIIMACHI STATION", 28, 120);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
+}
 
 /* ------------------------------------------------------------------ *
  *  Seeded random — deterministic per grid cell
@@ -184,6 +313,56 @@ function toPN(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   return g;
 }
 
+/** Like toPNC but keeps UVs, for geometries carrying the shared wall map. */
+function toPNCUV(
+  geo: THREE.BufferGeometry,
+  color: THREE.Color,
+): THREE.BufferGeometry {
+  const g = geo.index ? geo.toNonIndexed() : geo;
+  g.deleteAttribute("uv1");
+  g.deleteAttribute("uv2");
+  g.computeVertexNormals();
+  const pos = g.attributes.position;
+  const arr = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    arr[i * 3] = color.r;
+    arr[i * 3 + 1] = color.g;
+    arr[i * 3 + 2] = color.b;
+  }
+  g.setAttribute("color", new THREE.BufferAttribute(arr, 3));
+  return g;
+}
+
+/**
+ * Scale a box geometry's UVs per-face so a repeating texture tiles at
+ * `tile` world units. BoxGeometry orders faces px, nx, py, ny, pz, nz,
+ * each with 4 uv pairs.
+ */
+function scaleBoxUvs(
+  g: THREE.BoxGeometry,
+  w: number,
+  h: number,
+  d: number,
+  tile: number,
+): void {
+  const uv = g.attributes.uv as THREE.BufferAttribute;
+  const faceDims: [number, number][] = [
+    [d, h], [d, h], // px, nx
+    [w, d], [w, d], // py, ny
+    [w, h], [w, h], // pz, nz
+  ];
+  for (let f = 0; f < 6; f++) {
+    const [fw, fh] = faceDims[f];
+    const ru = fw / tile;
+    const rv = fh / tile;
+    for (let i = 0; i < 4; i++) {
+      const idx = f * 4 + i;
+      uv.setXY(idx, uv.getX(idx) * ru, uv.getY(idx) * rv);
+    }
+  }
+  uv.needsUpdate = true;
+}
+
 /** Safely merge an array of geometries; returns null if the array is empty. */
 function merge(geos: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
   if (geos.length === 0) return null;
@@ -246,8 +425,8 @@ function axisQuad(
 
 /**
  * Build a window quad with per-window phase/brightness/tint attributes so
- * the town window shader can light windows staggered at night. Mirrors the
- * city's addWindow approach but uses the town's axisQuad facing convention.
+ * the town window shader can light windows staggered at night. `lit`
+ * windows glow warm and HDR; unlit ones stay dark glass.
  */
 function pushTownWindow(
   arr: THREE.BufferGeometry[],
@@ -257,14 +436,12 @@ function pushTownWindow(
   w: number,
   h: number,
   face: Dir,
-  rngVal: number,
+  phase: number,
+  brightness: number,
+  tint: number,
 ): void {
   const g = axisQuad(cx, cy, cz, w, h, face);
   const n = g.attributes.position.count;
-  const phase = rngVal;
-  const brightness = rngVal < 0.15 ? 0.0 : 0.3 + ((rngVal * 13.7) % 1) * 0.7;
-  const tint =
-    ((rngVal * 7.3) % 1) < 0.7 ? rngVal * 0.2 : 0.6 + rngVal * 0.4;
   g.setAttribute(
     "aPhase",
     new THREE.BufferAttribute(new Float32Array(n).fill(phase), 1),
@@ -359,6 +536,8 @@ interface BuildingSpec {
   roofType: "gable" | "hip";
   roofTint: THREE.Color;
   commercial: boolean;
+  /** Flat-roofed shop with parapet instead of a pitched tile roof. */
+  flat: boolean;
 }
 
 /** Town road half-width (TOWN_ROAD_WIDTH=7 / 2) + 1 unit sidewalk buffer. */
@@ -398,10 +577,11 @@ function generateBuildings(): BuildingSpec[] {
           const h = 4 + rng() * 5;
           const color = WALL_COLORS[Math.floor(rng() * WALL_COLORS.length)];
           const roofType: "gable" | "hip" = rng() < 0.62 ? "gable" : "hip";
-          const roofTint =
-            ROOF_TINTS[Math.floor(rng() * ROOF_TINTS.length)];
+          const roofTint = pickRoofTint(rng());
           const commercial = rng() < 0.22;
-          out.push({ x: px, z: pz, w, d, h, color, roofType, roofTint, commercial });
+          // About half the commercial buildings read as flat-roofed shops.
+          const flat = commercial && rng() < 0.5;
+          out.push({ x: px, z: pz, w, d, h, color, roofType, roofTint, commercial, flat });
         }
       }
     }
@@ -414,7 +594,8 @@ function generateBuildings(): BuildingSpec[] {
  * ------------------------------------------------------------------ */
 
 interface TownGeometries {
-  walls: THREE.BufferGeometry | null;
+  wallsTextured: THREE.BufferGeometry | null;
+  trim: THREE.BufferGeometry | null;
   roofs: THREE.BufferGeometry | null;
   misc: THREE.BufferGeometry | null;
   fences: THREE.BufferGeometry | null;
@@ -422,10 +603,17 @@ interface TownGeometries {
   paddyWater: THREE.BufferGeometry | null;
   lamps: THREE.BufferGeometry | null;
   windows: THREE.BufferGeometry | null;
+  porchGlow: THREE.BufferGeometry | null;
+  porchPools: THREE.BufferGeometry | null;
+  lanterns: THREE.BufferGeometry | null;
 }
 
+/** Texture tile size for the shared stucco wall map, in world units. */
+const WALL_TILE = 3.0;
+
 function buildTown(): TownGeometries {
-  const walls: THREE.BufferGeometry[] = [];
+  const wallsTextured: THREE.BufferGeometry[] = [];
+  const trim: THREE.BufferGeometry[] = [];
   const roofs: THREE.BufferGeometry[] = [];
   const misc: THREE.BufferGeometry[] = [];
   const fences: THREE.BufferGeometry[] = [];
@@ -433,67 +621,154 @@ function buildTown(): TownGeometries {
   const paddyWater: THREE.BufferGeometry[] = [];
   const lamps: THREE.BufferGeometry[] = [];
   const windows: THREE.BufferGeometry[] = [];
+  const porchGlow: THREE.BufferGeometry[] = [];
+  const porchPools: THREE.BufferGeometry[] = [];
+  const lanterns: THREE.BufferGeometry[] = [];
+
+  // Idempotent under StrictMode double-invoke.
+  townCollisionBoxes.length = 0;
 
   const buildings = generateBuildings();
 
   for (const b of buildings) {
-    // Wall body.
+    // Wall body — textured bucket so houses pick up plaster/siding detail.
     let w = b.w;
     let d = b.d;
     let roofType = b.roofType;
-    // Keep the gable ridge along the longer side by swapping so w >= d.
-    if (roofType === "gable" && d > w) {
+    if (!b.flat && roofType === "gable" && d > w) {
       [w, d] = [d, w];
     }
-    const wallGeo = toPNC(new THREE.BoxGeometry(w, b.h, d), b.color);
-    translate(wallGeo, b.x, b.h / 2, b.z);
-    walls.push(wallGeo);
 
-    // Roof — vertex-colored with the building's random roof tint.
-    const rh = THREE.MathUtils.clamp(Math.min(w, d) * 0.4, 1.4, 3);
-    const roofGeo =
-      roofType === "gable" ? gableRoofGeo(w, d, rh) : hipRoofGeo(w, d, rh);
-    translate(roofGeo, b.x, b.h, b.z);
-    roofs.push(toPNC(roofGeo, b.roofTint));
+    // Register ground footprint for car collision (final wall extents).
+    townCollisionBoxes.push([b.x - w / 2, b.x + w / 2, b.z - d / 2, b.z + d / 2]);
 
-    // Windows on the two long facades (upper floors only). Each window
-    // carries per-window phase/brightness/tint for the glow shader.
+    const wallBox = new THREE.BoxGeometry(w, b.h, d);
+    scaleBoxUvs(wallBox, w, b.h, d, WALL_TILE);
+    translate(wallBox, b.x, b.h / 2, b.z);
+    wallsTextured.push(toPNCUV(wallBox, b.color));
+
+    // Roof — weighted tile shade; gables get a ridge cap box, flat shops
+    // get a gravel slab with a parapet ring.
+    if (b.flat) {
+      const slab = toPNC(new THREE.BoxGeometry(w + 0.5, 0.28, d + 0.5), C_GRAVEL);
+      translate(slab, b.x, b.h + 0.14, b.z);
+      roofs.push(slab);
+      const parapetColor = b.color.clone().multiplyScalar(0.8);
+      for (const [pw, pd, ox, oz] of [
+        [w + 0.5, 0.18, 0, d / 2 + 0.16],
+        [w + 0.5, 0.18, 0, -d / 2 - 0.16],
+        [0.18, d + 0.5, w / 2 + 0.16, 0],
+        [0.18, d + 0.5, -w / 2 - 0.16, 0],
+      ] as Array<[number, number, number, number]>) {
+        const par = toPNC(new THREE.BoxGeometry(pw, 0.5, pd), parapetColor);
+        translate(par, b.x + ox, b.h + 0.5, b.z + oz);
+        roofs.push(par);
+      }
+    } else {
+      const rh = THREE.MathUtils.clamp(Math.min(w, d) * 0.4, 1.4, 3);
+      const roofGeo =
+        roofType === "gable" ? gableRoofGeo(w, d, rh) : hipRoofGeo(w, d, rh);
+      translate(roofGeo, b.x, b.h, b.z);
+      roofs.push(toPNC(roofGeo, b.roofTint));
+      if (roofType === "gable") {
+        const capColor = b.roofTint.clone().multiplyScalar(0.62);
+        const cap = toPNC(new THREE.BoxGeometry(w + 0.45, 0.16, 0.42), capColor);
+        translate(cap, b.x, b.h + rh + 0.04, b.z);
+        roofs.push(cap);
+      }
+    }
+
+    // Windows on the two long facades. Most stay dark at night; exactly
+    // 2-5 are chosen per house to glow warm, staggered like the city.
     const cols = Math.max(1, Math.floor(w / 2.4));
     const rows = Math.max(1, Math.floor((b.h - 2) / 2.2));
     const sx = w / (cols + 1);
     const sy = (b.h - 2) / (rows + 1);
     const winSize = 0.7;
     const winRng = mulberry32(hashSeed(Math.round(b.x * 3.1), Math.round(b.z * 2.3)));
+    interface WinCand {
+      x: number;
+      y: number;
+      face: Dir;
+    }
+    const cands: WinCand[] = [];
     for (let r = 0; r < rows; r++) {
       const wy = 1.4 + (r + 1) * sy;
       for (let c = 0; c < cols; c++) {
         const wx = b.x - w / 2 + (c + 1) * sx;
-        pushTownWindow(
-          windows, wx, wy, b.z + d / 2 + 0.06, winSize, winSize, "+Z", winRng(),
-        );
-        pushTownWindow(
-          windows, wx, wy, b.z - d / 2 - 0.06, winSize, winSize, "-Z", winRng(),
-        );
+        cands.push({ x: wx, y: wy, face: "+Z" });
+        cands.push({ x: wx, y: wy, face: "-Z" });
       }
     }
+    // Shuffle candidates so lit windows scatter across the facade.
+    for (let i = cands.length - 1; i > 0; i--) {
+      const j = Math.floor(winRng() * (i + 1));
+      [cands[i], cands[j]] = [cands[j], cands[i]];
+    }
+    const litCount = Math.min(cands.length, 2 + Math.floor(winRng() * 4));
+    cands.forEach((cd, i) => {
+      const zFace = cd.face === "+Z" ? b.z + d / 2 + 0.06 : b.z - d / 2 - 0.06;
+      if (i < litCount) {
+        pushTownWindow(
+          windows, cd.x, cd.y, zFace, winSize, winSize, cd.face,
+          winRng(), 0.75 + winRng() * 0.25, winRng() * 0.15,
+        );
+      } else {
+        pushTownWindow(
+          windows, cd.x, cd.y, zFace, winSize, winSize, cd.face,
+          winRng(), 0, 0.5,
+        );
+      }
+    });
 
     // Commercial ground-floor details: shutter panel, awning, sign.
     if (b.commercial) {
-      const shutter = toPNC(
-        new THREE.BoxGeometry(w * 0.7, 1.6, 0.08),
-        C_SHUTTER,
-      );
+      const shutter = toPNC(new THREE.BoxGeometry(w * 0.7, 1.6, 0.08), C_SHUTTER);
       translate(shutter, b.x, 0.9, b.z + d / 2 + 0.05);
-      walls.push(shutter);
+      trim.push(shutter);
 
       const awning = toPNC(new THREE.BoxGeometry(w * 0.6, 0.12, 1.1), C_AWNING);
       translate(awning, b.x, 1.9, b.z + d / 2 + 0.55);
-      walls.push(awning);
+      trim.push(awning);
 
       // Warm shop sign — emissive via the window shader (always-on at night).
       pushTownWindow(
-        windows, b.x, 2.5, b.z + d / 2 + 0.07, w * 0.5, 0.5, "+Z", 0.02,
+        windows, b.x, 2.5, b.z + d / 2 + 0.07, w * 0.5, 0.5, "+Z", 0.02, 1.0, 0.05,
       );
+    } else if (winRng() < 0.18) {
+      // Porch light: small warm quad by the door + additive ground pool.
+      const px = b.x + (winRng() < 0.5 ? -1 : 1) * w * 0.3;
+      porchGlow.push(toPN(axisQuad(px, 2.25, b.z + d / 2 + 0.07, 0.3, 0.22, "+Z")));
+      const pool = new THREE.PlaneGeometry(2.8, 2.8);
+      pool.rotateX(-Math.PI / 2);
+      translate(pool, px, 0.05, Math.min(b.z + d / 2 + 1.15, b.z + PLOT_D / 2 - 0.4));
+      porchPools.push(pool);
+    }
+
+    // Street clutter: utility boxes and potted plants against walls.
+    const detRng = mulberry32(hashSeed(Math.round(b.x * 5.3), Math.round(b.z * 7.7)));
+    if (detRng() < 0.22) {
+      const side = detRng() < 0.5 ? -1 : 1;
+      const ux = b.x + side * (w / 2 + 0.34);
+      const uz = b.z + (detRng() - 0.5) * d * 0.5;
+      const ubox = toPNC(new THREE.BoxGeometry(0.55, 1.35, 0.95), C_UTILITY);
+      translate(ubox, ux, 0.675, uz);
+      fences.push(ubox);
+      const udoor = toPNC(new THREE.BoxGeometry(0.05, 0.95, 0.65), C_UTILITY_DOOR);
+      translate(udoor, ux - side * 0.3, 0.72, uz);
+      fences.push(udoor);
+    }
+    if (detRng() < 0.3) {
+      const side = detRng() < 0.5 ? -1 : 1;
+      const potX = b.x + side * w * 0.32;
+      const potZ = Math.min(b.z + d / 2 + 0.75, b.z + PLOT_D / 2 - 0.6);
+      const pot = toPNC(new THREE.CylinderGeometry(0.17, 0.22, 0.32, 7), C_POT);
+      translate(pot, potX, 0.16, potZ);
+      fences.push(pot);
+      const plant = toPNC(new THREE.SphereGeometry(0.24, 6, 5), C_POT_PLANT);
+      plant.scale(1, 0.85, 1);
+      translate(plant, potX, 0.48, potZ);
+      fences.push(plant);
     }
 
     // Fence, garden patches and a driveway around the house plot.
@@ -501,10 +776,10 @@ function buildTown(): TownGeometries {
   }
 
   /* ---- Shrine ---- */
-  buildShrine(misc);
+  buildShrine(misc, lamps, lanterns);
 
   /* ---- Train station + tracks + level crossing ---- */
-  buildStation(walls, roofs, misc);
+  buildStation(wallsTextured, roofs, misc, lamps);
 
   /* ---- Streetlights along every road ---- */
   buildStreetlights(misc, lamps);
@@ -516,7 +791,8 @@ function buildTown(): TownGeometries {
   buildPaddies(paddies, paddyWater);
 
   return {
-    walls: merge(walls),
+    wallsTextured: merge(wallsTextured),
+    trim: merge(trim),
     roofs: merge(roofs),
     misc: merge(misc),
     fences: merge(fences),
@@ -524,57 +800,34 @@ function buildTown(): TownGeometries {
     paddyWater: merge(paddyWater),
     lamps: merge(lamps),
     windows: merge(windows),
+    porchGlow: merge(porchGlow),
+    porchPools: merge(porchPools),
+    lanterns: merge(lanterns),
   };
 }
 
-/** Shrine: torii gate, stone platform, stone lanterns, a few trees. */
-function buildShrine(misc: THREE.BufferGeometry[]): void {
+/**
+ * Shrine: proper myojin-style torii (stacked-box lintel with upturned
+ * ends), dark stone plinths and platform, six stone lanterns with warm
+ * light boxes, a string of sagging paper lanterns across the approach,
+ * and a few trees.
+ */
+function buildShrine(
+  misc: THREE.BufferGeometry[],
+  lamps: THREE.BufferGeometry[],
+  lanterns: THREE.BufferGeometry[],
+): void {
   const sx = 0;
   const sz = -70; // Between EW roads at -40 and -80, away from the track at Z=-100.
 
-  // Torii pillars.
-  const pillarL = toPNC(new THREE.BoxGeometry(0.55, 6, 0.55), C_VERMILION);
-  translate(pillarL, sx - 2.7, 3, sz);
-  misc.push(pillarL);
-  const pillarR = toPNC(new THREE.BoxGeometry(0.55, 6, 0.55), C_VERMILION);
-  translate(pillarR, sx + 2.7, 3, sz);
-  misc.push(pillarR);
-
-  // Kasagi (top beam) — a gently curved vermilion beam that overhangs past
-  // the pillars, like a real Shinto torii. Built from a torus arc: we take the
-  // top slice of a large-radius ring so the chord runs horizontal (along X,
-  // spanning ~7.2 units with overhang) and the arc bulges upward. The torus
-  // tube gives the beam its depth along Z.
-  const kArc = 1.0; // ~57° arc — shallow arch
-  const kRadius = 7.52; // chord ≈ 7.2, sagitta ≈ 0.9
-  const kHalf = kArc / 2;
-  const chordY = kRadius * Math.cos(kHalf); // height of the chord above origin
-  const kasagiArc = toPNC(
-    new THREE.TorusGeometry(kRadius, 0.26, 10, 48, kArc),
-    C_VERMILION,
-  );
-  // Center the arc on +Y so the chord is horizontal and the arch bulges up.
-  kasagiArc.rotateZ(Math.PI / 2 - kHalf);
-  translate(kasagiArc, sx, 6.4 - chordY, sz); // rest the chord on the pillars
-  misc.push(kasagiArc);
-
-  // Black top cap — a thin flat board along the crown of the curve.
-  const apexY = 6.4 + (kRadius - chordY);
-  const cap = toPNC(new THREE.BoxGeometry(8.2, 0.22, 0.95), C_TORII_BLACK);
-  translate(cap, sx, apexY + 0.12, sz);
-  misc.push(cap);
-
-  // Nuki (second beam).
-  const nuki = toPNC(new THREE.BoxGeometry(5.4, 0.38, 0.62), C_VERMILION);
-  translate(nuki, sx, 5.2, sz);
-  misc.push(nuki);
-
-  // Gakuzuka (central name board).
-  const gakuzuka = toPNC(new THREE.BoxGeometry(0.65, 0.85, 0.3), C_VERMILION);
-  translate(gakuzuka, sx, 5.85, sz);
-  misc.push(gakuzuka);
-
-  // Stone platform + front steps.
+  // Dark stone plinths under each pillar + raised approach platform/steps.
+  for (const px of [sx - 2.7, sx + 2.7]) {
+    const plinth = toPNC(new THREE.BoxGeometry(1.15, 0.5, 1.15), C_STONE_DARK);
+    translate(plinth, px, 0.25, sz);
+    misc.push(plinth);
+    // Pillar footprints are solid for the car.
+    townCollisionBoxes.push([px - 0.58, px + 0.58, sz - 0.58, sz + 0.58]);
+  }
   const platform = toPNC(new THREE.BoxGeometry(11, 0.4, 7), C_STONE);
   translate(platform, sx, 0.2, sz + 1.5);
   misc.push(platform);
@@ -582,17 +835,102 @@ function buildShrine(misc: THREE.BufferGeometry[]): void {
   translate(steps, sx, 0.15, sz - 2.2);
   misc.push(steps);
 
-  // Stone lanterns flanking the approach.
-  for (const lx of [sx - 4, sx + 4]) {
-    const base = toPNC(new THREE.BoxGeometry(0.8, 0.3, 0.8), C_STONE_DARK);
-    translate(base, lx, 0.15, sz - 2.6);
-    misc.push(base);
-    const body = toPNC(new THREE.BoxGeometry(0.5, 0.8, 0.5), C_STONE);
-    translate(body, lx, 0.7, sz - 2.6);
-    misc.push(body);
-    const cap = toPNC(new THREE.BoxGeometry(0.75, 0.2, 0.75), C_STONE_DARK);
-    translate(cap, lx, 1.2, sz - 2.6);
-    misc.push(cap);
+  // Vermilion pillars (slightly tapered boxes).
+  for (const px of [sx - 2.7, sx + 2.7]) {
+    const pillar = toPNC(new THREE.BoxGeometry(0.62, 5.6, 0.62), C_VERMILION);
+    translate(pillar, px, 0.5 + 2.8, sz);
+    misc.push(pillar);
+  }
+
+  // Nuki (lower lintel) passes through the pillars.
+  const nuki = toPNC(new THREE.BoxGeometry(6.8, 0.38, 0.55), C_VERMILION);
+  translate(nuki, sx, 4.9, sz);
+  misc.push(nuki);
+
+  // Gakuzuka (central name plaque) between nuki and shimaki.
+  const gakuzuka = toPNC(new THREE.BoxGeometry(0.7, 0.9, 0.28), C_VERMILION);
+  translate(gakuzuka, sx, 5.38, sz);
+  misc.push(gakuzuka);
+
+  // Double top lintel: shimaki under a kasagi whose stacked end boxes step
+  // upward toward the tips, suggesting the classic curved-up silhouette.
+  const shimaki = toPNC(new THREE.BoxGeometry(7.4, 0.34, 0.68), C_VERMILION);
+  translate(shimaki, sx, 5.95, sz);
+  misc.push(shimaki);
+  const kasagi = toPNC(new THREE.BoxGeometry(7.6, 0.4, 0.8), C_VERMILION);
+  translate(kasagi, sx, 6.32, sz);
+  misc.push(kasagi);
+  for (const dir of [-1, 1]) {
+    const lift = toPNC(new THREE.BoxGeometry(1.7, 0.4, 0.8), C_VERMILION);
+    _m.makeRotationZ(-dir * 0.2);
+    _m.setPosition(sx + dir * 3.7, 6.5, sz);
+    lift.applyMatrix4(_m);
+    misc.push(lift);
+    // Upturned tip cap.
+    const tip = toPNC(new THREE.BoxGeometry(0.8, 0.5, 0.84), C_VERMILION);
+    _m.makeRotationZ(-dir * 0.27);
+    _m.setPosition(sx + dir * 4.5, 6.72, sz);
+    tip.applyMatrix4(_m);
+    misc.push(tip);
+  }
+
+  // Six stone lanterns flanking the approach; light boxes join the street
+  // lamp material so they glow warm at night.
+  for (const lz of [sz + 4.5, sz + 0.5, sz - 3.5]) {
+    for (const lx of [sx - 4.2, sx + 4.2]) {
+      const base = toPNC(new THREE.BoxGeometry(0.75, 0.25, 0.75), C_STONE_DARK);
+      translate(base, lx, 0.125, lz);
+      misc.push(base);
+      const pedestal = toPNC(new THREE.BoxGeometry(0.42, 0.5, 0.42), C_STONE);
+      translate(pedestal, lx, 0.5, lz);
+      misc.push(pedestal);
+      const shaft = toPNC(new THREE.CylinderGeometry(0.16, 0.2, 0.6, 6), C_STONE);
+      translate(shaft, lx, 1.05, lz);
+      misc.push(shaft);
+      const lightBox = toPN(new THREE.BoxGeometry(0.44, 0.36, 0.44));
+      translate(lightBox, lx, 1.53, lz);
+      lamps.push(lightBox);
+      const cap = toPNC(new THREE.ConeGeometry(0.56, 0.35, 4), C_STONE_DARK);
+      cap.rotateY(Math.PI / 4);
+      translate(cap, lx, 1.88, lz);
+      misc.push(cap);
+    }
+  }
+
+  // String of paper lanterns across the approach south of the torii:
+  // two wooden poles, sagging rope segments, glowing paper spheres.
+  const poleXs = [sx - 6, sx + 6];
+  const ropeZ = sz + 8;
+  for (const px of poleXs) {
+    const pole = toPNC(new THREE.CylinderGeometry(0.09, 0.12, 2.7, 6), C_FENCE);
+    translate(pole, px, 1.35, ropeZ);
+    misc.push(pole);
+  }
+  const lanternCount = 9;
+  const ys: number[] = [];
+  for (let i = 0; i < lanternCount; i++) {
+    const t = i / (lanternCount - 1);
+    const lx = poleXs[0] + t * (poleXs[1] - poleXs[0]);
+    const ly = 2.6 - Math.sin(t * Math.PI) * 0.5;
+    ys.push(ly);
+    if (i > 0) {
+      const dx = lx - (poleXs[0] + ((i - 1) / (lanternCount - 1)) * (poleXs[1] - poleXs[0]));
+      const dy = ly - ys[i - 1];
+      const seg = toPNC(
+        new THREE.BoxGeometry(Math.abs(dx) + 0.02, 0.03, 0.03),
+        C_ROPE,
+      );
+      seg.rotateZ(Math.atan2(dy, dx));
+      translate(seg, lx - dx / 2, ly + dy / 2 + 0.26, ropeZ);
+      misc.push(seg);
+    }
+    const bulb = toPN(new THREE.SphereGeometry(0.24, 8, 6));
+    bulb.scale(1, 1.18, 1);
+    translate(bulb, lx, ly - 0.02, ropeZ);
+    lanterns.push(bulb);
+    const lcap = toPNC(new THREE.BoxGeometry(0.13, 0.06, 0.13), C_ROPE);
+    translate(lcap, lx, ly + 0.27, ropeZ);
+    misc.push(lcap);
   }
 
   // A few trees around the shrine.
@@ -731,36 +1069,92 @@ function buildStreetTrees(misc: THREE.BufferGeometry[]): void {
   }
 }
 
-/** JR-style station: elevated platform, gable-roofed building, tracks, crossing. */
+/**
+ * JR-style station: elevated platform with a post-supported canopy and a
+ * kanji/romaji name board, gable-roofed station building, tracks, benches,
+ * vending machine, level crossing.
+ */
 function buildStation(
-  walls: THREE.BufferGeometry[],
+  wallsTextured: THREE.BufferGeometry[],
   roofs: THREE.BufferGeometry[],
   misc: THREE.BufferGeometry[],
+  lamps: THREE.BufferGeometry[],
 ): void {
   const stX = 64;
   const stZ = -97;
   const trackZ = -100;
 
-  // Elevated platform (north side of tracks).
-  const platform = toPNC(
-    new THREE.BoxGeometry(32, 1.2, 6),
-    C_PLATFORM,
-  );
+  // Elevated platform (north side of tracks) + yellow tactile edge strip.
+  const platform = toPNC(new THREE.BoxGeometry(32, 1.2, 6), C_PLATFORM);
   translate(platform, stX, 0.6, trackZ - 4);
   misc.push(platform);
+  const tactile = toPNC(new THREE.BoxGeometry(32, 0.06, 0.45), C_TACTILE);
+  translate(tactile, stX, 1.23, trackZ - 1.35);
+  misc.push(tactile);
+
+  // Platform canopy on posts along the back (north) edge of the platform.
+  for (const px of [stX - 13.5, stX - 4.5, stX + 4.5, stX + 13.5]) {
+    const post = toPNC(new THREE.CylinderGeometry(0.13, 0.16, 3.4, 6), C_POLE);
+    translate(post, px, 1.2 + 1.7, trackZ - 6.3);
+    misc.push(post);
+  }
+  const canopy = toPNC(new THREE.BoxGeometry(31, 0.22, 5.2), C_CANOPY_GREEN);
+  translate(canopy, stX, 4.75, trackZ - 4);
+  roofs.push(canopy);
+  const fascia = toPNC(
+    new THREE.BoxGeometry(31, 0.5, 0.14),
+    C_CANOPY_GREEN.clone().multiplyScalar(0.75),
+  );
+  translate(fascia, stX, 4.55, trackZ - 1.45);
+  roofs.push(fascia);
 
   // Station building (on the south side of the tracks).
   const bw = 9;
   const bd = 5;
   const bh = 4;
-  const bWall = toPNC(new THREE.BoxGeometry(bw, bh, bd), C_CREAM);
-  translate(bWall, stX, bh / 2, stZ);
-  walls.push(bWall);
+  const bWallBox = new THREE.BoxGeometry(bw, bh, bd);
+  scaleBoxUvs(bWallBox, bw, bh, bd, WALL_TILE);
+  translate(bWallBox, stX, bh / 2, stZ);
+  wallsTextured.push(toPNCUV(bWallBox, C_CREAM));
+  townCollisionBoxes.push([stX - bw / 2, stX + bw / 2, stZ - bd / 2, stZ + bd / 2]);
 
   const rh = 1.8;
   const bRoof = gableRoofGeo(bw, bd, rh);
   translate(bRoof, stX, bh, stZ);
-  roofs.push(toPNC(bRoof, ROOF_TINTS[0]));
+  roofs.push(toPNC(bRoof, ROOF_BLUE_A));
+
+  // Name board hanging under the canopy front, facing the tracks.
+  const frame = toPNC(new THREE.BoxGeometry(6.0, 1.8, 0.1), C_STONE_DARK);
+  translate(frame, stX, 3.85, trackZ - 1.38);
+  misc.push(frame);
+
+  // Benches on the platform.
+  for (const bx of [stX - 7, stX + 2]) {
+    const seat = toPNC(new THREE.BoxGeometry(1.9, 0.1, 0.5), C_WOOD_BENCH);
+    translate(seat, bx, 1.72, trackZ - 4.8);
+    misc.push(seat);
+    const back = toPNC(new THREE.BoxGeometry(1.9, 0.5, 0.09), C_WOOD_BENCH);
+    translate(back, bx, 2.02, trackZ - 5.05);
+    misc.push(back);
+    for (const lx of [-0.8, 0.8]) {
+      const leg = toPNC(new THREE.BoxGeometry(0.09, 0.52, 0.42), C_POLE);
+      translate(leg, bx + lx, 1.46, trackZ - 4.82);
+      misc.push(leg);
+    }
+  }
+
+  // Vending machine silhouette at the platform end; front stripe glows
+  // softly at night via the street-lamp material.
+  const vmX = stX + 11;
+  const body = toPNC(new THREE.BoxGeometry(1.1, 1.9, 0.75), C_VENDING);
+  translate(body, vmX, 1.2 + 0.95, trackZ - 4.7);
+  misc.push(body);
+  const face = toPNC(new THREE.BoxGeometry(0.92, 1.45, 0.06), C_VENDING_FACE);
+  translate(face, vmX, 2.05, trackZ - 4.28);
+  misc.push(face);
+  const glowStripe = toPN(new THREE.BoxGeometry(0.85, 0.22, 0.04));
+  translate(glowStripe, vmX, 2.72, trackZ - 4.26);
+  lamps.push(glowStripe);
 
   // Tracks (a long dark strip) + two rails.
   const trackBed = toPNC(new THREE.BoxGeometry(200, 0.12, 3), C_TRACK);
@@ -885,8 +1279,26 @@ export function Town() {
   const stateRef = useDayNightState();
   const lampMatRef = useRef<THREE.MeshStandardMaterial>(null);
   const windowMatRef = useRef<THREE.ShaderMaterial>(null);
+  const porchLampMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const porchPoolMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const lanternMatRef = useRef<THREE.MeshStandardMaterial>(null);
 
-  const geos = useMemo(() => buildTown(), []);
+  const { geos, stuccoTex, glowTex, signMat } = useMemo(() => {
+    const signTex = makeStationSignTexture();
+    return {
+      geos: buildTown(),
+      stuccoTex: makeStuccoTexture(),
+      glowTex: makeGlowTexture(),
+      // Shared by the platform board and the building-wall board.
+      signMat: new THREE.MeshStandardMaterial({
+        map: signTex,
+        emissive: "#ffffff",
+        emissiveMap: signTex,
+        emissiveIntensity: 0.05,
+        roughness: 0.6,
+      }),
+    };
+  }, []);
 
   // Animate emissive materials with the day/night cycle.
   useFrame(() => {
@@ -897,12 +1309,36 @@ export function Town() {
     if (windowMatRef.current) {
       windowMatRef.current.uniforms.uWindowGlow.value = s.windowGlow;
     }
+    if (porchLampMatRef.current) {
+      porchLampMatRef.current.emissiveIntensity =
+        s.windowGlow * 3.2;
+    }
+    if (porchPoolMatRef.current) {
+      porchPoolMatRef.current.opacity =
+        Math.max(s.windowGlow, s.streetlightIntensity) * 0.42;
+    }
+    if (lanternMatRef.current) {
+      lanternMatRef.current.emissiveIntensity =
+        s.windowGlow * 2.4 + s.streetlightIntensity * 0.6;
+    }
+    signMat.emissiveIntensity = 0.05 + s.streetlightIntensity * 1.1;
   });
 
   return (
     <group>
-      {geos.walls && (
-        <mesh geometry={geos.walls} castShadow receiveShadow>
+      {/* House walls: vertex tint x shared plaster texture */}
+      {geos.wallsTextured && (
+        <mesh geometry={geos.wallsTextured} castShadow receiveShadow>
+          <meshStandardMaterial
+            vertexColors
+            map={stuccoTex}
+            roughness={0.92}
+            metalness={0}
+          />
+        </mesh>
+      )}
+      {geos.trim && (
+        <mesh geometry={geos.trim} castShadow receiveShadow>
           <meshStandardMaterial vertexColors roughness={0.88} metalness={0} />
         </mesh>
       )}
@@ -948,6 +1384,7 @@ export function Town() {
             color={TOWN_PALETTE.streetlight}
             emissive={TOWN_PALETTE.streetlight}
             emissiveIntensity={0}
+            toneMapped={false}
             roughness={0.5}
             metalness={0}
           />
@@ -968,6 +1405,53 @@ export function Town() {
           />
         </mesh>
       )}
+      {/* Porch lights + their additive ground pools */}
+      {geos.porchGlow && (
+        <mesh geometry={geos.porchGlow}>
+          <meshStandardMaterial
+            ref={porchLampMatRef}
+            color="#ffc98a"
+            emissive="#ffc98a"
+            emissiveIntensity={0}
+            toneMapped={false}
+            roughness={0.5}
+          />
+        </mesh>
+      )}
+      {geos.porchPools && (
+        <mesh geometry={geos.porchPools} renderOrder={4}>
+          <meshBasicMaterial
+            ref={porchPoolMatRef}
+            map={glowTex}
+            color="#ffb46a"
+            transparent
+            opacity={0}
+            blending={THREE.AdditiveBlending}
+            depthWrite={false}
+            toneMapped={false}
+          />
+        </mesh>
+      )}
+      {/* Paper lantern string at the shrine */}
+      {geos.lanterns && (
+        <mesh geometry={geos.lanterns}>
+          <meshStandardMaterial
+            ref={lanternMatRef}
+            color={C_PAPER}
+            emissive="#ffb45e"
+            emissiveIntensity={0}
+            toneMapped={false}
+            roughness={0.6}
+          />
+        </mesh>
+      )}
+      {/* Station name boards (kanji + romaji): platform + road-facing wall */}
+      <mesh position={[64, 3.85, -101.3]} material={signMat}>
+        <planeGeometry args={[5.6, 1.57]} />
+      </mesh>
+      <mesh position={[64, 2.7, -94.42]} material={signMat}>
+        <planeGeometry args={[4.4, 1.24]} />
+      </mesh>
     </group>
   );
 }

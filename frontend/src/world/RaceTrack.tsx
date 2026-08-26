@@ -8,14 +8,15 @@ import { TRACK_CENTER, TRACK_SIZE, TRACK_PALETTE } from "./constants";
 /**
  * RaceTrack — F1-style circuit on the town outskirts.
  *
- * A closed loop with two straights and two semicircle ends. Kerbs on the
- * inside of corners (red/white checker CanvasTexture), continuous barrier
- * ribbons along the straights, a painted start/finish line, tire walls at
- * the corners, a start/finish gantry, a tiered grandstand with a roof and
- * floodlights, pit lane with trucks and tire stacks, a timing tower,
- * dark tire-mark decals at the apexes, and floodlights that turn on at night.
+ * A closed loop with two straights and two semicircle ends. Striped red/
+ * white kerbs line the inside of both corner apexes, continuous barrier
+ * ribbons run along the straights, and the dark slightly-glossy surface
+ * picks up the additive floodlight pools at night. Tire walls (mostly
+ * black, a few painted) guard the corners, a start/finish gantry carries
+ * a checker strip and an emissive PARCOAR CIRCUIT sign, and a tiered
+ * grandstand reads as seat blocks via three alternating row colors.
  *
- * All static geometry is merged into a handful of meshes.
+ * All static geometry is merged into a handful of meshes; no real lights.
  */
 
 const [CX, CZ] = TRACK_CENTER;
@@ -24,9 +25,54 @@ const STRAIGHT = TW; // 200
 const RADIUS = TD / 2; // 40
 const TRACK_WIDTH = 14;
 const DECK_Y = 0.05;
-const KERB_Y = DECK_Y + 0.05; // kerbs sit just above the track surface
 const START_FINISH_Y = DECK_Y + 0.06;
 const TIRE_MARK_Y = DECK_Y + 0.02;
+
+/** Slightly darker than road asphalt; low roughness so light pools read. */
+const SURFACE_COLOR = "#202024";
+
+/** Grandstand seat-block colors, cycled per row. */
+const SEAT_COLORS = [
+  new THREE.Color("#96323a"), // crimson
+  new THREE.Color("#d8d2c4"), // cream
+  new THREE.Color("#3c4c6e"), // navy
+];
+
+/** Floodlights: pole position + the point on the track it aims at. */
+function floodLayout(): Array<{ px: number; pz: number; lx: number; lz: number }> {
+  const out: Array<{ px: number; pz: number; lx: number; lz: number }> = [];
+  for (const x of [-70, 0, 70]) {
+    out.push({ px: x, pz: -RADIUS - 7, lx: x, lz: -RADIUS });
+    out.push({ px: x, pz: RADIUS + 7, lx: x, lz: RADIUS });
+  }
+  out.push({ px: STRAIGHT / 2 + RADIUS + 8, pz: 0, lx: STRAIGHT / 2 + RADIUS, lz: 0 });
+  out.push({ px: -(STRAIGHT / 2 + RADIUS + 8), pz: 0, lx: -(STRAIGHT / 2 + RADIUS), lz: 0 });
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Seeded rng (deterministic scatter for tire walls)
+ * ------------------------------------------------------------------ */
+
+function hashSeed(a: number, b: number): number {
+  let h = (Math.imul(a, 73856093) ^ Math.imul(b, 19349663)) >>> 0;
+  if (h === 0) h = 0x9e3779b9;
+  return h;
+}
+
+function mulberry32(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ *  Geometry helpers
+ * ------------------------------------------------------------------ */
 
 /** Build a flat ribbon between two points at a given Y. */
 function ribbon(x1: number, z1: number, x2: number, z2: number, width: number, y: number): THREE.BufferGeometry {
@@ -59,7 +105,6 @@ function arcRibbon(
     uvs.push(0, i / segments, 1, i / segments);
     if (i < segments) {
       const a = i * 2;
-      // CCW winding for +Y normal: inner_i, inner_{i+1}, outer_i
       indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
     }
   }
@@ -71,47 +116,78 @@ function arcRibbon(
   return geo;
 }
 
-/** Build a kerb segment. UVs map 0..1 across width and along the segment so a
- *  repeating checker texture tiles correctly. Winding is rendered DoubleSide
- *  so visibility does not depend on face orientation. */
-function kerbSegment(
-  cx: number, cz: number, radius: number, startAngle: number, endAngle: number, side: number, y: number,
+/**
+ * Kerb run along an arc: thin raised boxes placed tangentially just inside
+ * the track edge. UVs stay default so the striped texture shows one red +
+ * one white band per segment (u runs along the kerb).
+ */
+function kerbRun(
+  cx: number, cz: number, radius: number, startAngle: number, endAngle: number,
 ): THREE.BufferGeometry[] {
-  const segments = 24;
-  const kerbWidth = 1.0;
-  const inner = radius + side * (TRACK_WIDTH / 2);
-  const outer = inner + side * kerbWidth;
+  const segments = 26;
+  const kw = 1.05;
+  const kh = 0.1;
+  const midRadius = radius - TRACK_WIDTH / 2 + kw / 2;
   const geos: THREE.BufferGeometry[] = [];
   for (let i = 0; i < segments; i++) {
     const t1 = startAngle + (endAngle - startAngle) * (i / segments);
     const t2 = startAngle + (endAngle - startAngle) * ((i + 1) / segments);
-    const positions: number[] = [];
-    const uvs: number[] = [];
-    const indices: number[] = [];
-    const c1 = Math.cos(t1), s1 = Math.sin(t1);
-    const c2 = Math.cos(t2), s2 = Math.sin(t2);
-    positions.push(cx + inner * c1, y, cz + inner * s1);
-    positions.push(cx + outer * c1, y, cz + outer * s1);
-    positions.push(cx + inner * c2, y, cz + inner * s2);
-    positions.push(cx + outer * c2, y, cz + outer * s2);
-    uvs.push(0, 0, 1, 0, 0, 1, 1, 1);
-    // CCW winding for +Y normal (inner/outer are swapped in kerbs vs arcRibbon,
-    // so the winding must be reversed to get +Y normals).
-    indices.push(0, 1, 2, 1, 3, 2);
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-    geo.setIndex(indices);
-    geo.computeVertexNormals();
-    geos.push(geo);
+    const tm = (t1 + t2) / 2;
+    const len = midRadius * (t2 - t1) + 0.06;
+    const g = new THREE.BoxGeometry(len, kh, kw);
+    // Local X must follow the tangent (-sin t, cos t): rotateY(-(t + PI/2)).
+    g.rotateY(-(tm + Math.PI / 2));
+    g.translate(
+      cx + midRadius * Math.cos(tm),
+      DECK_Y + 0.02 + kh / 2,
+      cz + midRadius * Math.sin(tm),
+    );
+    geos.push(g);
   }
   return geos;
+}
+
+/** Bake a uniform color into a geometry's vertices (for multi-color merges). */
+function vcolor(geo: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeometry {
+  const g = geo.index ? geo.toNonIndexed() : geo;
+  const pos = g.attributes.position;
+  const arr = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    arr[i * 3] = color.r;
+    arr[i * 3 + 1] = color.g;
+    arr[i * 3 + 2] = color.b;
+  }
+  g.setAttribute("color", new THREE.BufferAttribute(arr, 3));
+  return g;
 }
 
 function mergeAll(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
   const valid = geos.filter((g) => g.attributes.position && g.attributes.position.count > 0);
   if (valid.length === 0) return new THREE.BufferGeometry();
   return mergeGeometries(valid, false) ?? new THREE.BufferGeometry();
+}
+
+/* ------------------------------------------------------------------ *
+ *  Canvas textures
+ * ------------------------------------------------------------------ */
+
+/** Red/white stripes perpendicular to U (along the kerb direction). */
+function makeKerbStripeTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 16;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#d03030";
+  ctx.fillRect(0, 0, 32, 16);
+  ctx.fillStyle = "#ececec";
+  ctx.fillRect(32, 0, 32, 16);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
 }
 
 /** A small repeating checker CanvasTexture (red/white or black/white). */
@@ -154,19 +230,77 @@ function makeBarrierStripeTexture(): THREE.CanvasTexture {
   return tex;
 }
 
+/** Radial falloff blob for floodlight ground pools (additive blending). */
+function makeFloodPoolTexture(): THREE.CanvasTexture {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const grad = ctx.createRadialGradient(size / 2, size / 2, 4, size / 2, size / 2, size / 2);
+  grad.addColorStop(0, "rgba(255, 240, 214, 0.95)");
+  grad.addColorStop(0.35, "rgba(255, 232, 190, 0.45)");
+  grad.addColorStop(1, "rgba(255, 224, 170, 0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/** Start/finish gantry sign: PARCOAR CIRCUIT + katakana, checker ends. */
+function makeGantrySignTexture(): THREE.CanvasTexture {
+  const w = 1024;
+  const h = 200;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#0c0c10";
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = "#d03030";
+  ctx.fillRect(0, 0, w, 8);
+  ctx.fillRect(0, h - 8, w, 8);
+  // Checker blocks at each end.
+  const cell = 23;
+  for (let cx = 0; cx < 3; cx++) {
+    for (let cy = 0; cy < Math.floor(h / cell); cy++) {
+      ctx.fillStyle = (cx + cy) % 2 === 0 ? "#e8e8e8" : "#111111";
+      ctx.fillRect(cx * cell, cy * cell, cell, cell);
+      ctx.fillStyle = (cx + cy) % 2 === 0 ? "#111111" : "#e8e8e8";
+      ctx.fillRect(w - (cx + 1) * cell, cy * cell, cell, cell);
+    }
+  }
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#f2f2f2";
+  ctx.font = "900 88px 'Helvetica Neue', Arial, sans-serif";
+  ctx.fillText("PARCOAR CIRCUIT", w / 2 + 34, 108);
+  ctx.fillStyle = "#8f96a2";
+  ctx.font = "700 40px 'Hiragino Sans', 'Yu Gothic', sans-serif";
+  ctx.fillText("パルコーア・サーキット", w / 2 + 34, 168);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 export function RaceTrack() {
   const dayNightRef = useDayNightState();
-  const floodlightMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const floodMatRef = useRef<THREE.MeshStandardMaterial>(null);
   const scoreboardMatRef = useRef<THREE.MeshStandardMaterial>(null);
   const gantrySignMatRef = useRef<THREE.MeshStandardMaterial>(null);
-  const trackMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const standLightMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const poolMatRef = useRef<THREE.MeshBasicMaterial>(null);
 
   // Build all static geometry + textures once.
   const {
-    trackGeo, kerbGeo, tireWallGeo, gantryGeo,
-    grandstandGeo, grandstandDotsGeo, pitGeo, floodlightPoleGeo, floodlightHeadGeo,
+    trackGeo, kerbGeo, tireWallGeo, gantryGeo, checkerStripGeo, signGeo,
+    grandstandGeo, seatGeo, grandstandDotsGeo, pitGeo,
+    floodlightPoleGeo, floodlightHeadGeo, floodPoolGeo,
     barrierGeo, startFinishGeo, tireMarksGeo,
-    kerbTex, barrierTex, startFinishTex,
+    kerbTex, barrierTex, startFinishTex, checkerTex, signTex, floodPoolTex,
   } = useMemo(() => {
     const halfS = STRAIGHT / 2;
     // Track surface: two straights + two semicircles
@@ -180,41 +314,46 @@ export function RaceTrack() {
     ];
     const trackGeo = mergeAll([...straights, ...arcs]);
 
-    // Kerbs on inside of corners — single merged geometry with a checker map.
-    const kerbGeos: THREE.BufferGeometry[] = [
-      ...kerbSegment(halfS, 0, RADIUS, -Math.PI / 2, Math.PI / 2, -1, KERB_Y),
-      ...kerbSegment(-halfS, 0, RADIUS, Math.PI / 2, (3 * Math.PI) / 2, -1, KERB_Y),
-    ];
-    const kerbGeo = mergeAll(kerbGeos);
+    // Striped kerbs on the inside of both corner apexes.
+    const kerbGeo = mergeAll([
+      ...kerbRun(halfS, 0, RADIUS, -Math.PI / 2, Math.PI / 2),
+      ...kerbRun(-halfS, 0, RADIUS, Math.PI / 2, (3 * Math.PI) / 2),
+    ]);
 
-    // Tire walls: instanced cylinders at corners
-    const tireGeos: THREE.BufferGeometry[] = [];
+    // Tire walls: stacked cylinders hugging three corners. Mostly black
+    // rubber with a few red/white painted ones scattered in.
+    const trng = mulberry32(hashSeed(1337, 42));
+    const tires: THREE.BufferGeometry[] = [];
     const tireRadius = 0.35;
     const tireHeight = 0.3;
     const corners = [
       { cx: halfS, cz: -RADIUS, angle: -Math.PI / 2 },
       { cx: halfS, cz: RADIUS, angle: 0 },
-      { cx: -halfS, cz: RADIUS, angle: Math.PI / 2 },
       { cx: -halfS, cz: -RADIUS, angle: Math.PI },
     ];
     for (const c of corners) {
-      for (let row = 0; row < 3; row++) {
-        for (let i = 0; i < 12; i++) {
-          const t = c.angle + (i / 12) * (Math.PI / 2);
-          const r = RADIUS + TRACK_WIDTH / 2 + 1.5;
+      for (let row = 0; row < 2; row++) {
+        for (let i = 0; i < 16; i++) {
+          const t = c.angle + (i / 15) * (Math.PI / 2) + (trng() - 0.5) * 0.015;
+          const r = RADIUS + TRACK_WIDTH / 2 + 1.0 + row * 0.75 + (trng() - 0.5) * 0.12;
           const x = c.cx + Math.cos(t) * r;
           const z = c.cz + Math.sin(t) * r;
           const geo = new THREE.CylinderGeometry(tireRadius, tireRadius, tireHeight, 8);
           geo.rotateX(Math.PI / 2);
+          geo.rotateY(trng() * Math.PI);
           geo.translate(x, DECK_Y + tireHeight / 2 + row * tireHeight * 0.9, z);
-          tireGeos.push(geo);
+          const roll = trng();
+          const col =
+            roll < 0.82 ? new THREE.Color("#141414")
+            : roll < 0.91 ? new THREE.Color("#c0392b")
+            : new THREE.Color("#e0e0e0");
+          tires.push(vcolor(geo, col));
         }
       }
     }
-    const tireWallGeo = mergeAll(tireGeos);
+    const tireWallGeo = mergeAll(tires);
 
     // Continuous barrier ribbons along both sides of both straights.
-    // Low walls (0.8 high) just outside the track edge, merged into one mesh.
     const barrierGeos: THREE.BufferGeometry[] = [];
     const barrierH = 0.8;
     const edgeOffsets = [
@@ -235,15 +374,13 @@ export function RaceTrack() {
     const startFinishGeo = ribbon(-1.5, -RADIUS, 1.5, -RADIUS, TRACK_WIDTH, START_FINISH_Y);
 
     // Tire marks: dark semi-transparent decals near the apex of each end.
-    // Placed on the inner racing line of the two semicircle ends.
     const apexRadius = RADIUS - TRACK_WIDTH / 2 + 1.5;
     const tireMarksGeo = mergeAll([
       arcRibbon(halfS, 0, apexRadius, -Math.PI / 6, Math.PI / 6, 3, TIRE_MARK_Y),
       arcRibbon(-halfS, 0, apexRadius, Math.PI - Math.PI / 6, Math.PI + Math.PI / 6, 3, TIRE_MARK_Y),
     ]);
 
-    // Start/finish gantry: two posts + overhead beam, spanning the main
-    // straight at Z=-RADIUS (aligned with the start/finish line + grandstand).
+    // Start/finish gantry: posts + overhead beam + a checker strip under it.
     const gantryParts: THREE.BufferGeometry[] = [];
     const postGeo = new THREE.BoxGeometry(0.8, 8, 0.8);
     const post1 = postGeo.clone();
@@ -255,39 +392,56 @@ export function RaceTrack() {
     gantryParts.push(post1, post2, beam);
     const gantryGeo = mergeAll(gantryParts);
 
-    // Grandstand along the main straight — tiered seating rising from the
-    // track-side front to the back, with a roof on posts.
-    const grandstandParts: THREE.BufferGeometry[] = [];
+    const checkerW = TRACK_WIDTH + 3.6;
+    const checkerStripGeo = new THREE.BoxGeometry(checkerW, 0.35, 0.5);
+    checkerStripGeo.translate(0, 7.1, -RADIUS);
+
+    // Sign panels hang off both faces of the beam so the name reads from
+    // either side of the circuit.
+    const signFront = new THREE.PlaneGeometry(9.5, 1.85);
+    signFront.rotateY(Math.PI); // face -Z (grandstand side)
+    signFront.translate(0, 8, -RADIUS - 0.46);
+    const signBack = new THREE.PlaneGeometry(9.5, 1.85);
+    signBack.translate(0, 8, -RADIUS + 0.46);
+    const signGeo = mergeAll([signFront, signBack]);
+
+    // Grandstand along the main straight: stepped rows cycling through
+    // three seat colors under one dark roof on posts.
     const rows = 6;
     const rowDepth = 2.2;
     const rowRise = 1.1;
     const gsWidth = 60;
-    const frontZ = -RADIUS - 9; // closest row to the track
+    const frontZ = -RADIUS - 9;
+    const seatParts: THREE.BufferGeometry[] = [];
+    const structureParts: THREE.BufferGeometry[] = [];
     for (let i = 0; i < rows; i++) {
       const row = new THREE.BoxGeometry(gsWidth, 1.2, rowDepth);
       row.translate(0, 0.6 + i * rowRise, frontZ - i * rowDepth);
-      grandstandParts.push(row);
+      seatParts.push(vcolor(row, SEAT_COLORS[i % SEAT_COLORS.length]));
     }
+    // Rear wall closing the tiers.
+    const backWall = new THREE.BoxGeometry(gsWidth, 7.2, 0.5);
+    backWall.translate(0, 3.6, frontZ - (rows - 1) * rowDepth - rowDepth / 2 - 0.25);
+    structureParts.push(backWall);
     // Roof spanning the stepped rows, supported by posts.
     const roofY = 0.6 + rows * rowRise + 1.2;
     const roofBackZ = frontZ - (rows - 1) * rowDepth;
     const roofCenterZ = (frontZ + roofBackZ) / 2;
     const roof = new THREE.BoxGeometry(gsWidth + 4, 0.4, (rows - 1) * rowDepth + 4);
     roof.translate(0, roofY, roofCenterZ);
-    grandstandParts.push(roof);
-    // Support posts at the front and back corners.
+    structureParts.push(roof);
     const postXs = [-gsWidth / 2 - 1, gsWidth / 2 + 1];
     for (const px of postXs) {
       for (const pz of [frontZ, roofBackZ]) {
         const p = new THREE.BoxGeometry(0.5, roofY, 0.5);
         p.translate(px, roofY / 2, pz);
-        grandstandParts.push(p);
+        structureParts.push(p);
       }
     }
-    const grandstandGeo = mergeAll(grandstandParts);
+    const grandstandGeo = mergeAll(structureParts);
+    const seatGeo = mergeAll(seatParts);
 
-    // Grandstand floodlights — small emissive boxes mounted under the roof
-    // front edge, illuminating the seating.
+    // Grandstand floodlights — small emissive boxes mounted under the roof.
     const grandstandDotParts: THREE.BufferGeometry[] = [];
     const lightCount = 12;
     for (let i = 0; i < lightCount; i++) {
@@ -300,13 +454,11 @@ export function RaceTrack() {
 
     // Pit lane: trucks, tire stacks, timing tower
     const pitParts: THREE.BufferGeometry[] = [];
-    // Transport trucks (3)
     for (let i = 0; i < 3; i++) {
       const truck = new THREE.BoxGeometry(8, 4, 3);
       truck.translate(-30 + i * 20, 2, RADIUS + 15);
       pitParts.push(truck);
     }
-    // Tire stacks (instanced-ish: merged cylinders)
     for (let i = 0; i < 6; i++) {
       for (let row = 0; row < 4; row++) {
         const tire = new THREE.CylinderGeometry(0.5, 0.5, 0.4, 8);
@@ -315,7 +467,6 @@ export function RaceTrack() {
         pitParts.push(tire);
       }
     }
-    // Timing tower
     const tower = new THREE.BoxGeometry(4, 12, 4);
     tower.translate(40, 6, RADIUS + 15);
     pitParts.push(tower);
@@ -324,71 +475,95 @@ export function RaceTrack() {
     pitParts.push(towerTop);
     const pitGeo = mergeAll(pitParts);
 
-    // Floodlight poles (4 around track)
+    // Floodlight poles (8 around the circuit) with heads aimed at their
+    // ground point, plus additive pool quads on the track beneath each.
     const poleGeos: THREE.BufferGeometry[] = [];
     const headGeos: THREE.BufferGeometry[] = [];
-    const floodPositions = [
-      { x: 0, z: -RADIUS - 8 },
-      { x: 0, z: RADIUS + 8 },
-      { x: halfS + 8, z: 0 },
-      { x: -halfS - 8, z: 0 },
-    ];
-    for (const p of floodPositions) {
-      const pole = new THREE.CylinderGeometry(0.3, 0.3, 12, 8);
-      pole.translate(p.x, 6, p.z);
+    const poolGeos: THREE.BufferGeometry[] = [];
+    const _aim = new THREE.Matrix4();
+    for (const f of floodLayout()) {
+      const pole = new THREE.CylinderGeometry(0.22, 0.3, 12, 8);
+      pole.translate(f.px, 6, f.pz);
       poleGeos.push(pole);
-      const head = new THREE.BoxGeometry(3, 0.5, 2);
-      head.translate(p.x, 12.5, p.z);
+      // Crossbar the head sits on.
+      const arm = new THREE.BoxGeometry(0.35, 0.35, 2.2);
+      const dx0 = f.lx - f.px;
+      const dz0 = f.lz - f.pz;
+      const yaw0 = Math.atan2(dx0, dz0);
+      arm.rotateY(yaw0);
+      arm.translate(f.px + dx0 * 0.18, 11.85, f.pz + dz0 * 0.18);
+      poleGeos.push(arm);
+      // Head panel tilted down toward its pool point.
+      const head = new THREE.BoxGeometry(2.6, 0.35, 1.5);
+      const pitch = 0.62;
+      const yaw = Math.atan2(f.lx - f.px, f.lz - f.pz);
+      _aim.makeRotationFromEuler(new THREE.Euler(pitch, yaw, 0, "YXZ"));
+      _aim.setPosition(f.px + (f.lx - f.px) * 0.28, 11.55, f.pz + (f.lz - f.pz) * 0.28);
+      head.applyMatrix4(_aim);
       headGeos.push(head);
+      // Additive light pool on the track surface.
+      const pool = new THREE.PlaneGeometry(13, 13);
+      pool.rotateX(-Math.PI / 2);
+      pool.translate(f.lx, DECK_Y + 0.03, f.lz);
+      poolGeos.push(pool);
     }
     const floodlightPoleGeo = mergeAll(poleGeos);
     const floodlightHeadGeo = mergeAll(headGeos);
+    const floodPoolGeo = mergeAll(poolGeos);
 
     // Textures
-    const kerbTex = makeCheckerTexture("#cc3333", "#e8e8e8", 2);
-    kerbTex.repeat.set(1, 4); // tile the checker along each kerb segment
+    const kerbTex = makeKerbStripeTexture();
     const barrierTex = makeBarrierStripeTexture();
-    barrierTex.repeat.set(50, 1); // ~50 stripe repeats along the 200-unit straights
+    barrierTex.repeat.set(50, 1);
     const startFinishTex = makeCheckerTexture("#101010", "#e8e8e8", 2);
-    startFinishTex.repeat.set(1, 7); // checker cells across the track width
+    startFinishTex.repeat.set(1, 7);
+    const checkerTex = makeCheckerTexture("#101010", "#e8e8e8", 2);
+    checkerTex.repeat.set(Math.round(checkerW / 1.6), 1);
+    const signTex = makeGantrySignTexture();
+    const floodPoolTex = makeFloodPoolTexture();
 
     return {
-      trackGeo, kerbGeo, tireWallGeo, gantryGeo,
-      grandstandGeo, grandstandDotsGeo, pitGeo, floodlightPoleGeo, floodlightHeadGeo,
+      trackGeo, kerbGeo, tireWallGeo, gantryGeo, checkerStripGeo, signGeo,
+      grandstandGeo, seatGeo, grandstandDotsGeo, pitGeo,
+      floodlightPoleGeo, floodlightHeadGeo, floodPoolGeo,
       barrierGeo, startFinishGeo, tireMarksGeo,
-      kerbTex, barrierTex, startFinishTex,
+      kerbTex, barrierTex, startFinishTex, checkerTex, signTex, floodPoolTex,
     };
   }, []);
 
-  // Animate emissive materials based on day/night
+  // Animate emissive materials based on day/night.
   useFrame(() => {
     const s = dayNightRef.current;
-    const night = s.sunIntensity < 0.15;
-    const lightLevel = night ? 1.0 : Math.max(0, 1 - s.sunIntensity / 1.5);
-
-    if (floodlightMatRef.current) {
-      floodlightMatRef.current.emissiveIntensity = lightLevel * 3.0;
+    const night = s.streetlightIntensity;
+    if (floodMatRef.current) {
+      floodMatRef.current.emissiveIntensity = night * 4.5;
     }
-    if (scoreboardMatRef.current) {
-      scoreboardMatRef.current.emissiveIntensity = 1.5;
+    if (poolMatRef.current) {
+      poolMatRef.current.opacity = night * 0.45;
     }
     if (gantrySignMatRef.current) {
-      gantrySignMatRef.current.emissiveIntensity = 1.0 + lightLevel * 1.5;
+      gantrySignMatRef.current.emissiveIntensity = 0.12 + night * 2.2;
     }
-    if (trackMatRef.current) {
-      // Track surface goes slightly glossy at night (lower roughness)
-      trackMatRef.current.roughness = night ? 0.4 : 0.7;
+    if (scoreboardMatRef.current) {
+      scoreboardMatRef.current.emissiveIntensity = 0.4 + s.neonIntensity * 1.8;
+    }
+    if (standLightMatRef.current) {
+      standLightMatRef.current.emissiveIntensity = 0.15 + night * 1.6;
     }
   });
 
   return (
     <group position={[CX, 0, CZ]}>
-      {/* Track surface */}
-      <mesh geometry={trackGeo} castShadow receiveShadow>
-        <meshStandardMaterial ref={trackMatRef} color={TRACK_PALETTE.surface} roughness={0.7} metalness={0.1} />
+      {/* Track surface — darker asphalt, slightly glossy */}
+      <mesh geometry={trackGeo} receiveShadow>
+        <meshStandardMaterial
+          color={SURFACE_COLOR}
+          roughness={0.5}
+          metalness={0.06}
+        />
       </mesh>
 
-      {/* Tire-mark decals at the apexes (dark, semi-transparent, flat) */}
+      {/* Tire-mark decals at the apexes */}
       <mesh geometry={tireMarksGeo} renderOrder={1}>
         <meshStandardMaterial
           color="#161616"
@@ -399,52 +574,72 @@ export function RaceTrack() {
         />
       </mesh>
 
-      {/* Start/finish checker strip across the main straight */}
+      {/* Start/finish checker strip */}
       <mesh geometry={startFinishGeo} renderOrder={2}>
         <meshStandardMaterial map={startFinishTex} roughness={0.6} metalness={0} />
       </mesh>
 
-      {/* Kerbs — red/white checker CanvasTexture, DoubleSide so they always read */}
-      <mesh geometry={kerbGeo}>
-        <meshStandardMaterial map={kerbTex} side={THREE.DoubleSide} roughness={0.6} />
-      </mesh>
-
-      {/* Continuous barrier ribbons along the straights */}
-      <mesh geometry={barrierGeo} castShadow receiveShadow>
-        <meshStandardMaterial map={barrierTex} roughness={0.6} metalness={0.1} />
-      </mesh>
-
-      {/* Tire walls */}
-      <mesh geometry={tireWallGeo}>
-        <meshStandardMaterial color="#0a0a0a" roughness={0.9} />
-      </mesh>
-
-      {/* Gantry structure (spans the main straight at the start/finish line) */}
-      <mesh geometry={gantryGeo} castShadow>
-        <meshStandardMaterial color="#3a3a3e" roughness={0.6} metalness={0.5} />
-      </mesh>
-      {/* Gantry sign (emissive panel on beam) */}
-      <mesh position={[0, 8, -RADIUS]}>
-        <boxGeometry args={[TRACK_WIDTH, 1.2, 0.1]} />
-        <meshStandardMaterial
-          ref={gantrySignMatRef}
-          color="#ff3b3b"
-          emissive="#ff3b3b"
-          emissiveIntensity={1.5}
+      {/* Floodlight pools — additive radial gradients, night only */}
+      <mesh geometry={floodPoolGeo} renderOrder={3}>
+        <meshBasicMaterial
+          ref={poolMatRef}
+          map={floodPoolTex}
+          color="#ffe9c4"
+          transparent
+          opacity={0}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
           toneMapped={false}
         />
       </mesh>
 
-      {/* Grandstand tiered seating + roof */}
+      {/* Kerbs — striped red/white raised boxes */}
+      <mesh geometry={kerbGeo}>
+        <meshStandardMaterial map={kerbTex} roughness={0.65} />
+      </mesh>
+
+      {/* Barrier ribbons along the straights */}
+      <mesh geometry={barrierGeo} castShadow receiveShadow>
+        <meshStandardMaterial map={barrierTex} roughness={0.6} metalness={0.1} />
+      </mesh>
+
+      {/* Tire walls — mostly black with a few painted tires (vertex colors) */}
+      <mesh geometry={tireWallGeo}>
+        <meshStandardMaterial vertexColors roughness={0.9} />
+      </mesh>
+
+      {/* Gantry structure + checker strip */}
+      <mesh geometry={gantryGeo} castShadow>
+        <meshStandardMaterial color="#3a3a3e" roughness={0.6} metalness={0.5} />
+      </mesh>
+      <mesh geometry={checkerStripGeo}>
+        <meshStandardMaterial map={checkerTex} roughness={0.6} />
+      </mesh>
+      {/* Gantry sign panel (PARCOAR CIRCUIT) */}
+      <mesh geometry={signGeo}>
+        <meshStandardMaterial
+          ref={gantrySignMatRef}
+          map={signTex}
+          emissive="#ffffff"
+          emissiveMap={signTex}
+          emissiveIntensity={0.12}
+          toneMapped
+        />
+      </mesh>
+
+      {/* Grandstand: dark structure + tri-color seat rows */}
       <mesh geometry={grandstandGeo} castShadow receiveShadow>
         <meshStandardMaterial color={TRACK_PALETTE.grandstand} roughness={0.8} />
       </mesh>
-      {/* Grandstand roof floodlights (emissive, separate geometry) */}
+      <mesh geometry={seatGeo} castShadow receiveShadow>
+        <meshStandardMaterial vertexColors roughness={0.85} />
+      </mesh>
       <mesh geometry={grandstandDotsGeo}>
         <meshStandardMaterial
+          ref={standLightMatRef}
           color="#fff5e0"
           emissive="#fff5e0"
-          emissiveIntensity={0.8}
+          emissiveIntensity={0.15}
           toneMapped={false}
         />
       </mesh>
@@ -460,7 +655,7 @@ export function RaceTrack() {
           ref={scoreboardMatRef}
           color="#00e5ff"
           emissive="#00e5ff"
-          emissiveIntensity={1.5}
+          emissiveIntensity={0.4}
           toneMapped={false}
         />
       </mesh>
@@ -469,10 +664,10 @@ export function RaceTrack() {
       <mesh geometry={floodlightPoleGeo} castShadow>
         <meshStandardMaterial color="#4a4a4e" roughness={0.6} metalness={0.4} />
       </mesh>
-      {/* Floodlight heads (emissive) */}
+      {/* Floodlight heads (emissive panels aimed at the track) */}
       <mesh geometry={floodlightHeadGeo}>
         <meshStandardMaterial
-          ref={floodlightMatRef}
+          ref={floodMatRef}
           color="#fff5e0"
           emissive="#fff5e0"
           emissiveIntensity={0}

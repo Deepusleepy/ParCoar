@@ -13,6 +13,8 @@ import { Town } from "./Town";
 import { RaceTrack } from "./RaceTrack";
 import { StreetFurniture } from "./StreetFurniture";
 import { TrainLoop } from "./TrainLoop";
+import { Traffic } from "./traffic/Traffic";
+import { Pedestrians } from "./traffic/Pedestrians";
 import { runtime } from "./runtime";
 import {
   PIXEL_BUDGET,
@@ -238,6 +240,8 @@ function SceneContents({ children }: { children: ReactNode }) {
       <RaceTrack />
       <StreetFurniture />
       <TrainLoop />
+      <Traffic />
+      <Pedestrians />
       {children}
       {/* Post: Bloom carries the whole night identity (windows, neon,
           streetlight pools); Vignette adds focus. No AO — too expensive. */}
