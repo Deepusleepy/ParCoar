@@ -47,8 +47,8 @@ Open `http://localhost:5180`.
 ### Graph
 
 `backend/generate_lot.py` creates the garage graph and writes `shared/lot.json`.
-The frontend copies that file to `frontend/public/lot.json` when Vite starts
-(`npm run dev`, `npm run build`, or `npm run preview`), so the browser and the
+The frontend copies that file to `frontend/public/lot.json` at the start of
+`npm run dev`, `npm run build`, and `npm run preview`, so the browser and the
 server read the same graph.
 
 The graph has 737 nodes. 480 of them are identical bays. The rest are

@@ -26,7 +26,7 @@ Thumbs.db
 *.tsbuildinfo
 .worktrees/
 
-# Copied from shared/lot.json by Vite on dev and build.
+# Copied from shared/lot.json by the frontend dev, build, and preview scripts.
 frontend/public/lot.json
 
 .ultracodex/

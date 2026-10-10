@@ -1,7 +1,7 @@
 """Generate the graph used by the ParCoar parking simulator.
 
 The output is written to shared/lot.json. The frontend copies that file into
-frontend/public/lot.json when the dev server or production build starts.
+frontend/public/lot.json at the start of dev, build, and preview.
 All bays are identical. Directed edges carry a physical driving cost so the
 backend can choose the genuinely closest free bay instead of counting hops.
 """
