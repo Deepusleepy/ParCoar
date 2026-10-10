@@ -30,8 +30,9 @@ import { aisleOf, makeBox, rampPoints, semicirclePoints, slabBounds, type SlabBo
  *  Lot loading
  * ================================================================== */
 
-/** Fetch and cache the lot graph from public/lot.json. Skipped entirely
- *  when a lot was handed down as a prop (the app already fetched it). */
+/** Fetch /lot.json. Vite copies shared/lot.json into public/ first.
+ *  Skipped entirely when a lot was handed down as a prop (the app already
+ *  fetched it). */
 function useLot(enabled: boolean): LotData | null {
   const [lot, setLot] = useState<LotData | null>(null);
   useEffect(() => {
@@ -756,12 +757,14 @@ function buildGeometry(lot: LotData, bounds: SlabBounds) {
 
   // --- Slots ---
   for (const [id, node] of Object.entries(nodes)) {
-    if (node.type !== "slot" || !node.size) continue;
+    if (node.type !== "slot") continue;
     const pos = toWorld(node.x, node.y, node.floor);
     // Rotate the slot so its opening faces the nearest aisle centreline.
     const aisleY = Math.round(node.y / AISLE_SPACING) * AISLE_SPACING;
     const rotY = node.y < aisleY ? 0 : Math.PI;
-    slots.push({ id, pos, size: node.size, rotY });
+    // Older frontend copies stamped every bay size "standard". The shared
+    // graph does not. Every bay is identical, so a missing marker is standard.
+    slots.push({ id, pos, size: node.size ?? "standard", rotY });
   }
 
   // --- Parking area info signs (one per side of each aisle entry) ---

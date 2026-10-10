@@ -7,7 +7,7 @@ import {
   nodeGap,
   roadDirection,
 } from "./traffic";
-import lotJson from "../../public/lot.json";
+import lotJson from "../../../shared/lot.json";
 
 const lot = lotJson as unknown as LotData;
 const FLOOR_HEIGHT = lot.floor_height;

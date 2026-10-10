@@ -1,9 +1,36 @@
-import { defineConfig } from "vite";
+import { copyFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+const frontendDir = dirname(fileURLToPath(import.meta.url));
+
+/** shared/lot.json is the only committed graph. Copy it before dev, build, and preview. */
+function copySharedLot(): Plugin {
+  const copy = () => {
+    copyFileSync(
+      resolve(frontendDir, "../shared/lot.json"),
+      resolve(frontendDir, "public/lot.json"),
+    );
+  };
+  return {
+    name: "copy-shared-lot",
+    config() {
+      copy();
+    },
+    buildStart() {
+      copy();
+    },
+    configureServer() {
+      copy();
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [copySharedLot(), react(), tailwindcss()],
   server: {
     // Not Vite's default 5173, which is the first port every other Vite
     // project on a machine also takes. strictPort makes a clash fail loudly
