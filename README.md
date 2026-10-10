@@ -7,7 +7,7 @@ closest free bay by driving distance, calculates the route, and sends it to
 the browser. Overhead boards identify each car and show where to turn. You can
 also inspect the route graph or drive a car yourself.
 
-![The garage, all three floors and the ramp](docs/images/garage.png)
+![The garage, all three floors and the ramp](docs/images/garage.webp)
 
 ## Run it
 
@@ -34,35 +34,36 @@ Open `http://localhost:5180`.
 - **C**: controls drawer
 - **M**: route map
 - **P**: pause
-- Camera buttons: overview, floor views, car follow, POV and drive
+- Camera buttons: orbit, overview, floor views, car follow, POV and drive
 - Driving: **WASD**, mouse look in POV (click to capture)
 - In drive/POV the car joins the garage like any other: it gets its own bay
   (the boards show it as YOU), parks by settling inside the assigned bay,
   and **L** hands the bay back and routes to the exit
 
-![The controls drawer and route map](docs/images/controls.png)
+![The controls drawer and route map](docs/images/controls.webp)
 
 ## How it works
 
 ### Graph
 
-`backend/generate_lot.py` creates the garage graph and writes it to:
+`backend/generate_lot.py` creates the garage graph and writes `shared/lot.json`.
+The frontend copies that file to `frontend/public/lot.json` at the start of
+`npm run dev`, `npm run build`, and `npm run preview`, so the browser and the
+server read the same graph.
 
-- `shared/lot.json`
-- `frontend/public/lot.json`
-
-The graph contains 480 identical bay nodes, along with junctions, turns,
-ramps, and entry, exit and approach nodes. Roads are two-way. Bays are dead
-ends, so a route may finish in one or start from one, but cannot cut through
-one.
+The graph has 737 nodes. 480 of them are identical bays. The rest are
+junctions, turns, ramps, and entry, exit and approach nodes. Roads are
+two-way. Bays are dead ends, so a route may finish in one or start from one,
+but cannot cut through one.
 
 Every directed edge has a distance cost. A 2.6-unit aisle step costs 2.6,
 while turns and ramps use the length of the path the car follows.
 
 ### Routing
 
-The Python server uses Dijkstra's algorithm. The first free bay finalized by
-the search is the one with the shortest driving distance.
+The Python server uses Dijkstra's algorithm over that 737-node graph. The
+first free bay finalized by the search is the one with the shortest driving
+distance.
 
 The graph has only one road route between any two locations, so congestion
 routing would not change the route. The frontend still handles queues and
@@ -83,9 +84,11 @@ keeps its bay.
 ### WebSocket
 
 The frontend sends state to `ws://127.0.0.1:8765` (override with
-`VITE_WS_URL`) about five times per second. The backend replies with the
-destination, route, direction, remaining route distance and estimated driving
-time. See [`shared/spec.md`](shared/spec.md).
+`VITE_WS_URL`). It checks about every 80 ms. While cars are moving, or while
+you are driving, it sends a fresh snapshot on each check (about 12 times a
+second). When nothing has changed it resends the last snapshot about twice a
+second. The backend replies with the destination, route, direction, remaining
+route distance and estimated driving time. See [`shared/spec.md`](shared/spec.md).
 
 ### Frontend
 

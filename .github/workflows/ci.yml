@@ -31,7 +31,7 @@ jobs:
       - run: pip install -r backend/requirements.txt
       - run: python -m unittest discover -s tests -t . -v
       - run: python backend/generate_lot.py
-      - run: git diff --exit-code shared/lot.json frontend/public/lot.json
+      - run: git diff --exit-code shared/lot.json
 
   # Advisory on hosted runners: their software GL manages single-digit fps,
   # so a 45 s soak yields ~a dozen scene samples and geometric invariants

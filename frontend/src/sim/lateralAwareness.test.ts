@@ -6,7 +6,7 @@ import {
   updatePlayerPos,
 } from "../hooks/useSimulation";
 import { LANE_WIDTH, toWorld } from "./constants";
-import lotJson from "../../public/lot.json";
+import lotJson from "../../../shared/lot.json";
 
 const lot = lotJson as unknown as LotData;
 

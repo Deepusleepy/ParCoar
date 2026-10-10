@@ -4,7 +4,7 @@ import type { LotData } from "../types";
 import { resolvePath } from "./paths";
 import { LANE_WIDTH, toWorld } from "./constants";
 import { rampPoints } from "./geometry";
-import lotJson from "../../public/lot.json";
+import lotJson from "../../../shared/lot.json";
 
 const lot = lotJson as unknown as LotData;
 const FLOOR_HEIGHT = lot.floor_height;

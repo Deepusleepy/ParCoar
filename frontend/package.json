@@ -8,9 +8,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview",
+    "dev": "node scripts/copy-lot.mjs && vite",
+    "build": "node scripts/copy-lot.mjs && tsc -b && vite build",
+    "preview": "node scripts/copy-lot.mjs && vite preview",
     "test": "vitest run"
   },
   "dependencies": {

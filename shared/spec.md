@@ -8,7 +8,7 @@ state, so separate browser tabs do not share a garage.
 
 - WebSocket: `ws://127.0.0.1:8765`
 - JSON text frames
-- Frontend sends a state snapshot about five times per second
+- Frontend sends a state snapshot about 12 times a second while cars are moving or the player is driving, and about twice a second when nothing has changed
 
 ## Layout
 

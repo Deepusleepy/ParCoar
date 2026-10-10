@@ -1,6 +1,7 @@
 """Generate the graph used by the ParCoar parking simulator.
 
-The output is written to both shared/lot.json and frontend/public/lot.json.
+The output is written to shared/lot.json. The frontend copies that file into
+frontend/public/lot.json at the start of dev, build, and preview.
 All bays are identical. Directed edges carry a physical driving cost so the
 backend can choose the genuinely closest free bay instead of counting hops.
 """
@@ -215,21 +216,12 @@ def main() -> None:
     lot = build_lot()
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     shared_path = os.path.join(project_root, "shared", "lot.json")
-    frontend_path = os.path.join(project_root, "frontend", "public", "lot.json")
 
-    # ParkingLot.tsx still accepts a single uniform renderer marker. It is not
-    # a bay category and is never sent to or used by the routing backend.
-    frontend_lot = json.loads(json.dumps(lot))
-    for node in frontend_lot["nodes"].values():
-        if node["type"] == "slot":
-            node["size"] = "standard"
-
-    for output_path, payload in [(shared_path, lot), (frontend_path, frontend_lot)]:
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as file:
-            json.dump(payload, file, separators=(",", ":"))
-            file.write("\n")
-        print(f"Generated {output_path}")
+    os.makedirs(os.path.dirname(shared_path), exist_ok=True)
+    with open(shared_path, "w", encoding="utf-8") as file:
+        json.dump(lot, file, separators=(",", ":"))
+        file.write("\n")
+    print(f"Generated {shared_path}")
 
     counts = {
         node_type: sum(1 for node in lot["nodes"].values() if node["type"] == node_type)

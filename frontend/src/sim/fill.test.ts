@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LotData } from "../types";
 import { generatePreParked, type GarageFill } from "./fill";
-import lotJson from "../../public/lot.json";
+import lotJson from "../../../shared/lot.json";
 
 const lot = lotJson as unknown as LotData;
 
